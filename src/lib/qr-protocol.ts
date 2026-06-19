@@ -25,6 +25,7 @@ export const PROTOCOL_PREFIX = "OD1";
 
 // Small chunks deliberately scan better on real mobile cameras than dense QR blocks.
 export const CHUNK_SIZE = 120;
+export const MIN_FRAMES = 60;
 
 export function buildChunkPayload(meta: ChunkMeta, data: string): string {
   return `${PROTOCOL_PREFIX}|${JSON.stringify(meta)}|${data}`;
@@ -62,6 +63,7 @@ export async function fileToChunks(file: File): Promise<{ id: string; chunks: st
   for (let i = 0; i < b64.length; i += CHUNK_SIZE) {
     pieces.push(b64.slice(i, i + CHUNK_SIZE));
   }
+  while (pieces.length < MIN_FRAMES) pieces.push("");
   const total = pieces.length;
   const chunks = pieces.map((data, n) =>
     buildChunkPayload(
