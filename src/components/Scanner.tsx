@@ -263,8 +263,8 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
   }
 
   useEffect(() => {
-    onBusyChange?.(active || starting || stopping || progress.total > 0);
-  }, [active, starting, stopping, progress.total, onBusyChange]);
+    onBusyChange?.(active || starting || stopping);
+  }, [active, starting, stopping, onBusyChange]);
 
   useEffect(() => {
     if (stopRequestKey > 0) {
