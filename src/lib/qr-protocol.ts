@@ -67,7 +67,14 @@ export async function fileToChunks(file: File): Promise<{ id: string; chunks: st
   const total = pieces.length;
   const chunks = pieces.map((data, n) =>
     buildChunkPayload(
-      { i: id, n, t: total, m: file.type || "application/octet-stream", f: file.name, s: file.size },
+      {
+        i: id,
+        n,
+        t: total,
+        m: file.type || "application/octet-stream",
+        f: file.name,
+        s: file.size,
+      },
       data,
     ),
   );
