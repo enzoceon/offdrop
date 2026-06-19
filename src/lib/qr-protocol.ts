@@ -24,7 +24,7 @@ export interface Transfer {
 export const PROTOCOL_PREFIX = "OD1";
 
 // Small chunks deliberately scan better on real mobile cameras than dense QR blocks.
-export const CHUNK_SIZE = 90;
+export const CHUNK_SIZE = 64;
 export const MIN_FRAMES = 60;
 
 export function expectedBase64Length(byteSize: number): number {

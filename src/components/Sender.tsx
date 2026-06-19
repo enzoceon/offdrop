@@ -23,7 +23,7 @@ export function Sender() {
   const [chunks, setChunks] = useState<string[]>([]);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(8);
+  const [fps, setFps] = useState(4);
   const [preview, setPreview] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
