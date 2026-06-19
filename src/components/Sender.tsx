@@ -90,9 +90,12 @@ export function Sender() {
     if (inputRef.current) inputRef.current.value = "";
   }
 
-  useEffect(() => () => {
-    if (preview) URL.revokeObjectURL(preview);
-  }, [preview]);
+  useEffect(
+    () => () => {
+      if (preview) URL.revokeObjectURL(preview);
+    },
+    [preview],
+  );
 
   const cycleSeconds = chunks.length / fps;
   const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
@@ -180,7 +183,9 @@ export function Sender() {
               </span>
               <span className="col-span-2 flex items-center gap-1">
                 <Clock className="h-3 w-3 text-primary" />
-                {playing ? `${formatDuration(remainingSeconds)} left` : `${formatDuration(cycleSeconds)} capture`}
+                {playing
+                  ? `${formatDuration(remainingSeconds)} left`
+                  : `${formatDuration(cycleSeconds)} capture`}
               </span>
             </div>
           </div>
@@ -195,7 +200,10 @@ export function Sender() {
       </div>
 
       <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-[2rem] p-4">
-        <canvas ref={canvasRef} className={cn("h-full w-full", chunks.length === 0 && "opacity-0")} />
+        <canvas
+          ref={canvasRef}
+          className={cn("h-full w-full", chunks.length === 0 && "opacity-0")}
+        />
         {chunks.length === 0 && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm font-medium text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
@@ -264,7 +272,11 @@ export function Sender() {
         >
           <div className="absolute inset-0 flex items-center justify-center p-2 sm:p-4">
             {file.type.startsWith("image/") ? (
-              <img src={preview} alt={file.name} className="h-full w-full rounded-2xl object-contain shadow-2xl" />
+              <img
+                src={preview}
+                alt={file.name}
+                className="h-full w-full rounded-2xl object-contain shadow-2xl"
+              />
             ) : (
               <video
                 src={preview}
