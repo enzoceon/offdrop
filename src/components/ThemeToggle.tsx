@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { Moon, Sun } from "lucide-react";
 
 const THEME_KEY = "offdrop-theme";
@@ -19,7 +19,7 @@ export function ThemeToggle() {
     applyTheme(isDark);
   }, []);
 
-  async function toggle(event: React.MouseEvent<HTMLButtonElement>) {
+  async function toggle(event: MouseEvent<HTMLButtonElement>) {
     const next = !dark;
     const button = event.currentTarget;
     const rect = button.getBoundingClientRect();
