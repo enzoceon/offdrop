@@ -5,7 +5,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Sender } from "@/components/Sender";
 import { Scanner } from "@/components/Scanner";
 import { History } from "@/components/History";
-import { Loader2, QrCode } from "lucide-react";
+import { CameraOff, Loader2, QrCode } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -125,11 +125,22 @@ function Index() {
       </main>
 
       {confirmOpen && (
-        <div className="fixed inset-0 z-[70] flex items-end justify-center bg-background/35 px-4 pb-4 backdrop-blur-sm" role="dialog" aria-modal="true">
-          <div className="glass-strong safe-bottom w-full max-w-md rounded-[2rem] p-4 animate-fade-up">
-            <h2 className="text-display text-lg">Stop receiving?</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Leaving Receive will close the camera and stop the current OFFDROP processing.
+        <div
+          className="fixed inset-0 z-[70] flex items-end justify-center bg-background/35 px-4 pb-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          onClick={cancelLeaveScanner}
+        >
+          <div className="glass-strong safe-bottom w-full max-w-md rounded-[2rem] p-4 text-center animate-fade-up" onClick={(event) => event.stopPropagation()}>
+            <p className="mx-auto max-w-[18rem] text-sm font-semibold text-foreground">
+              Leaving Receive will close the camera.
+            </p>
+            <h2 className="mt-3 flex items-center justify-center gap-2 text-display text-lg">
+              <CameraOff className="h-5 w-5 text-primary" />
+              Stop receiving?
+            </h2>
+            <p className="mx-auto mt-1 max-w-[19rem] text-center text-sm text-muted-foreground">
+              The current OFFDROP processing will stop.
             </p>
             <div className="mt-4 grid grid-cols-2 gap-3">
               <button

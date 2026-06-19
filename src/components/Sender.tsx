@@ -23,9 +23,10 @@ export function Sender() {
   const [chunks, setChunks] = useState<string[]>([]);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(4);
+  const [fps, setFps] = useState(3);
   const [preview, setPreview] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [qrError, setQrError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -44,12 +45,17 @@ export function Sender() {
   // Render current QR
   useEffect(() => {
     if (!canvasRef.current || chunks.length === 0) return;
+    setQrError(null);
     QRCode.toCanvas(canvasRef.current, chunks[idx], {
       errorCorrectionLevel: "M",
       margin: 1,
       width: 520,
       color: { dark: "#0a0a14", light: "#ffffff" },
-    }).catch(() => {});
+    }).catch((err) => {
+      console.error("QR generation failed:", err);
+      setQrError("This QR frame could not be generated. Try a smaller file or reset the stream.");
+      setPlaying(false);
+    });
   }, [idx, chunks]);
 
   // Animate
@@ -187,6 +193,12 @@ export function Sender() {
         />
       </div>
 
+      {qrError && (
+        <div className="glass mx-auto mt-3 w-full max-w-sm rounded-2xl border border-destructive/40 p-3 text-center text-xs text-destructive">
+          {qrError}
+        </div>
+      )}
+
       <div className="mt-3 mx-auto flex w-full max-w-md items-center justify-center gap-2">
         <button
           onClick={() => setPlaying((p) => !p)}
@@ -217,8 +229,8 @@ export function Sender() {
         <span className="text-xs font-bold text-muted-foreground">Speed</span>
         <input
           type="range"
-          min={2}
-          max={24}
+          min={1}
+          max={3}
           value={fps}
           onChange={(e) => setFps(+e.target.value)}
           className="ios-range flex-1"
