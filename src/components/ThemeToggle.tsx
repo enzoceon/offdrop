@@ -8,6 +8,10 @@ function applyTheme(isDark: boolean) {
   document.documentElement.style.colorScheme = isDark ? "dark" : "light";
 }
 
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (callback: () => void) => { ready: Promise<void> };
+};
+
 export function ThemeToggle() {
   const [dark, setDark] = useState(false);
 
@@ -31,12 +35,13 @@ export function ThemeToggle() {
     const root = document.documentElement;
     const endRadius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
 
-    if (!document.startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const transitionDocument = document as ViewTransitionDocument;
+    if (!transitionDocument.startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       applyTheme(next);
       return;
     }
 
-    const transition = document.startViewTransition(() => applyTheme(next));
+    const transition = transitionDocument.startViewTransition(() => applyTheme(next));
     await transition.ready;
     root.animate(
       {
