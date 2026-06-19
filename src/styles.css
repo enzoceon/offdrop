@@ -152,9 +152,15 @@
     0 20px 60px -20px oklch(0 0 0 / 0.35);
 }
 
+@utility audio-tile {
+  background:
+    radial-gradient(circle at 35% 20%, color-mix(in oklab, var(--color-accent) 32%, transparent), transparent 56%),
+    var(--color-secondary);
+}
+
 @utility text-display {
   font-family: var(--font-display);
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   font-weight: 700;
 }
 
