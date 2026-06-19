@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import QRCode from "qrcode";
 import { Upload, Play, Pause, RotateCcw, ImageIcon, X, Music2, Film } from "lucide-react";
 import { fileToChunks } from "@/lib/qr-protocol";
@@ -105,7 +105,7 @@ export function Sender() {
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
       <div className="glass relative mb-3 flex items-center gap-3 overflow-hidden rounded-2xl p-3">
-        <div className="edge-progress" style={{ "--p": `${progress}%` } as React.CSSProperties} />
+        <div className="edge-progress" style={{ "--p": `${progress}%` } as CSSProperties} />
         {preview && file.type.startsWith("image/") ? (
           <img src={preview} alt="" className="h-12 w-12 rounded-lg object-cover" />
         ) : file.type.startsWith("video/") ? (
