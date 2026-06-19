@@ -35,6 +35,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
 
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ have: 0, total: 0 });
   const [scanInfo, setScanInfo] = useState<{ name: string; mime: string; size: number } | null>(null);
@@ -59,6 +60,8 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
             facingMode: { ideal: "environment" },
             width: { ideal: 1280 },
             height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+            advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
           },
           audio: false,
         });
@@ -66,6 +69,12 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
         stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       }
       streamRef.current = stream;
+      for (const track of stream.getVideoTracks()) {
+        const capabilities = track.getCapabilities?.() as MediaTrackCapabilities & { focusMode?: string[] };
+        if (capabilities?.focusMode?.includes("continuous")) {
+          await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet] }).catch(() => {});
+        }
+      }
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -82,7 +91,11 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     }
   }
 
-  function stop() {
+  async function stop(showStopping = false) {
+    if (showStopping) {
+      setStopping(true);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
     scanningRef.current = false;
     setActive(false);
     setStarting(false);
@@ -91,6 +104,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    setStopping(false);
   }
 
   function tick() {
@@ -199,7 +213,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       transferRef.current = null;
       setScanInfo(null);
       setProgress({ have: 0, total: 0 });
-      stop();
+      await stop();
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "The scanned file could not be reconstructed yet.");
@@ -208,7 +222,9 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     }
   }
 
-  useEffect(() => () => stop(), []);
+  useEffect(() => () => {
+    void stop();
+  }, []);
 
   const pct = progress.total ? (progress.have / progress.total) * 100 : 0;
   const label = mediaLabel(scanInfo?.mime);
