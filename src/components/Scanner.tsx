@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
-import { Camera, CameraOff, CheckCircle2, Loader2 } from "lucide-react";
+import { Camera, CameraOff, CheckCircle2, Loader2, ScanLine } from "lucide-react";
 import {
   parseChunkPayload,
   transferComplete,
@@ -15,6 +15,8 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
   const rafRef = useRef<number>(0);
   const streamRef = useRef<MediaStream | null>(null);
   const transferRef = useRef<Transfer | null>(null);
+  const lastPayloadRef = useRef<string>("");
+  const finishingRef = useRef(false);
 
   const [active, setActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,11 +26,22 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
   async function start() {
     setError(null);
     setDone(null);
+    transferRef.current = null;
+    finishingRef.current = false;
+    setProgress({ have: 0, total: 0 });
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Camera permission is unavailable in this browser.");
+      }
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -63,7 +76,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       if (ctx) {
         ctx.drawImage(video, 0, 0, w, h);
         const img = ctx.getImageData(0, 0, w, h);
-        const code = jsQR(img.data, w, h, { inversionAttempts: "dontInvert" });
+        const code = jsQR(img.data, w, h, { inversionAttempts: "attemptBoth" });
         if (code?.data) handleScan(code.data);
       }
     }
@@ -71,6 +84,8 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
   }
 
   function handleScan(payload: string) {
+    if (finishingRef.current || payload === lastPayloadRef.current) return;
+    lastPayloadRef.current = payload;
     const parsed = parseChunkPayload(payload);
     if (!parsed) return;
     const { meta, data } = parsed;
@@ -96,7 +111,8 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
 
   async function finish() {
     const t = transferRef.current;
-    if (!t) return;
+    if (!t || finishingRef.current) return;
+    finishingRef.current = true;
     const blob = assembleTransfer(t);
     await saveItem({
       id: t.id + "-" + Date.now(),
@@ -112,6 +128,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     setProgress({ have: 0, total: 0 });
     onSaved();
     stop();
+    finishingRef.current = false;
   }
 
   useEffect(() => () => stop(), []);
@@ -135,10 +152,10 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
             <div className="relative mb-4">
               <span className="absolute inset-0 rounded-full bg-primary/40 animate-pulse-ring" />
               <div className="relative grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40">
-                <Camera className="h-8 w-8 text-primary-foreground" />
+                <ScanLine className="h-8 w-8 text-primary-foreground" />
               </div>
             </div>
-            <p className="text-sm text-muted-foreground">Aim at the sender's QR stream</p>
+            <p className="text-sm text-muted-foreground">Aim at the OFFDROP QR stream</p>
           </div>
         )}
 
@@ -153,8 +170,8 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
         {/* Reticle */}
         {active && (
           <>
-            <div className="pointer-events-none absolute inset-6 rounded-[1.5rem] border-2 border-white/70 shadow-[0_0_0_9999px_oklch(0_0_0/0.25)]" />
-            <div className="pointer-events-none absolute left-6 right-6 top-1/2 h-0.5 -translate-y-1/2 bg-gradient-to-r from-transparent via-primary to-transparent" />
+            <div className="pointer-events-none absolute inset-6 rounded-[1.5rem] border-2 border-primary/80 shadow-[0_0_0_9999px_oklch(0_0_0/0.22)]" />
+            <div className="scan-sweep pointer-events-none absolute left-8 right-8 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent" />
           </>
         )}
       </div>
@@ -183,11 +200,11 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
         </div>
       )}
 
-      <div className="mt-3 flex gap-2">
+      <div className="mt-3 flex justify-center gap-2">
         {!active ? (
           <button
             onClick={start}
-            className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/30 active:scale-[0.97]"
+            className="flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/30 active:scale-[0.97]"
           >
             <Camera className="h-4 w-4" />
             Start camera
@@ -195,7 +212,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
         ) : (
           <button
             onClick={stop}
-            className="glass flex flex-1 items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97]"
+            className="glass flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97]"
           >
             <CameraOff className="h-4 w-4" />
             Stop
