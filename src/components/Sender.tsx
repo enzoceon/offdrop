@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { Upload, Play, Pause, RotateCcw, X, Music2, Film, FileText, HardDrive, Layers3, Clock, Loader2 } from "lucide-react";
+import { Upload, Play, Pause, RotateCcw, X, Music2, FileText, HardDrive, Layers3, Clock, Loader2 } from "lucide-react";
 import { fileToChunks } from "@/lib/qr-protocol";
 import { cn } from "@/lib/utils";
 
@@ -230,15 +230,16 @@ export function Sender() {
         <div className="fixed inset-0 z-[80] bg-background/95 backdrop-blur-2xl animate-fade-up" role="dialog" aria-modal="true">
           <div className="absolute inset-0 flex items-center justify-center p-2 sm:p-4">
             {file.type.startsWith("image/") ? (
-              <img src={preview} alt={file.name} className="max-h-full max-w-full rounded-2xl object-contain shadow-2xl" />
+              <img src={preview} alt={file.name} className="h-full w-full rounded-2xl object-contain shadow-2xl" />
             ) : (
-              <video src={preview} controls autoPlay playsInline className="max-h-full max-w-full rounded-2xl object-contain shadow-2xl" />
+              <video src={preview} controls autoPlay playsInline className="h-full w-full rounded-2xl object-contain shadow-2xl" />
             )}
           </div>
           <button
             type="button"
             onClick={() => setPreviewOpen(false)}
-            className="liquid-control safe-top absolute right-4 top-4 z-[81] flex h-12 w-12 items-center justify-center rounded-full text-foreground active:scale-90"
+            className="liquid-control absolute right-4 z-[81] flex h-12 w-12 items-center justify-center rounded-full text-foreground active:scale-90"
+            style={{ top: "max(env(safe-area-inset-top), 1rem)" }}
             aria-label="Close preview"
           >
             <X className="h-5 w-5" strokeWidth={2.4} />
