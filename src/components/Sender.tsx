@@ -132,7 +132,7 @@ export function Sender() {
             <FileText className="h-3.5 w-3.5 shrink-0 text-primary" />
             <span className="truncate">{file.name}</span>
           </div>
-          <div className="grid gap-1 text-[11px] leading-none text-muted-foreground">
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
             <div className="flex min-w-0 items-center gap-1.5">
               <HardDrive className="h-3.5 w-3.5 shrink-0 text-primary" />
               <span className="truncate">{formatBytes(file.size)}</span>

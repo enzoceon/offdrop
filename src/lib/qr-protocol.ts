@@ -44,7 +44,7 @@ export function parseChunkPayload(payload: string): { meta: ChunkMeta; data: str
   const framed = payload.startsWith(`${PROTOCOL_PREFIX}|`)
     ? payload.slice(PROTOCOL_PREFIX.length + 1)
     : payload;
-  const idx = framed.indexOf("|");
+  const idx = framed.lastIndexOf("|");
   if (idx < 0) return null;
   try {
     const meta = JSON.parse(framed.slice(0, idx)) as ChunkMeta;

@@ -310,11 +310,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="glass scanner-status mt-3 min-h-28 rounded-2xl p-3 animate-fade-up">
-          <div className="flex h-full min-h-20 items-stretch gap-3">
-            <div className="scanner-capture-meter w-2 shrink-0 overflow-hidden rounded-full bg-secondary">
-              <div className="scanner-capture-fill" style={{ height: `${Math.max(8, pct)}%` }} />
-            </div>
+        <div className="glass scanner-status mt-3 min-h-[5rem] rounded-2xl p-3 animate-fade-up">
             <div className="flex min-w-0 flex-1 flex-col justify-between gap-3">
               <div className="flex items-center gap-2 text-xs">
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
