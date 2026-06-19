@@ -337,36 +337,26 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="glass scanner-status mt-3 rounded-2xl p-4 animate-fade-up">
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-3">
-              <div className="relative flex h-8 w-8 items-center justify-center rounded-full bg-secondary">
-                <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                <div className="absolute inset-0 rounded-full border-2 border-primary/20" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-xs font-semibold">
-                    {progress.total > 0 ? `Assembling ${label}…` : qrBox ? "Stream locked" : "Searching for stream…"}
-                  </span>
-                  {progress.total > 0 && (
-                    <span className="shrink-0 tabular-nums text-[10px] font-bold text-muted-foreground">
-                      {progress.have} / {progress.total}
-                    </span>
-                  )}
-                </div>
-                <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
-                  {scanInfo ? scanInfo.name : "Position the camera toward the QR stream"}
-                </div>
-              </div>
-            </div>
-            
-            <div className="relative h-2 overflow-hidden rounded-full bg-secondary/50">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-all duration-300"
-                style={{ width: `${pct}%` }}
-              />
-            </div>
+        <div className="mx-auto mt-3 w-full max-w-sm animate-fade-up">
+          <div className="flex items-center gap-2 text-xs">
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+            <span className="min-w-0 flex-1 truncate font-semibold">
+              {progress.total > 0 ? `Assembling ${label}…` : qrBox ? "Stream locked" : "Searching for stream…"}
+            </span>
+            {progress.total > 0 && (
+              <span className="shrink-0 tabular-nums text-[10px] font-bold text-muted-foreground">
+                {progress.have} / {progress.total}
+              </span>
+            )}
+          </div>
+          <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-secondary p-[1px]">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-300 ease-out"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <div className="mt-1 truncate text-[10px] text-muted-foreground">
+            {scanInfo ? scanInfo.name : "Position the camera toward the QR stream"}
           </div>
         </div>
       )}

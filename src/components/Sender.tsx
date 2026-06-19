@@ -111,7 +111,7 @@ export function Sender() {
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
       <div className="glass mb-3 flex items-center gap-3 rounded-2xl p-3">
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
           {preview && file.type.startsWith("image/") ? (
             <img src={preview} alt="" className="h-12 w-12 rounded-xl object-cover shadow-sm" />
           ) : (
@@ -126,7 +126,7 @@ export function Sender() {
               <FileText className="h-3.5 w-3.5 shrink-0 text-primary" />
               <span className="truncate">{file.name}</span>
             </h3>
-            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-medium text-muted-foreground">
+            <div className="mt-1 grid grid-cols-[auto_auto] items-center justify-start gap-x-3 gap-y-1 text-[10px] font-medium text-muted-foreground">
               <span className="flex items-center gap-1">
                 <HardDrive className="h-3 w-3 text-primary" />
                 {formatBytes(file.size)}
@@ -135,7 +135,7 @@ export function Sender() {
                 <Layers3 className="h-3 w-3 text-primary" />
                 {playing && chunks.length ? `${idx + 1} / ${chunks.length}` : chunks.length} frames
               </span>
-              <span className="flex basis-full items-center gap-1">
+              <span className="col-span-2 flex items-center gap-1">
                 <Clock className="h-3 w-3 text-primary" />
                 {playing ? `${formatDuration(remainingSeconds)} left` : `${formatDuration(cycleSeconds)} capture`}
               </span>
