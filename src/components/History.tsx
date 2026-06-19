@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Download, Share2, Trash2, FileQuestion, Image as ImageIcon, Film, Music2, FileIcon, Play, Pause } from "lucide-react";
+import { Download, Share2, Trash2, FileQuestion, Film, Music2, FileIcon, Play, Pause } from "lucide-react";
 import { listItems, deleteItem, type HistoryItem } from "@/lib/history";
 
 function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
@@ -19,7 +19,7 @@ function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
           if (audio.paused) audio.play();
           else audio.pause();
         }}
-        className="grid h-full w-full place-items-center bg-[radial-gradient(circle_at_35%_20%,color-mix(in_oklab,var(--color-accent)_32%,transparent),transparent_56%),var(--color-secondary)]"
+        className="audio-tile grid h-full w-full place-items-center"
       >
         <audio src={url} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
         <span className="grid h-10 w-10 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/25">
