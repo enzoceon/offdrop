@@ -131,7 +131,10 @@ function Index() {
           aria-modal="true"
           onClick={cancelLeaveScanner}
         >
-          <div className="glass-strong safe-bottom w-full max-w-md rounded-[2rem] p-4 text-center animate-fade-up" onClick={(event) => event.stopPropagation()}>
+          <div
+            className="glass-strong safe-bottom w-full max-w-md rounded-[2rem] p-4 text-center animate-fade-up"
+            onClick={(event) => event.stopPropagation()}
+          >
             <p className="mx-auto max-w-[18rem] text-sm font-semibold text-foreground">
               Leaving Receive will close the camera.
             </p>
