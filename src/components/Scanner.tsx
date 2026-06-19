@@ -288,10 +288,10 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       )}
 
       <div className="mt-3 flex justify-center gap-2">
-        {!active ? (
+        {!active && !stopping ? (
           <button
             onClick={start}
-            disabled={starting || stopping}
+            disabled={starting}
             className="flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/30 active:scale-[0.97] disabled:opacity-80"
           >
             {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
