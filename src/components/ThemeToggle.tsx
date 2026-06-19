@@ -43,15 +43,16 @@ export function ThemeToggle() {
 
     const transition = transitionDocument.startViewTransition(() => applyTheme(next));
     await transition.ready;
+    const animationOptions: KeyframeAnimationOptions & { pseudoElement: string } = {
+      duration: 720,
+      easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+      pseudoElement: "::view-transition-new(root)",
+    };
     root.animate(
       {
         clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${endRadius}px at ${x}px ${y}px)`],
       },
-      {
-        duration: 720,
-        easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-        pseudoElement: "::view-transition-new(root)",
-      },
+      animationOptions,
     );
   }
 
