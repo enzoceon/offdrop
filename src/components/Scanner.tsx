@@ -72,7 +72,6 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     setError(null);
     setDone(null);
     setStarting(true);
-    lastSeenRef.current.clear();
     finishingRef.current = false;
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -111,6 +110,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       tick();
     } catch (e) {
       setStarting(false);
+      setStopping(false);
       setActive(false);
       setError(e instanceof Error ? e.message : "Camera unavailable. Grant camera permission and retry.");
     }
@@ -238,6 +238,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       if (navigator.vibrate) navigator.vibrate([20, 40, 20]);
       setDone({ name: t.filename });
       transferRef.current = null;
+      lastSeenRef.current.clear();
       setScanInfo(null);
       setProgress({ have: 0, total: 0 });
       await stop(true);
