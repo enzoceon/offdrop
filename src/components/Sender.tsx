@@ -1,6 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { Upload, Play, Pause, RotateCcw, X, Music2, FileText, HardDrive, Layers3, Clock, Loader2 } from "lucide-react";
+import {
+  Upload,
+  Play,
+  Pause,
+  RotateCcw,
+  X,
+  Music2,
+  FileText,
+  HardDrive,
+  Layers3,
+  Clock,
+  Loader2,
+} from "lucide-react";
 import { fileToChunks } from "@/lib/qr-protocol";
 import { cn } from "@/lib/utils";
 
@@ -85,7 +97,9 @@ export function Sender() {
   const cycleSeconds = chunks.length / fps;
   const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
   const progress = chunks.length ? ((idx + 1) / chunks.length) * 100 : 0;
-  const canOpenPreview = Boolean(preview && (file?.type.startsWith("image/") || file?.type.startsWith("video/")));
+  const canOpenPreview = Boolean(
+    preview && (file?.type.startsWith("image/") || file?.type.startsWith("video/")),
+  );
 
   if (!file) {
     return (
@@ -143,7 +157,11 @@ export function Sender() {
             </button>
           ) : (
             <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-secondary shadow-sm">
-              {file.type.startsWith("audio/") ? <Music2 className="h-5 w-5" /> : <FileText className="h-5 w-5" />}
+              {file.type.startsWith("audio/") ? (
+                <Music2 className="h-5 w-5" />
+              ) : (
+                <FileText className="h-5 w-5" />
+              )}
             </div>
           )}
           <div className="min-w-0 flex-1">
@@ -239,12 +257,22 @@ export function Sender() {
       </div>
 
       {previewOpen && preview && canOpenPreview && (
-        <div className="fixed inset-0 z-[80] bg-background/95 backdrop-blur-2xl animate-fade-up" role="dialog" aria-modal="true">
+        <div
+          className="fixed inset-0 z-[80] bg-background/95 backdrop-blur-2xl animate-fade-up"
+          role="dialog"
+          aria-modal="true"
+        >
           <div className="absolute inset-0 flex items-center justify-center p-2 sm:p-4">
             {file.type.startsWith("image/") ? (
               <img src={preview} alt={file.name} className="h-full w-full rounded-2xl object-contain shadow-2xl" />
             ) : (
-              <video src={preview} controls autoPlay playsInline className="h-full w-full rounded-2xl object-contain shadow-2xl" />
+              <video
+                src={preview}
+                controls
+                autoPlay
+                playsInline
+                className="h-full w-full rounded-2xl object-contain shadow-2xl"
+              />
             )}
           </div>
           <button
