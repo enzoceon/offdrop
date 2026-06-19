@@ -131,8 +131,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "description", content: "OFFDROP converts images and videos into shareable QR codes, enabling offline content sharing across devices." },
       { property: "og:description", content: "OFFDROP converts images and videos into shareable QR codes, enabling offline content sharing across devices." },
       { name: "twitter:description", content: "OFFDROP converts images and videos into shareable QR codes, enabling offline content sharing across devices." },
-      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/21eeb3b9-b49d-4710-a286-6e8ae0e80510/id-preview-f0006796--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781896242868.png" },
-      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/21eeb3b9-b49d-4710-a286-6e8ae0e80510/id-preview-f0006796--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781896242868.png" },
+      { property: "og:image", content: "https://storage.googleapis.com/gpt-engineer-file-uploads/attachments/og-images/0271ed1b-9f1a-4de1-bfa3-eddd769f6c78" },
+      { name: "twitter:image", content: "https://storage.googleapis.com/gpt-engineer-file-uploads/attachments/og-images/0271ed1b-9f1a-4de1-bfa3-eddd769f6c78" },
     ],
     links: [
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
