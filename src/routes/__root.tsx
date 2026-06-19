@@ -103,11 +103,29 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { title: "OFFDROP — Offline QR File Transfer" },
       { property: "og:title", content: "OFFDROP — Offline QR File Transfer" },
       { name: "twitter:title", content: "OFFDROP — Offline QR File Transfer" },
-      { name: "description", content: "OFFDROP shares photos, videos, audio, and files offline with animated QR transfer streams." },
-      { property: "og:description", content: "Share photos, videos, audio, and files offline with animated QR transfer streams." },
-      { name: "twitter:description", content: "Share photos, videos, audio, and files offline with animated QR transfer streams." },
-      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5deb9b38-7eb8-451b-a2c5-b1b5a113b32f/id-preview-ccd62582--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781891913071.png" },
-      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5deb9b38-7eb8-451b-a2c5-b1b5a113b32f/id-preview-ccd62582--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781891913071.png" },
+      {
+        name: "description",
+        content:
+          "OFFDROP shares photos, videos, audio, and files offline with animated QR transfer streams.",
+      },
+      {
+        property: "og:description",
+        content: "Share photos, videos, audio, and files offline with animated QR transfer streams.",
+      },
+      {
+        name: "twitter:description",
+        content: "Share photos, videos, audio, and files offline with animated QR transfer streams.",
+      },
+      {
+        property: "og:image",
+        content:
+          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5deb9b38-7eb8-451b-a2c5-b1b5a113b32f/id-preview-ccd62582--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781891913071.png",
+      },
+      {
+        name: "twitter:image",
+        content:
+          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5deb9b38-7eb8-451b-a2c5-b1b5a113b32f/id-preview-ccd62582--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781891913071.png",
+      },
     ],
     links: [
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
