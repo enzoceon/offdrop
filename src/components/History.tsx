@@ -1,5 +1,15 @@
 import { useEffect, useState } from "react";
-import { Download, Share2, Trash2, FileQuestion, Film, Music2, FileIcon, Play, Pause } from "lucide-react";
+import {
+  Download,
+  Share2,
+  Trash2,
+  FileQuestion,
+  Film,
+  Music2,
+  FileIcon,
+  Play,
+  Pause,
+} from "lucide-react";
 import { listItems, deleteItem, type HistoryItem } from "@/lib/history";
 
 function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
@@ -8,8 +18,10 @@ function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
   const isVid = item.mime.startsWith("video/");
   const isAudio = item.mime.startsWith("audio/");
 
-  if (isImg && url) return <img src={url} alt={item.filename} className="h-full w-full object-cover" />;
-  if (isVid && url) return <video src={url} className="h-full w-full object-cover" muted playsInline />;
+  if (isImg && url)
+    return <img src={url} alt={item.filename} className="h-full w-full object-cover" />;
+  if (isVid && url)
+    return <video src={url} className="h-full w-full object-cover" muted playsInline />;
   if (isAudio && url) {
     return (
       <button
@@ -21,7 +33,12 @@ function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
         }}
         className="audio-tile grid h-full w-full place-items-center"
       >
-        <audio src={url} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
+        <audio
+          src={url}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => setPlaying(false)}
+        />
         <span className="grid h-10 w-10 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/25">
           {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
         </span>
@@ -96,8 +113,12 @@ export function History({ refreshKey }: { refreshKey: number }) {
               <div className="flex gap-3 p-3">
                 <div className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary">
                   <MediaPreview item={it} url={urls[it.id]} />
-                  {it.mime.startsWith("video/") && <Film className="absolute h-5 w-5 text-primary-foreground drop-shadow" />}
-                  {it.mime.startsWith("audio/") && <Music2 className="pointer-events-none absolute bottom-1 right-1 h-3.5 w-3.5 text-primary-foreground drop-shadow" />}
+                  {it.mime.startsWith("video/") && (
+                    <Film className="absolute h-5 w-5 text-primary-foreground drop-shadow" />
+                  )}
+                  {it.mime.startsWith("audio/") && (
+                    <Music2 className="pointer-events-none absolute bottom-1 right-1 h-3.5 w-3.5 text-primary-foreground drop-shadow" />
+                  )}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold">{it.filename}</div>
