@@ -77,7 +77,9 @@ export function Sender() {
           className="hidden"
           onChange={(e) => e.target.files?.[0] && onPick(e.target.files[0])}
         />
-        <p className="mt-6 text-[11px] text-muted-foreground">Keep the receiving camera steady until it reaches 100%.</p>
+        <p className="mt-6 text-[11px] text-muted-foreground">
+          Keep the receiving camera steady until it reaches 100%.
+        </p>
       </div>
     );
   }
