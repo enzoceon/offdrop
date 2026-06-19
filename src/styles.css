@@ -88,7 +88,7 @@
   --glass-border: oklch(1 0 0 / 0.12);
   --grad-1: oklch(0.55 0.25 320);
   --grad-2: oklch(0.5 0.25 250);
-  --grad-3: oklch(0.61 0.15 88);
+  --grad-3: oklch(0.55 0.22 190);
 }
 
 @layer base {
