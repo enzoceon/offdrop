@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { Upload, Play, Pause, RotateCcw, ImageIcon, X, Music2, Film, FileText, HardDrive, Layers3, Clock, Loader2 } from "lucide-react";
+import { Upload, Play, Pause, RotateCcw, X, Music2, Film, FileText, HardDrive, Layers3, Clock, Loader2 } from "lucide-react";
 import { fileToChunks } from "@/lib/qr-protocol";
 import { cn } from "@/lib/utils";
 
@@ -110,7 +110,7 @@ export function Sender() {
 
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
-      <div className="glass relative mb-4 flex flex-col gap-4 overflow-hidden rounded-2xl p-4">
+      <div className="glass mb-3 flex items-center gap-3 rounded-2xl p-3">
         <div className="flex items-center gap-3">
           {preview && file.type.startsWith("image/") ? (
             <img src={preview} alt="" className="h-12 w-12 rounded-xl object-cover shadow-sm" />
@@ -122,7 +122,10 @@ export function Sender() {
             </div>
           )}
           <div className="min-w-0 flex-1">
-            <h3 className="truncate text-sm font-bold leading-tight">{file.name}</h3>
+            <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-bold leading-tight">
+              <FileText className="h-3.5 w-3.5 shrink-0 text-primary" />
+              <span className="truncate">{file.name}</span>
+            </h3>
             <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-medium text-muted-foreground">
               <span className="flex items-center gap-1">
                 <HardDrive className="h-3 w-3 text-primary" />
@@ -132,7 +135,7 @@ export function Sender() {
                 <Layers3 className="h-3 w-3 text-primary" />
                 {playing && chunks.length ? `${idx + 1} / ${chunks.length}` : chunks.length} frames
               </span>
-              <span className="flex items-center gap-1">
+              <span className="flex basis-full items-center gap-1">
                 <Clock className="h-3 w-3 text-primary" />
                 {playing ? `${formatDuration(remainingSeconds)} left` : `${formatDuration(cycleSeconds)} capture`}
               </span>
@@ -146,13 +149,6 @@ export function Sender() {
             <X className="h-4 w-4" />
           </button>
         </div>
-        
-        <div className="relative h-1.5 overflow-hidden rounded-full bg-secondary/40">
-          <div 
-            className="h-full bg-primary transition-all duration-200 linear" 
-            style={{ width: `${progress}%` }} 
-          />
-        </div>
       </div>
 
       <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-[2rem] p-4">
@@ -163,6 +159,13 @@ export function Sender() {
             Loading…
           </div>
         )}
+      </div>
+
+      <div className="mx-auto mt-2 h-2.5 w-full max-w-sm overflow-hidden rounded-full bg-secondary p-[1px]">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-200 ease-out"
+          style={{ width: `${progress}%` }}
+        />
       </div>
 
       <div className="mt-3 mx-auto flex w-full max-w-md items-center justify-center gap-2">

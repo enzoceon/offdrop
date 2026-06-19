@@ -12,6 +12,31 @@ import { saveItem } from "@/lib/history";
 
 type Point = { x: number; y: number };
 type QrBox = { w: number; h: number; corners: [Point, Point, Point, Point] };
+type ScanResult = { data: string; corners: [Point, Point, Point, Point] };
+
+function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResult | null {
+  const side = Math.min(w, h);
+  const attempts: Array<[number, number, number, number]> = [[0, 0, w, h]];
+  if (side !== w || side !== h) attempts.push([Math.round((w - side) / 2), Math.round((h - side) / 2), side, side]);
+  for (const ratio of [0.82, 0.66]) {
+    const crop = Math.max(160, Math.round(side * ratio));
+    if (crop < side) attempts.push([Math.round((w - crop) / 2), Math.round((h - crop) / 2), crop, crop]);
+  }
+
+  const seen = new Set<string>();
+  for (const [sx, sy, sw, sh] of attempts) {
+    const key = `${sx}:${sy}:${sw}:${sh}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const img = ctx.getImageData(sx, sy, sw, sh);
+    const code = jsQR(img.data, sw, sh, { inversionAttempts: "attemptBoth" });
+    if (!code?.data) continue;
+    const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = code.location;
+    const offset = (p: Point): Point => ({ x: p.x + sx, y: p.y + sy });
+    return { data: code.data, corners: [topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner].map(offset) as [Point, Point, Point, Point] };
+  }
+  return null;
+}
 
 function mediaLabel(mime?: string) {
   if (!mime) return "file";
@@ -92,7 +117,8 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
   }
 
   async function stop(showStopping = false) {
-    if (showStopping) {
+    const shouldShowStopping = showStopping && (active || Boolean(streamRef.current));
+    if (shouldShowStopping) {
       setStopping(true);
       await new Promise((resolve) => requestAnimationFrame(resolve));
     }
@@ -104,6 +130,9 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    if (shouldShowStopping) {
+      await new Promise((resolve) => setTimeout(resolve, 320));
+    }
     setStopping(false);
   }
 
@@ -120,19 +149,17 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (ctx) {
         ctx.drawImage(video, 0, 0, w, h);
-        const img = ctx.getImageData(0, 0, w, h);
-        const code = jsQR(img.data, w, h, { inversionAttempts: "attemptBoth" });
+        const code = decodeQr(ctx, w, h);
         const now = performance.now();
         if (code?.data) {
           handleScan(code.data);
           if (now - lastBoxUpdateRef.current > 80) {
-            const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = code.location;
             boxVisibleRef.current = true;
             lastBoxUpdateRef.current = now;
             setQrBox({
               w,
               h,
-              corners: [topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner],
+              corners: code.corners,
             });
           }
         } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
