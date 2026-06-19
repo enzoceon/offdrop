@@ -25,6 +25,7 @@ export function Sender() {
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(4);
   const [preview, setPreview] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -35,6 +36,7 @@ export function Sender() {
     setIdx(0);
     setPlaying(false);
     setPreview(URL.createObjectURL(f));
+    setPreviewOpen(false);
     const { chunks } = await fileToChunks(f);
     setChunks(chunks);
   }
@@ -64,6 +66,7 @@ export function Sender() {
     setChunks([]);
     setIdx(0);
     setPlaying(false);
+    setPreviewOpen(false);
     if (preview) URL.revokeObjectURL(preview);
     setPreview(null);
     if (inputRef.current) inputRef.current.value = "";
@@ -76,6 +79,7 @@ export function Sender() {
   const cycleSeconds = chunks.length / fps;
   const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
   const progress = chunks.length ? ((idx + 1) / chunks.length) * 100 : 0;
+  const canOpenPreview = Boolean(preview && (file?.type.startsWith("image/") || file?.type.startsWith("video/")));
 
   if (!file) {
     return (
@@ -114,12 +118,26 @@ export function Sender() {
       <div className="glass mb-3 flex items-center gap-3 rounded-2xl p-3">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           {preview && file.type.startsWith("image/") ? (
-            <img src={preview} alt="" className="h-12 w-12 rounded-xl object-cover shadow-sm" />
+            <button
+              type="button"
+              onClick={() => setPreviewOpen(true)}
+              className="h-12 w-12 shrink-0 overflow-hidden rounded-2xl shadow-sm active:scale-95"
+              aria-label="Open image preview"
+            >
+              <img src={preview} alt={file.name} className="h-full w-full object-cover" />
+            </button>
+          ) : preview && file.type.startsWith("video/") ? (
+            <button
+              type="button"
+              onClick={() => setPreviewOpen(true)}
+              className="h-12 w-12 shrink-0 overflow-hidden rounded-2xl bg-secondary shadow-sm active:scale-95"
+              aria-label="Open video preview"
+            >
+              <video src={preview} muted playsInline className="h-full w-full object-cover" />
+            </button>
           ) : (
-            <div className="grid h-12 w-12 place-items-center rounded-xl bg-secondary shadow-sm">
-              {file.type.startsWith("video/") ? <Film className="h-5 w-5" /> : 
-               file.type.startsWith("audio/") ? <Music2 className="h-5 w-5" /> : 
-               <FileText className="h-5 w-5" />}
+            <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-secondary shadow-sm">
+              {file.type.startsWith("audio/") ? <Music2 className="h-5 w-5" /> : <FileText className="h-5 w-5" />}
             </div>
           )}
           <div className="min-w-0 flex-1">
@@ -144,7 +162,7 @@ export function Sender() {
           </div>
           <button
             onClick={reset}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary/50 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground active:scale-90"
+            className="liquid-control flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-all hover:text-foreground active:scale-90"
             aria-label="Remove file"
           >
             <X className="h-4 w-4" />
@@ -207,6 +225,26 @@ export function Sender() {
         />
         <span className="w-10 text-right text-xs font-semibold tabular-nums">{fps} fps</span>
       </div>
+
+      {previewOpen && preview && canOpenPreview && (
+        <div className="fixed inset-0 z-[80] bg-background/95 backdrop-blur-2xl animate-fade-up" role="dialog" aria-modal="true">
+          <div className="absolute inset-0 flex items-center justify-center p-2 sm:p-4">
+            {file.type.startsWith("image/") ? (
+              <img src={preview} alt={file.name} className="max-h-full max-w-full rounded-2xl object-contain shadow-2xl" />
+            ) : (
+              <video src={preview} controls autoPlay playsInline className="max-h-full max-w-full rounded-2xl object-contain shadow-2xl" />
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setPreviewOpen(false)}
+            className="liquid-control safe-top absolute right-4 top-4 z-[81] flex h-12 w-12 items-center justify-center rounded-full text-foreground active:scale-90"
+            aria-label="Close preview"
+          >
+            <X className="h-5 w-5" strokeWidth={2.4} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
