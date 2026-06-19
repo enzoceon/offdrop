@@ -13,6 +13,15 @@ import { saveItem } from "@/lib/history";
 type Point = { x: number; y: number };
 type QrBox = { w: number; h: number; corners: [Point, Point, Point, Point] };
 type ScanResult = { data: string; corners: [Point, Point, Point, Point] };
+type ScannerProps = {
+  onSaved: () => void;
+  stopRequestKey?: number;
+  onStopRequestComplete?: () => void;
+  onBusyChange?: (busy: boolean) => void;
+};
+
+const CAMERA_TRANSITION_MS = 650;
+const DECODE_INTERVAL_MS = 72;
 
 function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResult | null {
   const side = Math.min(w, h);
@@ -46,13 +55,14 @@ function mediaLabel(mime?: string) {
   return "file";
 }
 
-export function Scanner({ onSaved }: { onSaved: () => void }) {
+export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, onBusyChange }: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
   const streamRef = useRef<MediaStream | null>(null);
   const transferRef = useRef<Transfer | null>(null);
   const lastSeenRef = useRef<Map<string, number>>(new Map());
+  const lastDecodeRef = useRef(0);
   const finishingRef = useRef(false);
   const scanningRef = useRef(false);
   const boxVisibleRef = useRef(false);
@@ -69,6 +79,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
 
   async function start() {
     if (active || starting || stopping) return;
+    const startedAt = performance.now();
     setError(null);
     setDone(null);
     setStarting(true);
@@ -103,6 +114,8 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
+      const remaining = CAMERA_TRANSITION_MS - (performance.now() - startedAt);
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
       scanningRef.current = true;
       setActive(true);
       setStarting(false);
@@ -117,10 +130,11 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
   }
 
   async function stop(showStopping = false) {
-    const shouldShowStopping = showStopping && (active || Boolean(streamRef.current));
+    const shouldShowStopping = showStopping && (active || starting || Boolean(streamRef.current));
     if (shouldShowStopping) {
       setStopping(true);
-      await new Promise((resolve) => requestAnimationFrame(resolve));
+      setStarting(false);
+      await new Promise((resolve) => setTimeout(resolve, CAMERA_TRANSITION_MS));
     }
     scanningRef.current = false;
     setActive(false);
@@ -130,9 +144,6 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
-    if (shouldShowStopping) {
-      await new Promise((resolve) => setTimeout(resolve, 320));
-    }
     setStopping(false);
   }
 
@@ -140,8 +151,10 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     if (!scanningRef.current) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (video && canvas && video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth > 0) {
-      const scale = Math.min(1, 900 / Math.max(video.videoWidth, video.videoHeight));
+    const now = performance.now();
+    if (video && canvas && now - lastDecodeRef.current >= DECODE_INTERVAL_MS && video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+      lastDecodeRef.current = now;
+      const scale = Math.min(1, 760 / Math.max(video.videoWidth, video.videoHeight));
       const w = Math.max(1, Math.round(video.videoWidth * scale));
       const h = Math.max(1, Math.round(video.videoHeight * scale));
       if (canvas.width !== w) canvas.width = w;
@@ -150,7 +163,6 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       if (ctx) {
         ctx.drawImage(video, 0, 0, w, h);
         const code = decodeQr(ctx, w, h);
-        const now = performance.now();
         if (code?.data) {
           handleScan(code.data);
           if (now - lastBoxUpdateRef.current > 80) {
