@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import QRCode from "qrcode";
-import { Upload, Play, Pause, RotateCcw, ImageIcon, X, Music2, Film } from "lucide-react";
+import { Upload, Play, Pause, RotateCcw, ImageIcon, X, Music2, Film, FileText, HardDrive, Layers3, Clock, Loader2 } from "lucide-react";
 import { fileToChunks } from "@/lib/qr-protocol";
 import { cn } from "@/lib/utils";
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
 
 function formatDuration(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
@@ -17,7 +23,7 @@ export function Sender() {
   const [chunks, setChunks] = useState<string[]>([]);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(30);
+  const [fps, setFps] = useState(8);
   const [preview, setPreview] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -121,11 +127,28 @@ export function Sender() {
             <ImageIcon className="h-5 w-5" />
           </div>
         )}
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold">{file.name}</div>
-          <div className="text-[11px] text-muted-foreground">
-            {(file.size / 1024).toFixed(1)} KB · {chunks.length} frames ·{" "}
-            {playing ? `${formatDuration(remainingSeconds)} left` : `${formatDuration(cycleSeconds)} capture`}
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="flex min-w-0 items-center gap-1.5 text-sm font-semibold">
+            <FileText className="h-3.5 w-3.5 shrink-0 text-primary" />
+            <span className="truncate">{file.name}</span>
+          </div>
+          <div className="grid gap-1 text-[11px] leading-none text-muted-foreground">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <HardDrive className="h-3.5 w-3.5 shrink-0 text-primary" />
+              <span className="truncate">{formatBytes(file.size)}</span>
+            </div>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Layers3 className="h-3.5 w-3.5 shrink-0 text-primary" />
+              <span className="truncate tabular-nums">
+                {playing && chunks.length ? `${idx + 1} / ${chunks.length} frames` : `${chunks.length} frames`}
+              </span>
+            </div>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Clock className="h-3.5 w-3.5 shrink-0 text-primary" />
+              <span className="truncate tabular-nums">
+                {playing ? `${formatDuration(remainingSeconds)} left` : `${formatDuration(cycleSeconds)} capture`}
+              </span>
+            </div>
           </div>
         </div>
         <button
@@ -138,17 +161,21 @@ export function Sender() {
       </div>
 
       <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-[2rem] p-4">
-        <canvas ref={canvasRef} className="h-full w-full" />
-        <div className="pointer-events-none absolute inset-x-0 bottom-3 text-center text-[11px] font-medium tabular-nums text-muted-foreground">
-          {chunks.length ? `${idx + 1} / ${chunks.length}` : ""}
-        </div>
+        <canvas ref={canvasRef} className={cn("h-full w-full", chunks.length === 0 && "opacity-0")} />
+        {chunks.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm font-medium text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            Loading…
+          </div>
+        )}
       </div>
 
       <div className="mt-3 mx-auto flex w-full max-w-md items-center justify-center gap-2">
         <button
           onClick={() => setPlaying((p) => !p)}
+          disabled={chunks.length === 0}
           className={cn(
-            "flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold transition-all active:scale-[0.97]",
+            "flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold transition-all active:scale-[0.97] disabled:opacity-60",
             playing
               ? "glass text-foreground"
               : "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/30",
@@ -174,7 +201,7 @@ export function Sender() {
         <input
           type="range"
           min={2}
-          max={60}
+          max={24}
           value={fps}
           onChange={(e) => setFps(+e.target.value)}
           className="ios-range flex-1"
