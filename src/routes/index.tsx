@@ -119,7 +119,10 @@ function Index() {
             }}
           />
         </section>
-        <section className={tab === "history" ? "contents" : "hidden"} aria-hidden={tab !== "history"}>
+        <section
+          className={tab === "history" ? "contents" : "hidden"}
+          aria-hidden={tab !== "history"}
+        >
           <History refreshKey={historyKey} />
         </section>
       </main>
