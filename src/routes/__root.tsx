@@ -110,11 +110,13 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       {
         property: "og:description",
-        content: "Share photos, videos, audio, and files offline with animated QR transfer streams.",
+        content:
+          "Share photos, videos, audio, and files offline with animated QR transfer streams.",
       },
       {
         name: "twitter:description",
-        content: "Share photos, videos, audio, and files offline with animated QR transfer streams.",
+        content:
+          "Share photos, videos, audio, and files offline with animated QR transfer streams.",
       },
       {
         property: "og:image",

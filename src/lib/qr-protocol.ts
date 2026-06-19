@@ -24,7 +24,7 @@ export interface Transfer {
 export const PROTOCOL_PREFIX = "OD1";
 
 // Small chunks deliberately scan better on real mobile cameras than dense QR blocks.
-export const CHUNK_SIZE = 160;
+export const CHUNK_SIZE = 120;
 
 export function buildChunkPayload(meta: ChunkMeta, data: string): string {
   return `${PROTOCOL_PREFIX}|${JSON.stringify(meta)}|${data}`;

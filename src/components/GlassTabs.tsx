@@ -17,7 +17,11 @@ export function GlassTabs({ value, onChange }: { value: TabKey; onChange: (k: Ta
       <div className="glass-strong relative mx-auto grid max-w-md grid-cols-3 items-center rounded-full p-1.5">
         <span
           className="absolute bottom-1.5 top-1.5 z-0 rounded-full bg-gradient-to-br from-primary to-accent shadow-lg shadow-primary/25 transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
-          style={{ left: "0.375rem", width: "calc((100% - 0.75rem) / 3)", transform: `translateX(${activeIndex * 100}%)` }}
+          style={{
+            left: "0.375rem",
+            width: "calc((100% - 0.75rem) / 3)",
+            transform: `translateX(${activeIndex * 100}%)`,
+          }}
         />
         {tabs.map((t) => {
           const Icon = t.icon;
