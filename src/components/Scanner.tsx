@@ -316,7 +316,9 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
         {active && (
           <>
             <div className="pointer-events-none absolute inset-6 rounded-[1.5rem] border-2 border-primary/70 shadow-[0_0_0_9999px_oklch(0_0_0/0.22)]" />
-            <div className="scan-sweep pointer-events-none absolute left-8 right-8 top-6 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent" />
+            <div className="pointer-events-none absolute inset-x-8 inset-y-8 overflow-hidden rounded-[1.1rem]">
+              <div className="scan-sweep absolute left-0 right-0 top-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent" />
+            </div>
             {qrBox && (
               <svg
                 className="pointer-events-none absolute inset-0 h-full w-full scanner-corners"
