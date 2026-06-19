@@ -23,13 +23,71 @@ type ScannerProps = {
 const CAMERA_TRANSITION_MS = 650;
 const DECODE_INTERVAL_MS = 72;
 
+function waitForVideoMetadata(video: HTMLVideoElement) {
+  if (video.readyState >= video.HAVE_METADATA) return Promise.resolve();
+
+  return new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Camera metadata did not load."));
+    }, 5000);
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      video.removeEventListener("loadedmetadata", onMetadata);
+    };
+    const onMetadata = () => {
+      cleanup();
+      resolve();
+    };
+
+    video.addEventListener("loadedmetadata", onMetadata, { once: true });
+  });
+}
+
+function waitForUsableVideo(video: HTMLVideoElement) {
+  if (video.videoWidth > 0 && video.videoHeight > 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const started = performance.now();
+    const cleanup = () => {
+      video.removeEventListener("loadedmetadata", check);
+      video.removeEventListener("loadeddata", check);
+      video.removeEventListener("canplay", check);
+    };
+    const check = () => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        cleanup();
+        resolve();
+        return;
+      }
+      if (performance.now() - started > 5000) {
+        cleanup();
+        reject(new Error("Camera started, but no video frame was received."));
+        return;
+      }
+      window.setTimeout(check, 40);
+    };
+
+    video.addEventListener("loadedmetadata", check);
+    video.addEventListener("loadeddata", check);
+    video.addEventListener("canplay", check);
+    check();
+  });
+}
+
 function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResult | null {
   const side = Math.min(w, h);
   const attempts: Array<[number, number, number, number]> = [[0, 0, w, h]];
-  if (side !== w || side !== h) attempts.push([Math.round((w - side) / 2), Math.round((h - side) / 2), side, side]);
+  if (side !== w || side !== h) {
+    attempts.push([Math.round((w - side) / 2), Math.round((h - side) / 2), side, side]);
+  }
   for (const ratio of [0.82, 0.66]) {
     const crop = Math.max(160, Math.round(side * ratio));
-    if (crop < side) attempts.push([Math.round((w - crop) / 2), Math.round((h - crop) / 2), crop, crop]);
+    if (crop < side) {
+      attempts.push([Math.round((w - crop) / 2), Math.round((h - crop) / 2), crop, crop]);
+    }
   }
 
   const seen = new Set<string>();
@@ -42,7 +100,15 @@ function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResu
     if (!code?.data) continue;
     const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = code.location;
     const offset = (p: Point): Point => ({ x: p.x + sx, y: p.y + sy });
-    return { data: code.data, corners: [topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner].map(offset) as [Point, Point, Point, Point] };
+    return {
+      data: code.data,
+      corners: [topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner].map(offset) as [
+        Point,
+        Point,
+        Point,
+        Point,
+      ],
+    };
   }
   return null;
 }
@@ -55,7 +121,12 @@ function mediaLabel(mime?: string) {
   return "file";
 }
 
-export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, onBusyChange }: ScannerProps) {
+export function Scanner({
+  onSaved,
+  stopRequestKey = 0,
+  onStopRequestComplete,
+  onBusyChange,
+}: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
@@ -67,13 +138,19 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
   const scanningRef = useRef(false);
   const boxVisibleRef = useRef(false);
   const lastBoxUpdateRef = useRef(0);
+  const frameErrorCountRef = useRef(0);
+  const stopRef = useRef<(showStopping?: boolean) => Promise<void>>(async () => {});
 
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ have: 0, total: 0 });
-  const [scanInfo, setScanInfo] = useState<{ name: string; mime: string; size: number } | null>(null);
+  const [scanInfo, setScanInfo] = useState<{
+    name: string;
+    mime: string;
+    size: number;
+  } | null>(null);
   const [qrBox, setQrBox] = useState<QrBox | null>(null);
   const [done, setDone] = useState<{ name: string } | null>(null);
 
@@ -105,14 +182,26 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
       }
       streamRef.current = stream;
       for (const track of stream.getVideoTracks()) {
-        const capabilities = track.getCapabilities?.() as MediaTrackCapabilities & { focusMode?: string[] };
+        const capabilities = track.getCapabilities?.() as MediaTrackCapabilities & {
+          focusMode?: string[];
+        };
         if (capabilities?.focusMode?.includes("continuous")) {
-          await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet] }).catch(() => {});
+          await track
+            .applyConstraints({
+              advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
+            })
+            .catch(() => {});
         }
       }
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        const video = videoRef.current;
+        video.muted = true;
+        video.playsInline = true;
+        video.setAttribute("playsinline", "true");
+        video.srcObject = stream;
+        await waitForVideoMetadata(video);
+        await video.play();
+        await waitForUsableVideo(video);
       }
       const remaining = CAMERA_TRANSITION_MS - (performance.now() - startedAt);
       if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
@@ -125,7 +214,9 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
       setStarting(false);
       setStopping(false);
       setActive(false);
-      setError(e instanceof Error ? e.message : "Camera unavailable. Grant camera permission and retry.");
+      setError(
+        e instanceof Error ? e.message : "Camera unavailable. Grant camera permission and retry.",
+      );
     }
   }
 
@@ -146,42 +237,62 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
     streamRef.current = null;
     setStopping(false);
   }
+  stopRef.current = stop;
 
   function tick() {
     if (!scanningRef.current) return;
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const now = performance.now();
-    if (video && canvas && now - lastDecodeRef.current >= DECODE_INTERVAL_MS && video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth > 0) {
-      lastDecodeRef.current = now;
-      const scale = Math.min(1, 760 / Math.max(video.videoWidth, video.videoHeight));
-      const w = Math.max(1, Math.round(video.videoWidth * scale));
-      const h = Math.max(1, Math.round(video.videoHeight * scale));
-      if (canvas.width !== w) canvas.width = w;
-      if (canvas.height !== h) canvas.height = h;
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, w, h);
-        const code = decodeQr(ctx, w, h);
-        if (code?.data) {
-          handleScan(code.data);
-          if (now - lastBoxUpdateRef.current > 80) {
-            boxVisibleRef.current = true;
+    try {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      const now = performance.now();
+      if (
+        video &&
+        canvas &&
+        now - lastDecodeRef.current >= DECODE_INTERVAL_MS &&
+        video.readyState >= video.HAVE_CURRENT_DATA &&
+        video.videoWidth > 0 &&
+        video.videoHeight > 0
+      ) {
+        lastDecodeRef.current = now;
+        const scale = Math.min(1, 760 / Math.max(video.videoWidth, video.videoHeight));
+        const w = Math.max(1, Math.round(video.videoWidth * scale));
+        const h = Math.max(1, Math.round(video.videoHeight * scale));
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (ctx) {
+          ctx.drawImage(video, 0, 0, w, h);
+          const code = decodeQr(ctx, w, h);
+          frameErrorCountRef.current = 0;
+          if (code?.data) {
+            handleScan(code.data);
+            if (now - lastBoxUpdateRef.current > 80) {
+              boxVisibleRef.current = true;
+              lastBoxUpdateRef.current = now;
+              setQrBox({
+                w,
+                h,
+                corners: code.corners,
+              });
+            }
+          } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
+            boxVisibleRef.current = false;
             lastBoxUpdateRef.current = now;
-            setQrBox({
-              w,
-              h,
-              corners: code.corners,
-            });
+            setQrBox(null);
           }
-        } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
-          boxVisibleRef.current = false;
-          lastBoxUpdateRef.current = now;
-          setQrBox(null);
         }
       }
+    } catch (err) {
+      frameErrorCountRef.current += 1;
+      console.error("Scan frame error:", err);
+      if (frameErrorCountRef.current === 6) {
+        setError(
+          "Camera scanning hit repeated frame errors. Keep the camera steady and retry if it continues.",
+        );
+      }
+    } finally {
+      if (scanningRef.current) rafRef.current = requestAnimationFrame(tick);
     }
-    rafRef.current = requestAnimationFrame(tick);
   }
 
   function updateProgress(t: Transfer) {
@@ -268,13 +379,16 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
 
   useEffect(() => {
     if (stopRequestKey > 0) {
-      void stop(true).then(() => onStopRequestComplete?.());
+      void stopRef.current(true).then(() => onStopRequestComplete?.());
     }
-  }, [stopRequestKey]);
+  }, [stopRequestKey, onStopRequestComplete]);
 
-  useEffect(() => () => {
-    void stop();
-  }, []);
+  useEffect(
+    () => () => {
+      void stopRef.current();
+    },
+    [],
+  );
 
   const pct = progress.total ? (progress.have / progress.total) * 100 : 0;
   const label = mediaLabel(scanInfo?.mime);
@@ -287,7 +401,7 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
           playsInline
           muted
           className="h-full w-full object-cover"
-          style={{ display: active ? "block" : "none" }}
+          style={{ display: active || starting ? "block" : "none" }}
         />
         <canvas ref={canvasRef} className="hidden" />
 
@@ -295,13 +409,15 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
           <div className="absolute inset-0 px-6 text-center">
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="relative">
-              <span className="absolute inset-0 rounded-full bg-primary/40 animate-pulse-ring" />
-              <div className="relative grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40">
-                <ScanLine className="h-8 w-8 text-primary-foreground" />
-              </div>
+                <span className="absolute inset-0 rounded-full bg-primary/40 animate-pulse-ring" />
+                <div className="relative grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40">
+                  <ScanLine className="h-8 w-8 text-primary-foreground" />
+                </div>
               </div>
             </div>
-            <p className="absolute inset-x-6 bottom-10 text-sm text-muted-foreground sm:bottom-12">Aim at the OFFDROP stream</p>
+            <p className="absolute inset-x-6 bottom-10 text-sm text-muted-foreground sm:bottom-12">
+              Aim at the OFFDROP stream
+            </p>
           </div>
         )}
 
@@ -348,7 +464,11 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
             disabled={starting}
             className="flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/30 active:scale-[0.97] disabled:opacity-80"
           >
-            {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+            {starting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Camera className="h-4 w-4" />
+            )}
             {starting ? "Starting Camera" : "Start Camera"}
           </button>
         ) : (
@@ -357,18 +477,26 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
             disabled={stopping}
             className="glass flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80"
           >
-            {stopping ? <Loader2 className="h-4 w-4 animate-spin" /> : <CameraOff className="h-4 w-4" />}
+            {stopping ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <CameraOff className="h-4 w-4" />
+            )}
             {stopping ? "Stopping Camera" : "Stop Camera"}
           </button>
         )}
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="mx-auto mt-7 w-full max-w-sm animate-fade-up">
+        <div className="mx-auto mt-10 w-full max-w-sm animate-fade-up">
           <div className="flex items-center justify-center gap-2 text-center text-xs">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
-            <span className="min-w-0 truncate font-semibold">
-              {progress.total > 0 ? `Assembling ${label}…` : qrBox ? "OFFDROP stream locked" : "Searching for OFFDROP stream…"}
+            <span className="min-w-0 truncate text-center font-semibold">
+              {progress.total > 0
+                ? `Assembling ${label}…`
+                : qrBox
+                  ? "OFFDROP stream locked"
+                  : "Searching for OFFDROP stream…"}
             </span>
             {progress.total > 0 && (
               <span className="shrink-0 tabular-nums text-[10px] font-bold text-muted-foreground">
@@ -382,7 +510,7 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
               style={{ width: `${pct}%` }}
             />
           </div>
-          <div className="mt-1 truncate text-[10px] text-muted-foreground">
+          <div className="mt-2 truncate text-center text-[10px] text-muted-foreground">
             {scanInfo ? scanInfo.name : "Position the camera toward the OFFDROP stream"}
           </div>
         </div>

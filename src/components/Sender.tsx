@@ -1,6 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { Upload, Play, Pause, RotateCcw, X, Music2, FileText, HardDrive, Layers3, Clock, Loader2 } from "lucide-react";
+import {
+  Upload,
+  Play,
+  Pause,
+  RotateCcw,
+  X,
+  Music2,
+  FileText,
+  HardDrive,
+  Layers3,
+  Clock,
+  Loader2,
+} from "lucide-react";
 import { fileToChunks } from "@/lib/qr-protocol";
 import { cn } from "@/lib/utils";
 
@@ -23,9 +35,10 @@ export function Sender() {
   const [chunks, setChunks] = useState<string[]>([]);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(4);
+  const [fps, setFps] = useState(3);
   const [preview, setPreview] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [qrError, setQrError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -44,12 +57,17 @@ export function Sender() {
   // Render current QR
   useEffect(() => {
     if (!canvasRef.current || chunks.length === 0) return;
+    setQrError(null);
     QRCode.toCanvas(canvasRef.current, chunks[idx], {
       errorCorrectionLevel: "M",
       margin: 1,
       width: 520,
       color: { dark: "#0a0a14", light: "#ffffff" },
-    }).catch(() => {});
+    }).catch((err) => {
+      console.error("QR generation failed:", err);
+      setQrError("This QR frame could not be generated. Try a smaller file or reset the stream.");
+      setPlaying(false);
+    });
   }, [idx, chunks]);
 
   // Animate
@@ -72,14 +90,19 @@ export function Sender() {
     if (inputRef.current) inputRef.current.value = "";
   }
 
-  useEffect(() => () => {
-    if (preview) URL.revokeObjectURL(preview);
-  }, [preview]);
+  useEffect(
+    () => () => {
+      if (preview) URL.revokeObjectURL(preview);
+    },
+    [preview],
+  );
 
   const cycleSeconds = chunks.length / fps;
   const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
   const progress = chunks.length ? ((idx + 1) / chunks.length) * 100 : 0;
-  const canOpenPreview = Boolean(preview && (file?.type.startsWith("image/") || file?.type.startsWith("video/")));
+  const canOpenPreview = Boolean(
+    preview && (file?.type.startsWith("image/") || file?.type.startsWith("video/")),
+  );
 
   if (!file) {
     return (
@@ -137,7 +160,11 @@ export function Sender() {
             </button>
           ) : (
             <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-secondary shadow-sm">
-              {file.type.startsWith("audio/") ? <Music2 className="h-5 w-5" /> : <FileText className="h-5 w-5" />}
+              {file.type.startsWith("audio/") ? (
+                <Music2 className="h-5 w-5" />
+              ) : (
+                <FileText className="h-5 w-5" />
+              )}
             </div>
           )}
           <div className="min-w-0 flex-1">
@@ -156,7 +183,9 @@ export function Sender() {
               </span>
               <span className="col-span-2 flex items-center gap-1">
                 <Clock className="h-3 w-3 text-primary" />
-                {playing ? `${formatDuration(remainingSeconds)} left` : `${formatDuration(cycleSeconds)} capture`}
+                {playing
+                  ? `${formatDuration(remainingSeconds)} left`
+                  : `${formatDuration(cycleSeconds)} capture`}
               </span>
             </div>
           </div>
@@ -171,7 +200,10 @@ export function Sender() {
       </div>
 
       <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-[2rem] p-4">
-        <canvas ref={canvasRef} className={cn("h-full w-full", chunks.length === 0 && "opacity-0")} />
+        <canvas
+          ref={canvasRef}
+          className={cn("h-full w-full", chunks.length === 0 && "opacity-0")}
+        />
         {chunks.length === 0 && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm font-medium text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
@@ -186,6 +218,12 @@ export function Sender() {
           style={{ width: `${progress}%` }}
         />
       </div>
+
+      {qrError && (
+        <div className="glass mx-auto mt-3 w-full max-w-sm rounded-2xl border border-destructive/40 p-3 text-center text-xs text-destructive">
+          {qrError}
+        </div>
+      )}
 
       <div className="mt-3 mx-auto flex w-full max-w-md items-center justify-center gap-2">
         <button
@@ -217,8 +255,8 @@ export function Sender() {
         <span className="text-xs font-bold text-muted-foreground">Speed</span>
         <input
           type="range"
-          min={2}
-          max={24}
+          min={1}
+          max={3}
           value={fps}
           onChange={(e) => setFps(+e.target.value)}
           className="ios-range flex-1"
@@ -227,12 +265,26 @@ export function Sender() {
       </div>
 
       {previewOpen && preview && canOpenPreview && (
-        <div className="fixed inset-0 z-[80] bg-background/95 backdrop-blur-2xl animate-fade-up" role="dialog" aria-modal="true">
+        <div
+          className="fixed inset-0 z-[80] bg-background/95 backdrop-blur-2xl animate-fade-up"
+          role="dialog"
+          aria-modal="true"
+        >
           <div className="absolute inset-0 flex items-center justify-center p-2 sm:p-4">
             {file.type.startsWith("image/") ? (
-              <img src={preview} alt={file.name} className="h-full w-full rounded-2xl object-contain shadow-2xl" />
+              <img
+                src={preview}
+                alt={file.name}
+                className="h-full w-full rounded-2xl object-contain shadow-2xl"
+              />
             ) : (
-              <video src={preview} controls autoPlay playsInline className="h-full w-full rounded-2xl object-contain shadow-2xl" />
+              <video
+                src={preview}
+                controls
+                autoPlay
+                playsInline
+                className="h-full w-full rounded-2xl object-contain shadow-2xl"
+              />
             )}
           </div>
           <button
