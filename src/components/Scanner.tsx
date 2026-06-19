@@ -249,7 +249,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
                 <ScanLine className="h-8 w-8 text-primary-foreground" />
               </div>
             </div>
-            <p className="mt-16 text-smaller text-sm text-muted-foreground">Aim at the OFFDROP QR stream</p>
+            <p className="mt-16 text-sm text-muted-foreground">Aim at the OFFDROP QR stream</p>
           </div>
         )}
 
