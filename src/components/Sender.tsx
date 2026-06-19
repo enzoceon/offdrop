@@ -31,6 +31,7 @@ export function Sender() {
   async function onPick(f: File) {
     if (preview) URL.revokeObjectURL(preview);
     setFile(f);
+    setChunks([]);
     setIdx(0);
     setPlaying(false);
     setPreview(URL.createObjectURL(f));
