@@ -262,6 +262,16 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
     }
   }
 
+  useEffect(() => {
+    onBusyChange?.(active || starting || stopping || progress.total > 0);
+  }, [active, starting, stopping, progress.total, onBusyChange]);
+
+  useEffect(() => {
+    if (stopRequestKey > 0) {
+      void stop(true).then(() => onStopRequestComplete?.());
+    }
+  }, [stopRequestKey]);
+
   useEffect(() => () => {
     void stop();
   }, []);
@@ -282,14 +292,16 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
         <canvas ref={canvasRef} className="hidden" />
 
         {!active && !done && (
-          <div className="flex flex-col items-center px-6 text-center">
-            <div className="relative mb-6">
+          <div className="absolute inset-0 px-6 text-center">
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="relative">
               <span className="absolute inset-0 rounded-full bg-primary/40 animate-pulse-ring" />
               <div className="relative grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40">
                 <ScanLine className="h-8 w-8 text-primary-foreground" />
               </div>
+              </div>
             </div>
-            <p className="mt-24 text-sm text-muted-foreground">Aim at the OFFDROP QR stream</p>
+            <p className="absolute inset-x-6 bottom-10 text-sm text-muted-foreground sm:bottom-12">Aim at the OFFDROP stream</p>
           </div>
         )}
 
@@ -304,7 +316,7 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
         {active && (
           <>
             <div className="pointer-events-none absolute inset-6 rounded-[1.5rem] border-2 border-primary/70 shadow-[0_0_0_9999px_oklch(0_0_0/0.22)]" />
-            <div className="scan-sweep pointer-events-none absolute left-8 right-8 top-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent" />
+            <div className="scan-sweep pointer-events-none absolute left-8 right-8 top-6 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent" />
             {qrBox && (
               <svg
                 className="pointer-events-none absolute inset-0 h-full w-full scanner-corners"
@@ -350,11 +362,11 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="mx-auto mt-3 w-full max-w-sm animate-fade-up">
-          <div className="flex items-center gap-2 text-xs">
+        <div className="mx-auto mt-7 w-full max-w-sm animate-fade-up">
+          <div className="flex items-center justify-center gap-2 text-center text-xs">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
-            <span className="min-w-0 flex-1 truncate font-semibold">
-              {progress.total > 0 ? `Assembling ${label}…` : qrBox ? "Stream locked" : "Searching for stream…"}
+            <span className="min-w-0 truncate font-semibold">
+              {progress.total > 0 ? `Assembling ${label}…` : qrBox ? "OFFDROP stream locked" : "Searching for OFFDROP stream…"}
             </span>
             {progress.total > 0 && (
               <span className="shrink-0 tabular-nums text-[10px] font-bold text-muted-foreground">
@@ -369,7 +381,7 @@ export function Scanner({ onSaved, stopRequestKey = 0, onStopRequestComplete, on
             />
           </div>
           <div className="mt-1 truncate text-[10px] text-muted-foreground">
-            {scanInfo ? scanInfo.name : "Position the camera toward the QR stream"}
+            {scanInfo ? scanInfo.name : "Position the camera toward the OFFDROP stream"}
           </div>
         </div>
       )}
