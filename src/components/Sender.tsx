@@ -4,24 +4,32 @@ import { Upload, Play, Pause, RotateCcw, ImageIcon, X, Music2, Film } from "luci
 import { fileToChunks } from "@/lib/qr-protocol";
 import { cn } from "@/lib/utils";
 
+function formatDuration(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  const whole = Math.ceil(seconds);
+  const mins = Math.floor(whole / 60);
+  const secs = whole % 60;
+  return mins ? `${mins}m ${secs.toString().padStart(2, "0")}s` : `${secs}s`;
+}
+
 export function Sender() {
   const [file, setFile] = useState<File | null>(null);
   const [chunks, setChunks] = useState<string[]>([]);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(12);
+  const [fps, setFps] = useState(30);
   const [preview, setPreview] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function onPick(f: File) {
+    if (preview) URL.revokeObjectURL(preview);
     setFile(f);
     setIdx(0);
     setPlaying(false);
     setPreview(URL.createObjectURL(f));
     const { chunks } = await fileToChunks(f);
     setChunks(chunks);
-    setPlaying(true);
   }
 
   // Render current QR
@@ -51,7 +59,16 @@ export function Sender() {
     setPlaying(false);
     if (preview) URL.revokeObjectURL(preview);
     setPreview(null);
+    if (inputRef.current) inputRef.current.value = "";
   }
+
+  useEffect(() => () => {
+    if (preview) URL.revokeObjectURL(preview);
+  }, [preview]);
+
+  const cycleSeconds = chunks.length / fps;
+  const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
+  const progress = chunks.length ? ((idx + 1) / chunks.length) * 100 : 0;
 
   if (!file) {
     return (
@@ -77,8 +94,9 @@ export function Sender() {
           className="hidden"
           onChange={(e) => e.target.files?.[0] && onPick(e.target.files[0])}
         />
-        <p className="mt-6 text-[11px] text-muted-foreground">
-          Keep the receiving camera steady until it reaches 100%.
+        <p className="mt-6 text-center text-[11px] leading-relaxed text-muted-foreground">
+          <span className="block">Keep the receiving camera steady.</span>
+          <span className="block">Until it reaches 100%.</span>
         </p>
       </div>
     );
@@ -86,31 +104,34 @@ export function Sender() {
 
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
-      <div className="glass mb-3 flex items-center gap-3 rounded-2xl p-3">
+      <div className="glass relative mb-3 flex items-center gap-3 overflow-hidden rounded-2xl p-3">
+        <div className="edge-progress" style={{ "--p": `${progress}%` } as React.CSSProperties} />
         {preview && file.type.startsWith("image/") ? (
-          <img src={preview} alt="" className="h-12 w-12 rounded-xl object-cover" />
+          <img src={preview} alt="" className="h-12 w-12 rounded-lg object-cover" />
         ) : file.type.startsWith("video/") ? (
-          <div className="grid h-12 w-12 place-items-center rounded-xl bg-secondary">
+          <div className="grid h-12 w-12 place-items-center rounded-lg bg-secondary">
             <Film className="h-5 w-5" />
           </div>
         ) : file.type.startsWith("audio/") ? (
-          <div className="grid h-12 w-12 place-items-center rounded-xl bg-secondary">
+          <div className="grid h-12 w-12 place-items-center rounded-lg bg-secondary">
             <Music2 className="h-5 w-5" />
           </div>
         ) : (
-          <div className="grid h-12 w-12 place-items-center rounded-xl bg-secondary">
+          <div className="grid h-12 w-12 place-items-center rounded-lg bg-secondary">
             <ImageIcon className="h-5 w-5" />
           </div>
         )}
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold">{file.name}</div>
           <div className="text-[11px] text-muted-foreground">
-            {(file.size / 1024).toFixed(1)} KB · {chunks.length} frames
+            {(file.size / 1024).toFixed(1)} KB · {chunks.length} frames ·{" "}
+            {playing ? `${formatDuration(remainingSeconds)} left` : `${formatDuration(cycleSeconds)} capture`}
           </div>
         </div>
         <button
           onClick={reset}
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-secondary"
+          className="glass grid h-9 w-9 shrink-0 place-items-center rounded-full text-foreground active:scale-95"
+          aria-label="Remove file"
         >
           <X className="h-4 w-4" />
         </button>
@@ -123,20 +144,11 @@ export function Sender() {
         </div>
       </div>
 
-      <div className="mt-3">
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-all"
-            style={{ width: `${chunks.length ? ((idx + 1) / chunks.length) * 100 : 0}%` }}
-          />
-        </div>
-      </div>
-
-      <div className="mt-3 flex items-center justify-center gap-2">
+      <div className="mt-3 mx-auto flex w-full max-w-md items-center justify-center gap-2">
         <button
           onClick={() => setPlaying((p) => !p)}
           className={cn(
-            "flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold transition-all active:scale-[0.97]",
+            "flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold transition-all active:scale-[0.97]",
             playing
               ? "glass text-foreground"
               : "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/30",
@@ -146,10 +158,14 @@ export function Sender() {
           {playing ? "Pause" : "Play"}
         </button>
         <button
-          onClick={() => setIdx(0)}
-          className="glass grid h-12 w-12 place-items-center rounded-2xl active:scale-95"
+          onClick={() => {
+            setIdx(0);
+            setPlaying(false);
+          }}
+          className="glass flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold active:scale-95"
         >
           <RotateCcw className="h-4 w-4" />
+          Reset
         </button>
       </div>
 

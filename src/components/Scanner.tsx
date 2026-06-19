@@ -10,6 +10,17 @@ import {
 } from "@/lib/qr-protocol";
 import { saveItem } from "@/lib/history";
 
+type Point = { x: number; y: number };
+type QrBox = { w: number; h: number; corners: [Point, Point, Point, Point] };
+
+function mediaLabel(mime?: string) {
+  if (!mime) return "file";
+  if (mime.startsWith("image/")) return "photo";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
+  return "file";
+}
+
 export function Scanner({ onSaved }: { onSaved: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -18,19 +29,25 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
   const transferRef = useRef<Transfer | null>(null);
   const lastSeenRef = useRef<Map<string, number>>(new Map());
   const finishingRef = useRef(false);
+  const scanningRef = useRef(false);
+  const boxVisibleRef = useRef(false);
+  const lastBoxUpdateRef = useRef(0);
 
   const [active, setActive] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ have: 0, total: 0 });
+  const [scanInfo, setScanInfo] = useState<{ name: string; mime: string; size: number } | null>(null);
+  const [qrBox, setQrBox] = useState<QrBox | null>(null);
   const [done, setDone] = useState<{ name: string } | null>(null);
 
   async function start() {
+    if (active || starting) return;
     setError(null);
     setDone(null);
-    transferRef.current = null;
+    setStarting(true);
     lastSeenRef.current.clear();
     finishingRef.current = false;
-    setProgress({ have: 0, total: 0 });
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("Camera permission is unavailable in this browser.");
@@ -53,40 +70,72 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
+      scanningRef.current = true;
       setActive(true);
+      setStarting(false);
+      cancelAnimationFrame(rafRef.current);
       tick();
     } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Camera unavailable. Grant camera permission and retry.",
-      );
+      setStarting(false);
+      setActive(false);
+      setError(e instanceof Error ? e.message : "Camera unavailable. Grant camera permission and retry.");
     }
   }
 
   function stop() {
+    scanningRef.current = false;
     setActive(false);
+    setStarting(false);
+    setQrBox(null);
+    boxVisibleRef.current = false;
     cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
   }
 
   function tick() {
+    if (!scanningRef.current) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-    if (video.readyState === video.HAVE_ENOUGH_DATA) {
-      const w = video.videoWidth;
-      const h = video.videoHeight;
-      canvas.width = w;
-      canvas.height = h;
+    if (video && canvas && video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+      const scale = Math.min(1, 900 / Math.max(video.videoWidth, video.videoHeight));
+      const w = Math.max(1, Math.round(video.videoWidth * scale));
+      const h = Math.max(1, Math.round(video.videoHeight * scale));
+      if (canvas.width !== w) canvas.width = w;
+      if (canvas.height !== h) canvas.height = h;
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (ctx) {
         ctx.drawImage(video, 0, 0, w, h);
         const img = ctx.getImageData(0, 0, w, h);
         const code = jsQR(img.data, w, h, { inversionAttempts: "attemptBoth" });
-        if (code?.data) handleScan(code.data);
+        const now = performance.now();
+        if (code?.data) {
+          handleScan(code.data);
+          if (now - lastBoxUpdateRef.current > 80) {
+            const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = code.location;
+            boxVisibleRef.current = true;
+            lastBoxUpdateRef.current = now;
+            setQrBox({
+              w,
+              h,
+              corners: [topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner],
+            });
+          }
+        } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
+          boxVisibleRef.current = false;
+          lastBoxUpdateRef.current = now;
+          setQrBox(null);
+        }
       }
     }
     rafRef.current = requestAnimationFrame(tick);
+  }
+
+  function updateProgress(t: Transfer) {
+    const required = Math.min(requiredDataChunks(t.size), t.total);
+    let have = 0;
+    for (let i = 0; i < required; i++) if (t.chunks.has(i)) have++;
+    setProgress({ have, total: required });
   }
 
   function handleScan(payload: string) {
@@ -97,11 +146,11 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     const seenKey = `${meta.i}:${meta.n}`;
     const now = performance.now();
     const seenAt = lastSeenRef.current.get(seenKey);
-    if (seenAt && now - seenAt < 120) return;
+    if (seenAt && now - seenAt < 80) return;
     lastSeenRef.current.set(seenKey, now);
-    if (lastSeenRef.current.size > 800) {
+    if (lastSeenRef.current.size > 1000) {
       for (const [key, ts] of lastSeenRef.current) {
-        if (now - ts > 30000) lastSeenRef.current.delete(key);
+        if (now - ts > 45000) lastSeenRef.current.delete(key);
       }
     }
 
@@ -122,42 +171,47 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       t.size = meta.s;
       t.total = meta.t;
     }
+    setScanInfo({ name: t.filename, mime: t.mime, size: t.size });
     if (!t.chunks.has(meta.n)) {
       t.chunks.set(meta.n, data);
-      const required = Math.min(requiredDataChunks(t.size), t.total);
-      let have = 0;
-      for (let i = 0; i < required; i++) if (t.chunks.has(i)) have++;
-      setProgress({ have, total: required });
+      updateProgress(t);
       if (navigator.vibrate) navigator.vibrate(8);
     }
-    if (transferComplete(t)) finish();
+    if (transferComplete(t)) void finish();
   }
 
   async function finish() {
     const t = transferRef.current;
     if (!t || finishingRef.current) return;
     finishingRef.current = true;
-    const blob = assembleTransfer(t);
-    await saveItem({
-      id: t.id + "-" + Date.now(),
-      filename: t.filename,
-      mime: t.mime,
-      size: t.size,
-      receivedAt: Date.now(),
-      blob,
-    });
-    if (navigator.vibrate) navigator.vibrate([20, 40, 20]);
-    setDone({ name: t.filename });
-    transferRef.current = null;
-    setProgress({ have: 0, total: 0 });
-    onSaved();
-    stop();
-    finishingRef.current = false;
+    try {
+      const blob = assembleTransfer(t);
+      await saveItem({
+        id: t.id + "-" + Date.now(),
+        filename: t.filename,
+        mime: t.mime,
+        size: t.size,
+        receivedAt: Date.now(),
+        blob,
+      });
+      if (navigator.vibrate) navigator.vibrate([20, 40, 20]);
+      setDone({ name: t.filename });
+      transferRef.current = null;
+      setScanInfo(null);
+      setProgress({ have: 0, total: 0 });
+      stop();
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The scanned file could not be reconstructed yet.");
+    } finally {
+      finishingRef.current = false;
+    }
   }
 
   useEffect(() => () => stop(), []);
 
   const pct = progress.total ? (progress.have / progress.total) * 100 : 0;
+  const label = mediaLabel(scanInfo?.mime);
 
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
@@ -173,13 +227,13 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
 
         {!active && !done && (
           <div className="flex flex-col items-center px-6 text-center">
-            <div className="relative mb-4">
+            <div className="relative mb-6">
               <span className="absolute inset-0 rounded-full bg-primary/40 animate-pulse-ring" />
               <div className="relative grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40">
                 <ScanLine className="h-8 w-8 text-primary-foreground" />
               </div>
             </div>
-            <p className="text-sm text-muted-foreground">Aim at the OFFDROP QR stream</p>
+            <p className="mt-1 text-sm text-muted-foreground">Aim at the OFFDROP QR stream</p>
           </div>
         )}
 
@@ -191,32 +245,25 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
           </div>
         )}
 
-        {/* Reticle */}
         {active && (
           <>
-            <div className="pointer-events-none absolute inset-6 rounded-[1.5rem] border-2 border-primary/80 shadow-[0_0_0_9999px_oklch(0_0_0/0.22)]" />
-            <div className="scan-sweep pointer-events-none absolute left-8 right-8 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent" />
+            <div className="pointer-events-none absolute inset-6 rounded-[1.5rem] border-2 border-primary/70 shadow-[0_0_0_9999px_oklch(0_0_0/0.22)]" />
+            <div className="scan-sweep pointer-events-none absolute left-8 right-8 top-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent" />
+            {qrBox && (
+              <svg
+                className="pointer-events-none absolute inset-0 h-full w-full scanner-corners"
+                viewBox={`0 0 ${qrBox.w} ${qrBox.h}`}
+                preserveAspectRatio="xMidYMid slice"
+              >
+                <polygon points={qrBox.corners.map((p) => `${p.x},${p.y}`).join(" ")} />
+                {qrBox.corners.map((p, i) => (
+                  <circle key={`${p.x}-${p.y}-${i}`} cx={p.x} cy={p.y} r="10" />
+                ))}
+              </svg>
+            )}
           </>
         )}
       </div>
-
-      {progress.total > 0 && (
-        <div className="glass mt-3 rounded-2xl p-3 animate-fade-up">
-          <div className="flex items-center gap-2 text-xs">
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-            <span className="font-medium">Receiving…</span>
-            <span className="ml-auto tabular-nums text-muted-foreground">
-              {progress.have} / {progress.total}
-            </span>
-          </div>
-          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-secondary">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-all"
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-        </div>
-      )}
 
       {error && (
         <div className="glass mt-3 rounded-2xl border border-destructive/40 p-3 text-xs text-destructive">
@@ -228,10 +275,11 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
         {!active ? (
           <button
             onClick={start}
-            className="flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/30 active:scale-[0.97]"
+            disabled={starting}
+            className="flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/30 active:scale-[0.97] disabled:opacity-80"
           >
-            <Camera className="h-4 w-4" />
-            Start camera
+            {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+            {starting ? "Starting camera" : "Start camera"}
           </button>
         ) : (
           <button
@@ -243,6 +291,31 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
           </button>
         )}
       </div>
+
+      {(active || progress.total > 0) && (
+        <div className="glass scanner-status mt-3 rounded-2xl p-3 animate-fade-up">
+          <div className="flex items-center gap-2 text-xs">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+            <span className="min-w-0 flex-1 truncate font-medium">
+              {progress.total > 0 ? `Creating ${label}…` : "Listening for QR frames…"}
+            </span>
+            {progress.total > 0 && (
+              <span className="tabular-nums text-muted-foreground">
+                {progress.have} / {progress.total}
+              </span>
+            )}
+          </div>
+          {scanInfo && (
+            <div className="mt-1 truncate text-[11px] text-muted-foreground">{scanInfo.name}</div>
+          )}
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-secondary">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-all duration-300"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
