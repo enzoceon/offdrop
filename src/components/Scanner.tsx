@@ -35,6 +35,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
 
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ have: 0, total: 0 });
   const [scanInfo, setScanInfo] = useState<{ name: string; mime: string; size: number } | null>(null);
@@ -59,6 +60,8 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
             facingMode: { ideal: "environment" },
             width: { ideal: 1280 },
             height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+            advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
           },
           audio: false,
         });
@@ -66,6 +69,12 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
         stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       }
       streamRef.current = stream;
+      for (const track of stream.getVideoTracks()) {
+        const capabilities = track.getCapabilities?.() as MediaTrackCapabilities & { focusMode?: string[] };
+        if (capabilities?.focusMode?.includes("continuous")) {
+          await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet] }).catch(() => {});
+        }
+      }
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -82,7 +91,11 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     }
   }
 
-  function stop() {
+  async function stop(showStopping = false) {
+    if (showStopping) {
+      setStopping(true);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
     scanningRef.current = false;
     setActive(false);
     setStarting(false);
@@ -91,6 +104,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    setStopping(false);
   }
 
   function tick() {
@@ -199,7 +213,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       transferRef.current = null;
       setScanInfo(null);
       setProgress({ have: 0, total: 0 });
-      stop();
+      await stop();
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "The scanned file could not be reconstructed yet.");
@@ -208,7 +222,9 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     }
   }
 
-  useEffect(() => () => stop(), []);
+  useEffect(() => () => {
+    void stop();
+  }, []);
 
   const pct = progress.total ? (progress.have / progress.total) * 100 : 0;
   const label = mediaLabel(scanInfo?.mime);
@@ -272,43 +288,53 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       )}
 
       <div className="mt-3 flex justify-center gap-2">
-        {!active ? (
+        {!active && !stopping ? (
           <button
             onClick={start}
             disabled={starting}
             className="flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/30 active:scale-[0.97] disabled:opacity-80"
           >
             {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
-            {starting ? "Starting camera" : "Start camera"}
+            {starting ? "Starting Camera" : "Start Camera"}
           </button>
         ) : (
           <button
-            onClick={stop}
-            className="glass flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97]"
+            onClick={() => void stop(true)}
+            disabled={stopping}
+            className="glass flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80"
           >
-            <CameraOff className="h-4 w-4" />
-            Stop
+            {stopping ? <Loader2 className="h-4 w-4 animate-spin" /> : <CameraOff className="h-4 w-4" />}
+            {stopping ? "Stopping Camera" : "Stop Camera"}
           </button>
         )}
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="glass scanner-status mt-3 rounded-2xl p-3 animate-fade-up">
-          <div className="flex items-center gap-2 text-xs">
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-            <span className="min-w-0 flex-1 truncate font-medium">
-              {progress.total > 0 ? `Creating ${label}…` : "Listening for QR frames…"}
-            </span>
-            {progress.total > 0 && (
-              <span className="tabular-nums text-muted-foreground">
-                {progress.have} / {progress.total}
-              </span>
-            )}
+        <div className="glass scanner-status mt-3 min-h-28 rounded-2xl p-3 animate-fade-up">
+          <div className="flex h-full min-h-20 items-stretch gap-3">
+            <div className="scanner-capture-meter w-2 shrink-0 overflow-hidden rounded-full bg-secondary">
+              <div className="scanner-capture-fill" style={{ height: `${Math.max(8, pct)}%` }} />
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                <span className="min-w-0 flex-1 truncate font-medium">
+                  {progress.total > 0 ? `Creating ${label}…` : qrBox ? "QR frame locked" : "Listening for QR frames…"}
+                </span>
+                {progress.total > 0 && (
+                  <span className="tabular-nums text-muted-foreground">
+                    {progress.have} / {progress.total}
+                  </span>
+                )}
+              </div>
+              {scanInfo ? (
+                <div className="truncate text-[11px] text-muted-foreground">{scanInfo.name}</div>
+              ) : (
+                <div className="text-[11px] text-muted-foreground">Keep the QR stream inside the frame.</div>
+              )}
+            </div>
           </div>
-          {scanInfo && (
-            <div className="mt-1 truncate text-[11px] text-muted-foreground">{scanInfo.name}</div>
-          )}
-          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-secondary">
+          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-secondary">
             <div
               className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-all duration-300"
               style={{ width: `${pct}%` }}
