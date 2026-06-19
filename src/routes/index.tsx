@@ -5,7 +5,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Sender } from "@/components/Sender";
 import { Scanner } from "@/components/Scanner";
 import { History } from "@/components/History";
-import { QrCode } from "lucide-react";
+import { Loader2, QrCode } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -31,6 +31,41 @@ export const Route = createFileRoute("/")({
 function Index() {
   const [tab, setTab] = useState<TabKey>("send");
   const [historyKey, setHistoryKey] = useState(0);
+  const [scannerBusy, setScannerBusy] = useState(false);
+  const [pendingTab, setPendingTab] = useState<TabKey | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [stopRequestKey, setStopRequestKey] = useState(0);
+
+  function requestTab(nextTab: TabKey) {
+    if (nextTab === tab) return;
+    if (tab === "scan" && scannerBusy) {
+      setPendingTab(nextTab);
+      setConfirmOpen(true);
+      return;
+    }
+    setTab(nextTab);
+  }
+
+  function confirmLeaveScanner() {
+    if (!pendingTab || confirming) return;
+    setConfirming(true);
+    setStopRequestKey((k) => k + 1);
+  }
+
+  function cancelLeaveScanner() {
+    if (confirming) return;
+    setConfirmOpen(false);
+    setPendingTab(null);
+  }
+
+  function completeScannerStopRequest() {
+    const next = pendingTab;
+    setConfirming(false);
+    setConfirmOpen(false);
+    setPendingTab(null);
+    if (next) setTab(next);
+  }
 
   useEffect(() => {
     const preventPinch = (event: TouchEvent) => {
@@ -75,6 +110,9 @@ function Index() {
         </section>
         <section className={tab === "scan" ? "contents" : "hidden"} aria-hidden={tab !== "scan"}>
           <Scanner
+            stopRequestKey={stopRequestKey}
+            onStopRequestComplete={completeScannerStopRequest}
+            onBusyChange={setScannerBusy}
             onSaved={() => {
               setHistoryKey((k) => k + 1);
               setTab("history");
@@ -86,7 +124,37 @@ function Index() {
         </section>
       </main>
 
-      <GlassTabs value={tab} onChange={setTab} />
+      {confirmOpen && (
+        <div className="fixed inset-0 z-[70] flex items-end justify-center bg-background/35 px-4 pb-4 backdrop-blur-sm" role="dialog" aria-modal="true">
+          <div className="glass-strong safe-bottom w-full max-w-md rounded-[2rem] p-4 animate-fade-up">
+            <h2 className="text-display text-lg">Stop receiving?</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Leaving Receive will close the camera and stop the current OFFDROP processing.
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={confirmLeaveScanner}
+                disabled={confirming}
+                className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97] disabled:opacity-85"
+              >
+                {confirming && <Loader2 className="h-4 w-4 animate-spin" />}
+                Yes
+              </button>
+              <button
+                type="button"
+                onClick={cancelLeaveScanner}
+                disabled={confirming}
+                className="glass flex items-center justify-center rounded-2xl py-3 text-sm font-bold active:scale-[0.97] disabled:opacity-70"
+              >
+                No
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <GlassTabs value={tab} onChange={requestTab} />
     </div>
   );
 }

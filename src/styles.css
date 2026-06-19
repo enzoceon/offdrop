@@ -149,6 +149,18 @@
     0 20px 60px -20px oklch(0 0 0 / 0.35);
 }
 
+@utility liquid-control {
+  background:
+    linear-gradient(145deg, oklch(1 0 0 / 0.46), oklch(1 0 0 / 0.16)),
+    color-mix(in oklab, var(--glass) 86%, transparent);
+  backdrop-filter: blur(26px) saturate(210%);
+  border: 1px solid oklch(1 0 0 / 0.34);
+  box-shadow:
+    0 1px 0 oklch(1 0 0 / 0.58) inset,
+    0 -1px 0 oklch(0 0 0 / 0.08) inset,
+    0 16px 34px -18px oklch(0 0 0 / 0.55);
+}
+
 @utility audio-tile {
   background:
     radial-gradient(circle at 35% 20%, color-mix(in oklab, var(--color-accent) 32%, transparent), transparent 56%),
@@ -185,16 +197,17 @@
   to { opacity: 1; transform: translateY(0); }
 }
 @keyframes scan-sweep {
-  0% { transform: translate3d(0, 12cqw, 0); opacity: 0; }
-  12% { opacity: 1; }
-  88% { opacity: 1; }
-  100% { transform: translate3d(0, 88cqw, 0); opacity: 0; }
+  0% { transform: translate3d(0, 0, 0); opacity: 0; }
+  8% { opacity: 1; }
+  50% { transform: translate3d(0, calc(var(--scan-distance, 100%) - 2px), 0); opacity: 1; }
+  92% { opacity: 1; }
+  100% { transform: translate3d(0, 0, 0); opacity: 0; }
 }
 
 .animate-pulse-ring { animation: pulse-ring 1.6s ease-out infinite; }
 .animate-float { animation: float 4s ease-in-out infinite; }
 .animate-fade-up { animation: fade-up 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-.scan-sweep { animation: scan-sweep 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite; will-change: transform, opacity; }
+.scan-sweep { --scan-distance: calc(100cqw - 4rem); animation: scan-sweep 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite; will-change: transform, opacity; }
 
 .edge-progress {
   position: absolute;
@@ -214,6 +227,7 @@
   stroke-width: 6;
   vector-effect: non-scaling-stroke;
   filter: drop-shadow(0 0 10px color-mix(in oklab, var(--color-primary) 65%, transparent));
+  transition: all 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .scanner-corners circle {
   fill: var(--color-accent);
@@ -221,6 +235,12 @@
   stroke-width: 3;
   vector-effect: non-scaling-stroke;
   filter: drop-shadow(0 0 8px color-mix(in oklab, var(--color-accent) 70%, transparent));
+  animation: corner-lock 0.7s ease-out infinite alternate;
+}
+
+@keyframes corner-lock {
+  from { opacity: 0.72; transform: scale(0.86); transform-box: fill-box; transform-origin: center; }
+  to { opacity: 1; transform: scale(1.08); transform-box: fill-box; transform-origin: center; }
 }
 
 .scanner-status {
