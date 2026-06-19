@@ -5,6 +5,7 @@ import {
   parseChunkPayload,
   transferComplete,
   assembleTransfer,
+  requiredDataChunks,
   type Transfer,
 } from "@/lib/qr-protocol";
 import { saveItem } from "@/lib/history";
@@ -15,7 +16,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
   const rafRef = useRef<number>(0);
   const streamRef = useRef<MediaStream | null>(null);
   const transferRef = useRef<Transfer | null>(null);
-  const lastPayloadRef = useRef<string>("");
+  const lastSeenRef = useRef<Map<string, number>>(new Map());
   const finishingRef = useRef(false);
 
   const [active, setActive] = useState(false);
@@ -27,6 +28,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     setError(null);
     setDone(null);
     transferRef.current = null;
+    lastSeenRef.current.clear();
     finishingRef.current = false;
     setProgress({ have: 0, total: 0 });
     try {
@@ -88,11 +90,21 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
   }
 
   function handleScan(payload: string) {
-    if (finishingRef.current || payload === lastPayloadRef.current) return;
-    lastPayloadRef.current = payload;
+    if (finishingRef.current) return;
     const parsed = parseChunkPayload(payload);
     if (!parsed) return;
     const { meta, data } = parsed;
+    const seenKey = `${meta.i}:${meta.n}`;
+    const now = performance.now();
+    const seenAt = lastSeenRef.current.get(seenKey);
+    if (seenAt && now - seenAt < 120) return;
+    lastSeenRef.current.set(seenKey, now);
+    if (lastSeenRef.current.size > 800) {
+      for (const [key, ts] of lastSeenRef.current) {
+        if (now - ts > 30000) lastSeenRef.current.delete(key);
+      }
+    }
+
     let t = transferRef.current;
     if (!t || t.id !== meta.i) {
       t = {
@@ -104,10 +116,18 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
         chunks: new Map(),
       };
       transferRef.current = t;
+    } else {
+      t.mime = meta.m;
+      t.filename = meta.f;
+      t.size = meta.s;
+      t.total = meta.t;
     }
     if (!t.chunks.has(meta.n)) {
       t.chunks.set(meta.n, data);
-      setProgress({ have: t.chunks.size, total: t.total });
+      const required = Math.min(requiredDataChunks(t.size), t.total);
+      let have = 0;
+      for (let i = 0; i < required; i++) if (t.chunks.has(i)) have++;
+      setProgress({ have, total: required });
       if (navigator.vibrate) navigator.vibrate(8);
     }
     if (transferComplete(t)) finish();
