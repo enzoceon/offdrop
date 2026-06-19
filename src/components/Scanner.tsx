@@ -12,6 +12,31 @@ import { saveItem } from "@/lib/history";
 
 type Point = { x: number; y: number };
 type QrBox = { w: number; h: number; corners: [Point, Point, Point, Point] };
+type ScanResult = { data: string; corners: [Point, Point, Point, Point] };
+
+function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResult | null {
+  const side = Math.min(w, h);
+  const attempts: Array<[number, number, number, number]> = [[0, 0, w, h]];
+  if (side !== w || side !== h) attempts.push([Math.round((w - side) / 2), Math.round((h - side) / 2), side, side]);
+  for (const ratio of [0.82, 0.66]) {
+    const crop = Math.max(160, Math.round(side * ratio));
+    if (crop < side) attempts.push([Math.round((w - crop) / 2), Math.round((h - crop) / 2), crop, crop]);
+  }
+
+  const seen = new Set<string>();
+  for (const [sx, sy, sw, sh] of attempts) {
+    const key = `${sx}:${sy}:${sw}:${sh}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const img = ctx.getImageData(sx, sy, sw, sh);
+    const code = jsQR(img.data, sw, sh, { inversionAttempts: "attemptBoth" });
+    if (!code?.data) continue;
+    const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = code.location;
+    const offset = (p: Point): Point => ({ x: p.x + sx, y: p.y + sy });
+    return { data: code.data, corners: [topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner].map(offset) as [Point, Point, Point, Point] };
+  }
+  return null;
+}
 
 function mediaLabel(mime?: string) {
   if (!mime) return "file";
@@ -43,11 +68,10 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
   const [done, setDone] = useState<{ name: string } | null>(null);
 
   async function start() {
-    if (active || starting) return;
+    if (active || starting || stopping) return;
     setError(null);
     setDone(null);
     setStarting(true);
-    lastSeenRef.current.clear();
     finishingRef.current = false;
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -86,13 +110,15 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       tick();
     } catch (e) {
       setStarting(false);
+      setStopping(false);
       setActive(false);
       setError(e instanceof Error ? e.message : "Camera unavailable. Grant camera permission and retry.");
     }
   }
 
   async function stop(showStopping = false) {
-    if (showStopping) {
+    const shouldShowStopping = showStopping && (active || Boolean(streamRef.current));
+    if (shouldShowStopping) {
       setStopping(true);
       await new Promise((resolve) => requestAnimationFrame(resolve));
     }
@@ -104,6 +130,9 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
     cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    if (shouldShowStopping) {
+      await new Promise((resolve) => setTimeout(resolve, 320));
+    }
     setStopping(false);
   }
 
@@ -120,19 +149,17 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (ctx) {
         ctx.drawImage(video, 0, 0, w, h);
-        const img = ctx.getImageData(0, 0, w, h);
-        const code = jsQR(img.data, w, h, { inversionAttempts: "attemptBoth" });
+        const code = decodeQr(ctx, w, h);
         const now = performance.now();
         if (code?.data) {
           handleScan(code.data);
           if (now - lastBoxUpdateRef.current > 80) {
-            const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = code.location;
             boxVisibleRef.current = true;
             lastBoxUpdateRef.current = now;
             setQrBox({
               w,
               h,
-              corners: [topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner],
+              corners: code.corners,
             });
           }
         } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
@@ -211,9 +238,10 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       if (navigator.vibrate) navigator.vibrate([20, 40, 20]);
       setDone({ name: t.filename });
       transferRef.current = null;
+      lastSeenRef.current.clear();
       setScanInfo(null);
       setProgress({ have: 0, total: 0 });
-      await stop();
+      await stop(true);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "The scanned file could not be reconstructed yet.");
@@ -310,35 +338,26 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="glass scanner-status mt-3 min-h-28 rounded-2xl p-3 animate-fade-up">
-          <div className="flex h-full min-h-20 items-stretch gap-3">
-            <div className="scanner-capture-meter w-2 shrink-0 overflow-hidden rounded-full bg-secondary">
-              <div className="scanner-capture-fill" style={{ height: `${Math.max(8, pct)}%` }} />
-            </div>
-            <div className="flex min-w-0 flex-1 flex-col justify-between gap-3">
-              <div className="flex items-center gap-2 text-xs">
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-                <span className="min-w-0 flex-1 truncate font-medium">
-                  {progress.total > 0 ? `Creating ${label}…` : qrBox ? "QR frame locked" : "Listening for QR frames…"}
-                </span>
-                {progress.total > 0 && (
-                  <span className="tabular-nums text-muted-foreground">
-                    {progress.have} / {progress.total}
-                  </span>
-                )}
-              </div>
-              {scanInfo ? (
-                <div className="truncate text-[11px] text-muted-foreground">{scanInfo.name}</div>
-              ) : (
-                <div className="text-[11px] text-muted-foreground">Keep the QR stream inside the frame.</div>
-              )}
-            </div>
+        <div className="mx-auto mt-3 w-full max-w-sm animate-fade-up">
+          <div className="flex items-center gap-2 text-xs">
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+            <span className="min-w-0 flex-1 truncate font-semibold">
+              {progress.total > 0 ? `Assembling ${label}…` : qrBox ? "Stream locked" : "Searching for stream…"}
+            </span>
+            {progress.total > 0 && (
+              <span className="shrink-0 tabular-nums text-[10px] font-bold text-muted-foreground">
+                {progress.have} / {progress.total}
+              </span>
+            )}
           </div>
-          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-secondary">
+          <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-secondary p-[1px]">
             <div
-              className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-all duration-300"
+              className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-300 ease-out"
               style={{ width: `${pct}%` }}
             />
+          </div>
+          <div className="mt-1 truncate text-[10px] text-muted-foreground">
+            {scanInfo ? scanInfo.name : "Position the camera toward the QR stream"}
           </div>
         </div>
       )}
