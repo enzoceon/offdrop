@@ -1,6 +1,52 @@
 import { useEffect, useState } from "react";
-import { Download, Share2, Trash2, FileQuestion, Image as ImageIcon, Film } from "lucide-react";
+import {
+  Download,
+  Share2,
+  Trash2,
+  FileQuestion,
+  Film,
+  Music2,
+  FileIcon,
+  Play,
+  Pause,
+} from "lucide-react";
 import { listItems, deleteItem, type HistoryItem } from "@/lib/history";
+
+function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
+  const [playing, setPlaying] = useState(false);
+  const isImg = item.mime.startsWith("image/");
+  const isVid = item.mime.startsWith("video/");
+  const isAudio = item.mime.startsWith("audio/");
+
+  if (isImg && url)
+    return <img src={url} alt={item.filename} className="h-full w-full object-cover" />;
+  if (isVid && url)
+    return <video src={url} className="h-full w-full object-cover" muted playsInline />;
+  if (isAudio && url) {
+    return (
+      <button
+        onClick={(event) => {
+          const audio = event.currentTarget.querySelector("audio");
+          if (!audio) return;
+          if (audio.paused) audio.play();
+          else audio.pause();
+        }}
+        className="audio-tile grid h-full w-full place-items-center"
+      >
+        <audio
+          src={url}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => setPlaying(false)}
+        />
+        <span className="grid h-10 w-10 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/25">
+          {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+        </span>
+      </button>
+    );
+  }
+  return <FileIcon className="h-6 w-6 text-muted-foreground" />;
+}
 
 export function History({ refreshKey }: { refreshKey: number }) {
   const [items, setItems] = useState<HistoryItem[]>([]);
@@ -27,7 +73,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
   function onDownload(it: HistoryItem) {
     const a = document.createElement("a");
     a.href = urls[it.id];
-    a.download = it.filename || "qrbeam-file";
+    a.download = it.filename || "offdrop-file";
     a.click();
   }
 
@@ -52,7 +98,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
         </div>
         <h2 className="text-display mt-5 text-2xl">No transfers yet</h2>
         <p className="mt-2 max-w-xs text-sm text-muted-foreground">
-          Scanned files show up here. Everything stays on this device.
+          Received files show up here. Everything stays on this device.
         </p>
       </div>
     );
@@ -62,21 +108,16 @@ export function History({ refreshKey }: { refreshKey: number }) {
     <div className="flex-1 overflow-y-auto px-5 pb-2">
       <div className="space-y-3">
         {items.map((it) => {
-          const isImg = it.mime.startsWith("image/");
-          const isVid = it.mime.startsWith("video/");
           return (
             <div key={it.id} className="glass overflow-hidden rounded-2xl animate-fade-up">
               <div className="flex gap-3 p-3">
                 <div className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary">
-                  {isImg ? (
-                    <img src={urls[it.id]} alt="" className="h-full w-full object-cover" />
-                  ) : isVid ? (
-                    <>
-                      <video src={urls[it.id]} className="h-full w-full object-cover" muted />
-                      <Film className="absolute h-5 w-5 text-white drop-shadow" />
-                    </>
-                  ) : (
-                    <ImageIcon className="h-6 w-6 text-muted-foreground" />
+                  <MediaPreview item={it} url={urls[it.id]} />
+                  {it.mime.startsWith("video/") && (
+                    <Film className="absolute h-5 w-5 text-primary-foreground drop-shadow" />
+                  )}
+                  {it.mime.startsWith("audio/") && (
+                    <Music2 className="pointer-events-none absolute bottom-1 right-1 h-3.5 w-3.5 text-primary-foreground drop-shadow" />
                   )}
                 </div>
                 <div className="min-w-0 flex-1">

@@ -1,6 +1,7 @@
 // IndexedDB-backed local history of received transfers.
-const DB = "qrbeam";
+const DB = "offdrop";
 const STORE = "items";
+let dbPromise: Promise<IDBDatabase> | null = null;
 
 export interface HistoryItem {
   id: string;
@@ -12,14 +13,19 @@ export interface HistoryItem {
 }
 
 function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB, 1);
     req.onupgradeneeded = () => {
       req.result.createObjectStore(STORE, { keyPath: "id" });
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onerror = () => {
+      dbPromise = null;
+      reject(req.error);
+    };
   });
+  return dbPromise;
 }
 
 export async function saveItem(item: HistoryItem): Promise<void> {
@@ -30,7 +36,6 @@ export async function saveItem(item: HistoryItem): Promise<void> {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
-  db.close();
 }
 
 export async function listItems(): Promise<HistoryItem[]> {
@@ -41,7 +46,6 @@ export async function listItems(): Promise<HistoryItem[]> {
     req.onsuccess = () => resolve(req.result as HistoryItem[]);
     req.onerror = () => reject(req.error);
   });
-  db.close();
   return items.sort((a, b) => b.receivedAt - a.receivedAt);
 }
 
@@ -53,5 +57,4 @@ export async function deleteItem(id: string): Promise<void> {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
-  db.close();
 }

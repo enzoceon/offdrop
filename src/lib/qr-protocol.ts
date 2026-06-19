@@ -1,6 +1,6 @@
-// QR-stream protocol — splits a file into many small QR chunks and reassembles.
-// Header format (JSON, then "|", then base64 chunk data):
-//   {"i":"<id>","n":<seq>,"t":<total>,"m":"<mime>","f":"<filename>","s":<bytes>}|<base64>
+// OFFDROP QR-stream protocol — splits a file into small QR chunks and reassembles.
+// Header format (version prefix, JSON, then "|", then base64 chunk data):
+//   OD1|{"i":"<id>","n":<seq>,"t":<total>,"m":"<mime>","f":"<filename>","s":<bytes>}|<base64>
 // The receiver collects unique n values until it has t, then concatenates.
 
 export interface ChunkMeta {
@@ -21,22 +21,35 @@ export interface Transfer {
   chunks: Map<number, string>;
 }
 
-// Conservative chunk size — QR v20 with M error correction ~ alphanumeric a lot but we use binary
-// 700 base64 chars keeps QR scan-friendly on phone cameras.
-export const CHUNK_SIZE = 700;
+export const PROTOCOL_PREFIX = "OD1";
+
+// Small chunks deliberately scan better on real mobile cameras than dense QR blocks.
+export const CHUNK_SIZE = 120;
+export const MIN_FRAMES = 60;
 
 export function buildChunkPayload(meta: ChunkMeta, data: string): string {
-  return JSON.stringify(meta) + "|" + data;
+  return `${PROTOCOL_PREFIX}|${JSON.stringify(meta)}|${data}`;
 }
 
 export function parseChunkPayload(payload: string): { meta: ChunkMeta; data: string } | null {
-  const idx = payload.indexOf("|");
+  const framed = payload.startsWith(`${PROTOCOL_PREFIX}|`)
+    ? payload.slice(PROTOCOL_PREFIX.length + 1)
+    : payload;
+  const idx = framed.indexOf("|");
   if (idx < 0) return null;
   try {
-    const meta = JSON.parse(payload.slice(0, idx)) as ChunkMeta;
-    if (typeof meta.i !== "string" || typeof meta.n !== "number" || typeof meta.t !== "number")
+    const meta = JSON.parse(framed.slice(0, idx)) as ChunkMeta;
+    if (
+      typeof meta.i !== "string" ||
+      typeof meta.n !== "number" ||
+      typeof meta.t !== "number" ||
+      typeof meta.m !== "string" ||
+      typeof meta.f !== "string" ||
+      typeof meta.s !== "number"
+    )
       return null;
-    return { meta, data: payload.slice(idx + 1) };
+    if (meta.n < 0 || meta.t < 1 || meta.n >= meta.t) return null;
+    return { meta, data: framed.slice(idx + 1) };
   } catch {
     return null;
   }
@@ -50,10 +63,18 @@ export async function fileToChunks(file: File): Promise<{ id: string; chunks: st
   for (let i = 0; i < b64.length; i += CHUNK_SIZE) {
     pieces.push(b64.slice(i, i + CHUNK_SIZE));
   }
+  while (pieces.length < MIN_FRAMES) pieces.push("");
   const total = pieces.length;
   const chunks = pieces.map((data, n) =>
     buildChunkPayload(
-      { i: id, n, t: total, m: file.type || "application/octet-stream", f: file.name, s: file.size },
+      {
+        i: id,
+        n,
+        t: total,
+        m: file.type || "application/octet-stream",
+        f: file.name,
+        s: file.size,
+      },
       data,
     ),
   );
@@ -61,7 +82,7 @@ export async function fileToChunks(file: File): Promise<{ id: string; chunks: st
 }
 
 export function transferComplete(t: Transfer): boolean {
-  return t.chunks.size === t.total;
+  return t.total > 0 && t.chunks.size === t.total;
 }
 
 export function assembleTransfer(t: Transfer): Blob {

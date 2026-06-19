@@ -1,0 +1,16 @@
+{
+  "name": "OFFDROP",
+  "short_name": "OFFDROP",
+  "description": "Offline QR file transfer for photos, videos, audio, and files.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#08111f",
+  "theme_color": "#08111f",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

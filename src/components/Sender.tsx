@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { Upload, Play, Pause, RotateCcw, ImageIcon, X } from "lucide-react";
+import { Upload, Play, Pause, RotateCcw, ImageIcon, X, Music2, Film } from "lucide-react";
 import { fileToChunks } from "@/lib/qr-protocol";
 import { cn } from "@/lib/utils";
 
@@ -9,7 +9,7 @@ export function Sender() {
   const [chunks, setChunks] = useState<string[]>([]);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(8);
+  const [fps, setFps] = useState(12);
   const [preview, setPreview] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -28,7 +28,7 @@ export function Sender() {
   useEffect(() => {
     if (!canvasRef.current || chunks.length === 0) return;
     QRCode.toCanvas(canvasRef.current, chunks[idx], {
-      errorCorrectionLevel: "M",
+      errorCorrectionLevel: "L",
       margin: 1,
       width: 520,
       color: { dark: "#0a0a14", light: "#ffffff" },
@@ -57,11 +57,11 @@ export function Sender() {
     return (
       <div className="flex flex-1 flex-col items-center justify-center px-5">
         <div className="animate-float mb-8 grid h-28 w-28 place-items-center rounded-[2rem] bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40">
-          <ImageIcon className="h-12 w-12 text-primary-foreground" strokeWidth={2} />
+          <Upload className="h-12 w-12 text-primary-foreground" strokeWidth={2} />
         </div>
-        <h2 className="text-display text-3xl">Beam a file</h2>
+        <h2 className="text-display text-3xl">Drop a file</h2>
         <p className="mt-2 max-w-xs text-center text-sm text-muted-foreground">
-          Pick a photo or short video. We slice it into animated QR codes — no network needed.
+          Photos, videos, audio, documents — OFFDROP turns them into a private QR stream.
         </p>
         <button
           onClick={() => inputRef.current?.click()}
@@ -73,11 +73,13 @@ export function Sender() {
         <input
           ref={inputRef}
           type="file"
-          accept="image/*,video/*"
+          accept="image/*,video/*,audio/*,*/*"
           className="hidden"
           onChange={(e) => e.target.files?.[0] && onPick(e.target.files[0])}
         />
-        <p className="mt-6 text-[11px] text-muted-foreground">Tip: small images work best.</p>
+        <p className="mt-6 text-[11px] text-muted-foreground">
+          Keep the receiving camera steady until it reaches 100%.
+        </p>
       </div>
     );
   }
@@ -85,8 +87,16 @@ export function Sender() {
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
       <div className="glass mb-3 flex items-center gap-3 rounded-2xl p-3">
-        {preview && file.type.startsWith("image") ? (
+        {preview && file.type.startsWith("image/") ? (
           <img src={preview} alt="" className="h-12 w-12 rounded-xl object-cover" />
+        ) : file.type.startsWith("video/") ? (
+          <div className="grid h-12 w-12 place-items-center rounded-xl bg-secondary">
+            <Film className="h-5 w-5" />
+          </div>
+        ) : file.type.startsWith("audio/") ? (
+          <div className="grid h-12 w-12 place-items-center rounded-xl bg-secondary">
+            <Music2 className="h-5 w-5" />
+          </div>
         ) : (
           <div className="grid h-12 w-12 place-items-center rounded-xl bg-secondary">
             <ImageIcon className="h-5 w-5" />
@@ -122,11 +132,11 @@ export function Sender() {
         </div>
       </div>
 
-      <div className="mt-3 flex items-center gap-2">
+      <div className="mt-3 flex items-center justify-center gap-2">
         <button
           onClick={() => setPlaying((p) => !p)}
           className={cn(
-            "flex flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold transition-all active:scale-[0.97]",
+            "flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold transition-all active:scale-[0.97]",
             playing
               ? "glass text-foreground"
               : "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/30",
@@ -143,15 +153,15 @@ export function Sender() {
         </button>
       </div>
 
-      <div className="glass mt-3 flex items-center gap-3 rounded-2xl px-4 py-2.5">
-        <span className="text-xs text-muted-foreground">Speed</span>
+      <div className="glass mt-3 mx-auto flex w-full max-w-md items-center gap-3 rounded-2xl px-4 py-3">
+        <span className="text-xs font-bold text-muted-foreground">Speed</span>
         <input
           type="range"
           min={2}
-          max={15}
+          max={60}
           value={fps}
           onChange={(e) => setFps(+e.target.value)}
-          className="flex-1 accent-primary"
+          className="ios-range flex-1"
         />
         <span className="w-10 text-right text-xs font-semibold tabular-nums">{fps} fps</span>
       </div>
