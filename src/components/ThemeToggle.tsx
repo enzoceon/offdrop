@@ -36,7 +36,10 @@ export function ThemeToggle() {
     const endRadius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
 
     const transitionDocument = document as ViewTransitionDocument;
-    if (!transitionDocument.startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (
+      !transitionDocument.startViewTransition ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
       applyTheme(next);
       return;
     }
