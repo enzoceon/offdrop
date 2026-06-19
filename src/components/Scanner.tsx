@@ -43,7 +43,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
   const [done, setDone] = useState<{ name: string } | null>(null);
 
   async function start() {
-    if (active || starting) return;
+    if (active || starting || stopping) return;
     setError(null);
     setDone(null);
     setStarting(true);
@@ -213,7 +213,7 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       transferRef.current = null;
       setScanInfo(null);
       setProgress({ have: 0, total: 0 });
-      await stop();
+      await stop(true);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "The scanned file could not be reconstructed yet.");
@@ -310,31 +310,36 @@ export function Scanner({ onSaved }: { onSaved: () => void }) {
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="glass scanner-status mt-3 min-h-[5rem] rounded-2xl p-3 animate-fade-up">
-            <div className="flex min-w-0 flex-1 flex-col justify-between gap-3">
-              <div className="flex items-center gap-2 text-xs">
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-                <span className="min-w-0 flex-1 truncate font-medium">
-                  {progress.total > 0 ? `Creating ${label}…` : qrBox ? "QR frame locked" : "Listening for QR frames…"}
-                </span>
-                {progress.total > 0 && (
-                  <span className="tabular-nums text-muted-foreground">
-                    {progress.have} / {progress.total}
-                  </span>
-                )}
+        <div className="glass scanner-status mt-3 rounded-2xl p-4 animate-fade-up">
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-3">
+              <div className="relative flex h-8 w-8 items-center justify-center rounded-full bg-secondary">
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                <div className="absolute inset-0 rounded-full border-2 border-primary/20" />
               </div>
-              {scanInfo ? (
-                <div className="truncate text-[11px] text-muted-foreground">{scanInfo.name}</div>
-              ) : (
-                <div className="text-[11px] text-muted-foreground">Keep the QR stream inside the frame.</div>
-              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-xs font-semibold">
+                    {progress.total > 0 ? `Assembling ${label}…` : qrBox ? "Stream locked" : "Searching for stream…"}
+                  </span>
+                  {progress.total > 0 && (
+                    <span className="shrink-0 tabular-nums text-[10px] font-bold text-muted-foreground">
+                      {progress.have} / {progress.total}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                  {scanInfo ? scanInfo.name : "Position the camera toward the QR stream"}
+                </div>
+              </div>
             </div>
-          </div>
-          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-secondary">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-all duration-300"
-              style={{ width: `${pct}%` }}
-            />
+            
+            <div className="relative h-2 overflow-hidden rounded-full bg-secondary/50">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-all duration-300"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
           </div>
         </div>
       )}
