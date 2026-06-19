@@ -87,6 +87,14 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "format-detection", content: "telephone=no" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
+      { title: "Lovable App" },
+      { property: "og:title", content: "Lovable App" },
+      { name: "twitter:title", content: "Lovable App" },
+      { name: "description", content: "OFFDROP converts images and videos into scannable QR codes for offline sharing." },
+      { property: "og:description", content: "OFFDROP converts images and videos into scannable QR codes for offline sharing." },
+      { name: "twitter:description", content: "OFFDROP converts images and videos into scannable QR codes for offline sharing." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5deb9b38-7eb8-451b-a2c5-b1b5a113b32f/id-preview-ccd62582--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781891913071.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5deb9b38-7eb8-451b-a2c5-b1b5a113b32f/id-preview-ccd62582--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781891913071.png" },
     ],
     links: [
       {
