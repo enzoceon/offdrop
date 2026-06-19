@@ -12,6 +12,17 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 
+const themeInitScript = `
+(() => {
+  try {
+    const stored = localStorage.getItem("offdrop-theme") || localStorage.getItem("theme");
+    const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const dark = stored ? stored === "dark" : prefersDark;
+    document.documentElement.classList.toggle("dark", dark);
+    document.documentElement.style.colorScheme = dark ? "dark" : "light";
+  } catch (_) {}
+})();`;
+
 function NotFoundComponent() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -79,27 +90,52 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       {
         name: "viewport",
         content:
-          "width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover",
+          "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover",
       },
-      { name: "theme-color", content: "#0a0a14" },
+      { name: "theme-color", content: "#08111f" },
       { name: "apple-mobile-web-app-capable", content: "yes" },
       { name: "apple-mobile-web-app-status-bar-style", content: "black-translucent" },
       { name: "format-detection", content: "telephone=no" },
+      { name: "application-name", content: "OFFDROP" },
+      { property: "og:site_name", content: "OFFDROP" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
-      { title: "Lovable App" },
-      { property: "og:title", content: "Lovable App" },
-      { name: "twitter:title", content: "Lovable App" },
-      { name: "description", content: "OFFDROP converts images and videos into scannable QR codes for offline sharing." },
-      { property: "og:description", content: "OFFDROP converts images and videos into scannable QR codes for offline sharing." },
-      { name: "twitter:description", content: "OFFDROP converts images and videos into scannable QR codes for offline sharing." },
+      { title: "OFFDROP — Offline QR File Transfer" },
+      { property: "og:title", content: "OFFDROP — Offline QR File Transfer" },
+      { name: "twitter:title", content: "OFFDROP — Offline QR File Transfer" },
+      { name: "description", content: "OFFDROP shares photos, videos, audio, and files offline with animated QR transfer streams." },
+      { property: "og:description", content: "Share photos, videos, audio, and files offline with animated QR transfer streams." },
+      { name: "twitter:description", content: "Share photos, videos, audio, and files offline with animated QR transfer streams." },
       { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5deb9b38-7eb8-451b-a2c5-b1b5a113b32f/id-preview-ccd62582--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781891913071.png" },
       { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5deb9b38-7eb8-451b-a2c5-b1b5a113b32f/id-preview-ccd62582--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781891913071.png" },
     ],
     links: [
+      { rel: "preconnect", href: "https://fonts.googleapis.com" },
+      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap",
+      },
+      { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+      { rel: "manifest", href: "/site.webmanifest" },
       {
         rel: "stylesheet",
         href: appCss,
+      },
+    ],
+    scripts: [
+      {
+        type: "application/ld+json",
+        children: JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "WebApplication",
+          name: "OFFDROP",
+          url: "https://offdrop.app/",
+          applicationCategory: "UtilitiesApplication",
+          operatingSystem: "Any",
+          description:
+            "Offline QR file transfer for photos, videos, audio, and files across devices.",
+        }),
       },
     ],
   }),
@@ -113,6 +149,7 @@ function RootShell({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <HeadContent />
       </head>
       <body>
