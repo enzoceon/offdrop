@@ -27,6 +27,15 @@ export const PROTOCOL_PREFIX = "OD1";
 export const CHUNK_SIZE = 120;
 export const MIN_FRAMES = 60;
 
+export function expectedBase64Length(byteSize: number): number {
+  if (byteSize <= 0) return 0;
+  return Math.ceil(byteSize / 3) * 4;
+}
+
+export function requiredDataChunks(byteSize: number): number {
+  return Math.ceil(expectedBase64Length(byteSize) / CHUNK_SIZE);
+}
+
 export function buildChunkPayload(meta: ChunkMeta, data: string): string {
   return `${PROTOCOL_PREFIX}|${JSON.stringify(meta)}|${data}`;
 }
@@ -82,14 +91,26 @@ export async function fileToChunks(file: File): Promise<{ id: string; chunks: st
 }
 
 export function transferComplete(t: Transfer): boolean {
-  return t.total > 0 && t.chunks.size === t.total;
+  if (t.total < 1) return false;
+  const required = requiredDataChunks(t.size);
+  if (required > t.total) return false;
+  for (let i = 0; i < required; i++) {
+    if (!t.chunks.has(i)) return false;
+  }
+  return true;
 }
 
 export function assembleTransfer(t: Transfer): Blob {
   const parts: string[] = [];
-  for (let i = 0; i < t.total; i++) parts.push(t.chunks.get(i) || "");
+  const required = requiredDataChunks(t.size);
+  for (let i = 0; i < required; i++) {
+    const chunk = t.chunks.get(i);
+    if (chunk === undefined) throw new Error("Transfer is missing QR frames.");
+    parts.push(chunk);
+  }
   const b64 = parts.join("");
   const bytes = base64ToBytes(b64);
+  if (bytes.byteLength !== t.size) throw new Error("Transfer size verification failed.");
   return new Blob([bytes as BlobPart], { type: t.mime });
 }
 
