@@ -198,6 +198,22 @@ export function Sender() {
     [preview],
   );
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
+      if (event.code === "Space") {
+        event.preventDefault();
+        if (chunks.length) togglePlaying();
+      }
+      if (event.key.toLowerCase() === "r") resetPlayback();
+      if (event.key.toLowerCase() === "l") toggleLoop();
+      if (event.key.toLowerCase() === "m") toggleMute();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
   const cycleSeconds = chunks.length / fps;
   const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
   const currentDataIndex =
@@ -341,7 +357,7 @@ export function Sender() {
             </div>
           </div>
           <button
-            onClick={reset}
+            onClick={removeFile}
             className="glass grid h-10 w-10 shrink-0 place-items-center rounded-full text-muted-foreground transition-all hover:text-foreground active:scale-90"
             aria-label="Remove file"
           >
@@ -351,11 +367,10 @@ export function Sender() {
       </div>
 
       <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-[2rem] p-4">
-        <canvas
-          ref={canvasRef}
-          className={cn("h-full w-full", chunks.length === 0 && "opacity-0")}
-        />
-        {chunks.length === 0 && (
+        {qrImage && chunks.length > 0 && (
+          <img src={qrImage} alt="OFFDROP transfer QR frame" className="h-full w-full object-contain" />
+        )}
+        {(!qrImage || chunks.length === 0) && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm font-medium text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
             Loading…
