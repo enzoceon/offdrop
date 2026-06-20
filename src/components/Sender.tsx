@@ -68,41 +68,48 @@ export function Sender() {
   const chunks = slots;
 
   async function onPick(f: File) {
-    if (preview) URL.revokeObjectURL(preview);
-    setFile(f);
-    setSlots([]);
-    setTotalData(0);
-    setIdx(0);
-    setPlaying(false);
-    setQrImage(null);
-    setPreview(URL.createObjectURL(f));
-    setPreviewOpen(false);
-    const buf = new Uint8Array(await f.arrayBuffer());
-    const planned = await planTransferInWorker(f, buf);
-    setTotalData(planned.totalData);
-    setSlots(planned.slots);
-    sfx.fileFound();
-    void saveItem({
-      id: planned.id + "-sent-" + Date.now(),
-      filename: f.name,
-      mime: f.type || "application/octet-stream",
-      size: f.size,
-      receivedAt: Date.now(),
-      direction: "sent",
-      valid: true,
-    });
+    try {
+      if (preview) URL.revokeObjectURL(preview);
+      setFile(f);
+      setSlots([]);
+      setTotalData(0);
+      setIdx(0);
+      setPlaying(false);
+      setQrError(null);
+      setQrImage(null);
+      setPreview(URL.createObjectURL(f));
+      setPreviewOpen(false);
+      const buf = new Uint8Array(await f.arrayBuffer());
+      const planned = await planTransferInWorker(f, buf);
+      setTotalData(planned.totalData);
+      setSlots(planned.slots);
+      sfx.fileFound();
+      void saveItem({
+        id: planned.id + "-sent-" + Date.now(),
+        filename: f.name,
+        mime: f.type || "application/octet-stream",
+        size: f.size,
+        receivedAt: Date.now(),
+        direction: "sent",
+        valid: true,
+      });
+    } catch (error) {
+      setQrError(error instanceof Error ? error.message : "This file could not be prepared.");
+      setPlaying(false);
+      sfx.error();
+    }
   }
 
   // Render current QR
   useEffect(() => {
-    if (!canvasRef.current || chunks.length === 0) return;
+    if (chunks.length === 0) return;
     setQrError(null);
-    const canvas = canvasRef.current;
+    const canvas = document.createElement("canvas");
     const text = chunks[idx]?.text ?? "";
     if (!text) return;
     QRCode.toCanvas(canvas, text, {
       errorCorrectionLevel: "M",
-      margin: 4,
+      margin: 1,
       width: 720,
       color: { dark: "#000000", light: "#ffffff" },
     })
@@ -114,6 +121,7 @@ export function Sender() {
           inversionAttempts: "attemptBoth",
         });
         if (verified?.data !== text) throw new Error("Generated QR failed verification.");
+        setQrImage(canvas.toDataURL("image/png"));
       })
       .catch((err) => {
         console.error("QR generation failed:", err);
@@ -126,12 +134,17 @@ export function Sender() {
   useEffect(() => {
     if (!playing || chunks.length === 0) return;
     const id = setInterval(() => {
-      setIdx((i) => (i + 1) % chunks.length);
+      setIdx((i) => {
+        if (i < chunks.length - 1) return i + 1;
+        if (loop) return 0;
+        setPlaying(false);
+        return i;
+      });
     }, 1000 / fps);
     return () => clearInterval(id);
-  }, [playing, fps, chunks.length]);
+  }, [playing, fps, loop, chunks.length]);
 
-  function reset() {
+  function removeFile() {
     setFile(null);
     setSlots([]);
     setTotalData(0);
@@ -144,6 +157,38 @@ export function Sender() {
     if (preview) URL.revokeObjectURL(preview);
     setPreview(null);
     if (inputRef.current) inputRef.current.value = "";
+  }
+
+  function resetPlayback() {
+    setIdx(0);
+    setPlaying(false);
+    sfx.reset();
+  }
+
+  function togglePlaying() {
+    setPlaying((p) => {
+      const next = !p;
+      if (next) sfx.start();
+      else sfx.pause();
+      return next;
+    });
+  }
+
+  function toggleLoop() {
+    setLoop((value) => {
+      const next = !value;
+      if (next) sfx.toggleOn();
+      else sfx.toggleOff();
+      return next;
+    });
+  }
+
+  function toggleMute() {
+    setMuted((value) => {
+      const next = !value;
+      sfx.setMuted(next);
+      return next;
+    });
   }
 
   useEffect(
