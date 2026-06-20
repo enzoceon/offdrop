@@ -26,8 +26,8 @@ type ScannerProps = {
   onBusyChange?: (busy: boolean) => void;
 };
 
-const CAMERA_TRANSITION_MS = 650;
-const DECODE_INTERVAL_MS = 48;
+const CAMERA_TRANSITION_MS = 350;
+const DECODE_INTERVAL_MS = 32;
 
 function waitForVideoMetadata(video: HTMLVideoElement) {
   if (video.readyState >= video.HAVE_METADATA) return Promise.resolve();
@@ -89,7 +89,7 @@ function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResu
   if (side !== w || side !== h) {
     attempts.push([Math.round((w - side) / 2), Math.round((h - side) / 2), side, side]);
   }
-  for (const ratio of [0.82, 0.66]) {
+  for (const ratio of [0.85, 0.7, 0.55]) {
     const crop = Math.max(160, Math.round(side * ratio));
     if (crop < side) {
       attempts.push([Math.round((w - crop) / 2), Math.round((h - crop) / 2), crop, crop]);
@@ -97,12 +97,16 @@ function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResu
   }
 
   const seen = new Set<string>();
+  let firstAttempt = true;
   for (const [sx, sy, sw, sh] of attempts) {
     const key = `${sx}:${sy}:${sw}:${sh}`;
     if (seen.has(key)) continue;
     seen.add(key);
     const img = ctx.getImageData(sx, sy, sw, sh);
-    const code = jsQR(img.data, sw, sh, { inversionAttempts: "dontInvert" });
+    const code = jsQR(img.data, sw, sh, {
+      inversionAttempts: firstAttempt ? "dontInvert" : "attemptBoth",
+    });
+    firstAttempt = false;
     if (!code?.data) continue;
     const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = code.location;
     const offset = (p: Point): Point => ({ x: p.x + sx, y: p.y + sy });
@@ -234,9 +238,14 @@ export function Scanner({
       await new Promise((resolve) => setTimeout(resolve, CAMERA_TRANSITION_MS));
     }
     scanningRef.current = false;
+    finishingRef.current = false;
+    transferRef.current = null;
+    lastSeenRef.current.clear();
     setActive(false);
     setStarting(false);
     setQrBox(null);
+    setScanInfo(null);
+    setProgress({ have: 0, total: 0 });
     boxVisibleRef.current = false;
     cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -260,7 +269,7 @@ export function Scanner({
         video.videoHeight > 0
       ) {
         lastDecodeRef.current = now;
-        const scale = Math.min(1, 480 / Math.max(video.videoWidth, video.videoHeight));
+        const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
         const w = Math.max(1, Math.round(video.videoWidth * scale));
         const h = Math.max(1, Math.round(video.videoHeight * scale));
         if (canvas.width !== w) canvas.width = w;
@@ -422,7 +431,7 @@ export function Scanner({
 
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
-      <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-[2rem]">
+      <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl">
         <video
           ref={videoRef}
           playsInline
@@ -432,7 +441,7 @@ export function Scanner({
         />
         <canvas ref={canvasRef} className="hidden" />
 
-        {!active && !done && (
+        {!active && !starting && !done && (
           <div className="absolute inset-0 px-6 text-center">
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="relative">
@@ -448,6 +457,12 @@ export function Scanner({
           </div>
         )}
 
+        {starting && !active && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          </div>
+        )}
+
         {done && (
           <div className="flex flex-col items-center text-center animate-fade-up">
             <CheckCircle2 className="h-16 w-16 text-primary" strokeWidth={1.8} />
@@ -458,8 +473,13 @@ export function Scanner({
 
         {active && (
           <>
-            <div className="pointer-events-none absolute inset-6 rounded-[1.5rem] border-2 border-primary/70 shadow-[0_0_0_9999px_oklch(0_0_0/0.22)]" />
-            <div className="pointer-events-none absolute inset-x-8 inset-y-8 overflow-hidden rounded-[1.1rem]">
+            <div className="pointer-events-none absolute inset-3 rounded-xl">
+              <span className="absolute left-0 top-0 h-7 w-7 rounded-tl-xl border-l-[3px] border-t-[3px] border-primary" />
+              <span className="absolute right-0 top-0 h-7 w-7 rounded-tr-xl border-r-[3px] border-t-[3px] border-primary" />
+              <span className="absolute bottom-0 left-0 h-7 w-7 rounded-bl-xl border-b-[3px] border-l-[3px] border-primary" />
+              <span className="absolute bottom-0 right-0 h-7 w-7 rounded-br-xl border-b-[3px] border-r-[3px] border-primary" />
+            </div>
+            <div className="pointer-events-none absolute inset-3 overflow-hidden rounded-xl">
               <div className="scan-sweep absolute left-0 right-0 top-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent" />
             </div>
             {qrBox && (
