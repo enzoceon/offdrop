@@ -316,23 +316,23 @@ export function History({ refreshKey }: { refreshKey: number }) {
                       </div>
                       <div className="mt-2 flex items-center gap-1.5 sm:mt-3 sm:gap-2">
                         <button
-                          onClick={() => onDownload(it)}
+                          onClick={() => void onDownload(it)}
                           disabled={!it.blob}
-                          className="flex items-center gap-1.5 rounded-full bg-gradient-to-br from-primary to-accent px-3 py-1.5 text-[11px] font-semibold text-primary-foreground shadow-md shadow-primary/25 active:scale-95 disabled:opacity-50 sm:px-4 sm:py-2 sm:text-xs"
+                          className="flex min-w-[4.6rem] items-center justify-center gap-1.5 rounded-full bg-gradient-to-br from-primary to-accent px-3 py-1.5 text-[11px] font-semibold text-primary-foreground shadow-md shadow-primary/25 active:scale-95 disabled:opacity-50 sm:px-4 sm:py-2 sm:text-xs"
                         >
-                          <Download className="h-3 w-3 sm:h-3.5 sm:w-3.5" /> Save
+                          {busyAction === `download:${it.id}` ? <Loader2 className="h-3 w-3 animate-spin sm:h-3.5 sm:w-3.5" /> : <Download className="h-3 w-3 sm:h-3.5 sm:w-3.5" />} Save
                         </button>
                         <button
-                          onClick={() => onShare(it)}
+                          onClick={() => void onShare(it)}
                           disabled={!it.blob}
-                          className="flex items-center gap-1.5 rounded-full bg-gradient-to-br from-primary to-accent px-3 py-1.5 text-[11px] font-semibold text-primary-foreground shadow-md shadow-primary/25 active:scale-95 disabled:opacity-50 sm:px-4 sm:py-2 sm:text-xs"
+                          className="flex min-w-[4.9rem] items-center justify-center gap-1.5 rounded-full bg-gradient-to-br from-primary to-accent px-3 py-1.5 text-[11px] font-semibold text-primary-foreground shadow-md shadow-primary/25 active:scale-95 disabled:opacity-50 sm:px-4 sm:py-2 sm:text-xs"
                         >
-                          <Share2 className="h-3 w-3 sm:h-3.5 sm:w-3.5" /> Share
+                          {busyAction === `share:${it.id}` ? <Loader2 className="h-3 w-3 animate-spin sm:h-3.5 sm:w-3.5" /> : <Share2 className="h-3 w-3 sm:h-3.5 sm:w-3.5" />} Share
                         </button>
                         <button
                           onClick={() => requestDelete(it)}
                           aria-label="Delete file"
-                          className="liquid-control ml-auto grid h-8 w-8 place-items-center rounded-full text-destructive active:scale-90 sm:h-9 sm:w-9"
+                          className="history-delete ml-auto grid h-8 w-8 place-items-center rounded-full text-destructive active:scale-90 sm:h-9 sm:w-9"
                         >
                           <Trash2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                         </button>
