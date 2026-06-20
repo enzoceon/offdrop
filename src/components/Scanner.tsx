@@ -141,8 +141,8 @@ function waitForUsableVideo(video: HTMLVideoElement) {
 }
 
 async function openCameraStream(facingMode: "environment" | "user") {
-  try {
-    return await navigator.mediaDevices.getUserMedia({
+  const attempts: MediaStreamConstraints[] = [
+    {
       video: {
         facingMode: { exact: facingMode },
         width: { ideal: 1280 },
@@ -150,9 +150,8 @@ async function openCameraStream(facingMode: "environment" | "user") {
         frameRate: { ideal: 30, max: 30 },
       },
       audio: false,
-    });
-  } catch {
-    return navigator.mediaDevices.getUserMedia({
+    },
+    {
       video: {
         facingMode: { ideal: facingMode },
         width: { ideal: 960 },
@@ -160,8 +159,19 @@ async function openCameraStream(facingMode: "environment" | "user") {
         frameRate: { ideal: 24, max: 30 },
       },
       audio: false,
-    });
+    },
+    { video: true, audio: false },
+  ];
+
+  let lastError: unknown;
+  for (const constraints of attempts) {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (error) {
+      lastError = error;
+    }
   }
+  throw lastError instanceof Error ? lastError : new Error("Camera permission is unavailable in this browser.");
 }
 
 async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] = ["single-shot", "continuous"]) {
