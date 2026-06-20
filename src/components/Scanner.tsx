@@ -4,10 +4,11 @@ import {
   Camera,
   CameraOff,
   CheckCircle2,
+  Download,
   Loader2,
   ScanLine,
+  Share2,
   SwitchCamera,
-  Focus,
   Music2,
   FileText,
 } from "lucide-react";
@@ -33,19 +34,20 @@ type DonePreview = {
   name: string;
   mime: string;
   size: number;
+  blob: Blob;
   url?: string;
   aspectRatio: number;
 };
 type ScannerProps = {
   onSaved: () => void;
+  onCompleteAction?: () => void;
   stopRequestKey?: number;
   onStopRequestComplete?: () => void;
   onBusyChange?: (busy: boolean) => void;
 };
 
 const CAMERA_TRANSITION_MS = 320;
-const DECODE_INTERVAL_MS = 16;
-const AUTOFOCUS_INTERVAL_MS = 480;
+const DECODE_INTERVAL_MS = 34;
 
 function waitForVideoMetadata(video: HTMLVideoElement) {
   if (video.readyState >= video.HAVE_METADATA) return Promise.resolve();
@@ -101,10 +103,10 @@ function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResu
   if (side !== w || side !== h) {
     attempts.push([Math.round((w - side) / 2), Math.round((h - side) / 2), side, side]);
   }
-  // Single tighter center crop for far-range fallback. Autofocus handles the rest.
-  const tight = Math.max(192, Math.round(side * 0.7));
-  if (tight < side) {
-    attempts.push([Math.round((w - tight) / 2), Math.round((h - tight) / 2), tight, tight]);
+  const medium = Math.max(220, Math.round(side * 0.82));
+  const tight = Math.max(192, Math.round(side * 0.62));
+  for (const crop of [medium, tight]) {
+    if (crop < side) attempts.push([Math.round((w - crop) / 2), Math.round((h - crop) / 2), crop, crop]);
   }
 
   let firstAttempt = true;
@@ -160,8 +162,38 @@ async function detectAspectRatio(blob: Blob, mime: string, url: string): Promise
   return mime.startsWith("audio/") ? 16 / 9 : 4 / 3;
 }
 
+function AnimatedPercent({ value }: { value: number }) {
+  const [display, setDisplay] = useState(value);
+  const fromRef = useRef(value);
+
+  useEffect(() => {
+    const from = fromRef.current;
+    const to = value;
+    const start = performance.now();
+    const duration = 420;
+    let frame = 0;
+    const animate = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const next = from + (to - from) * eased;
+      setDisplay(next);
+      if (t < 1) frame = requestAnimationFrame(animate);
+      else fromRef.current = to;
+    };
+    frame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frame);
+  }, [value]);
+
+  return (
+    <div className="mt-3 text-center text-5xl font-medium leading-none tabular-nums text-foreground sm:text-6xl">
+      {Math.round(display)}%
+    </div>
+  );
+}
+
 export function Scanner({
   onSaved,
+  onCompleteAction,
   stopRequestKey = 0,
   onStopRequestComplete,
   onBusyChange,
@@ -178,12 +210,10 @@ export function Scanner({
   const boxVisibleRef = useRef(false);
   const lastBoxUpdateRef = useRef(0);
   const frameErrorCountRef = useRef(0);
-  const lastAutofocusRef = useRef(0);
   const stopRef = useRef<(showStopping?: boolean, reason?: "manual" | "internal") => Promise<void>>(
     async () => {},
   );
   const facingRef = useRef<"environment" | "user">("environment");
-  const autofocusRef = useRef(false);
   const doneUrlRef = useRef<string | null>(null);
 
   const [active, setActive] = useState(false);
@@ -196,11 +226,10 @@ export function Scanner({
   );
   const [qrBox, setQrBox] = useState<QrBox | null>(null);
   const [done, setDone] = useState<DonePreview | null>(null);
-  const [autoFocus, setAutoFocus] = useState(false);
   const [facing, setFacing] = useState<"environment" | "user">("environment");
 
-  async function start(facingMode: "environment" | "user" = facingRef.current) {
-    if (active || starting || stopping) return;
+  async function start(facingMode: "environment" | "user" = facingRef.current, force = false) {
+    if (!force && (active || starting || stopping)) return;
     facingRef.current = facingMode;
     setFacing(facingMode);
     const startedAt = performance.now();
@@ -220,16 +249,24 @@ export function Scanner({
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            facingMode: { ideal: facingMode },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 },
+            facingMode: { exact: facingMode },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            frameRate: { ideal: 30, max: 60 },
             advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
           },
           audio: false,
         });
       } catch {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: facingMode },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+          },
+          audio: false,
+        });
       }
       streamRef.current = stream;
       for (const track of stream.getVideoTracks()) {
@@ -314,56 +351,43 @@ export function Scanner({
   async function flipCamera() {
     if (!active || stopping || starting) return;
     const next = facingRef.current === "environment" ? "user" : "environment";
-    await stop();
-    await start(next);
+    await stop(false);
+    await start(next, true);
   }
 
-  function toggleAutoFocus() {
-    setAutoFocus((prev) => {
-      const next = !prev;
-      autofocusRef.current = next;
-      if (!next) {
-        // Reset to base zoom when disabling
-        const track = streamRef.current?.getVideoTracks()[0];
-        const caps = track?.getCapabilities?.() as MediaTrackCapabilities & { zoom?: { min: number } };
-        if (track && caps?.zoom) {
-          track
-            .applyConstraints({ advanced: [{ zoom: caps.zoom.min } as MediaTrackConstraintSet] })
-            .catch(() => {});
-        }
+  function clearDonePreview() {
+    if (doneUrlRef.current) {
+      URL.revokeObjectURL(doneUrlRef.current);
+      doneUrlRef.current = null;
+    }
+    setDone(null);
+  }
+
+  function downloadDone() {
+    if (!done?.blob || !done.url) return;
+    const a = document.createElement("a");
+    a.href = done.url;
+    a.download = done.name || "offdrop-file";
+    a.click();
+    clearDonePreview();
+    onCompleteAction?.();
+  }
+
+  async function shareDone() {
+    if (!done?.blob) return;
+    try {
+      const file = new File([done.blob], done.name || "offdrop-file", { type: done.mime });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: done.name });
+      } else {
+        downloadDone();
+        return;
       }
-      return next;
-    });
-  }
-
-  function maybeAutoFocus(box: QrBox, w: number, h: number) {
-    if (!autofocusRef.current) return;
-    const now = performance.now();
-    if (now - lastAutofocusRef.current < AUTOFOCUS_INTERVAL_MS) return;
-    lastAutofocusRef.current = now;
-    const track = streamRef.current?.getVideoTracks()[0];
-    if (!track) return;
-    const caps = track.getCapabilities?.() as MediaTrackCapabilities & {
-      zoom?: { min: number; max: number; step?: number };
-    };
-    if (!caps?.zoom) return;
-    const settings = track.getSettings() as MediaTrackSettings & { zoom?: number };
-    const cur = settings.zoom ?? caps.zoom.min;
-    const xs = box.corners.map((p) => p.x);
-    const ys = box.corners.map((p) => p.y);
-    const qrSize =
-      Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) /
-      Math.min(w, h);
-    if (qrSize <= 0) return;
-    const target = 0.55;
-    const ratio = target / qrSize;
-    const damped = 1 + (ratio - 1) * 0.55;
-    let next = cur * damped;
-    next = Math.min(caps.zoom.max, Math.max(caps.zoom.min, next));
-    if (Math.abs(next - cur) / Math.max(0.0001, cur) < 0.04) return;
-    track
-      .applyConstraints({ advanced: [{ zoom: next } as MediaTrackConstraintSet] })
-      .catch(() => {});
+      clearDonePreview();
+      onCompleteAction?.();
+    } catch {
+      /* user cancelled */
+    }
   }
 
   function tick() {
@@ -381,7 +405,7 @@ export function Scanner({
         video.videoHeight > 0
       ) {
         lastDecodeRef.current = now;
-        const scale = Math.min(1, 720 / Math.max(video.videoWidth, video.videoHeight));
+        const scale = Math.min(1, 960 / Math.max(video.videoWidth, video.videoHeight));
         const w = Math.max(1, Math.round(video.videoWidth * scale));
         const h = Math.max(1, Math.round(video.videoHeight * scale));
         if (canvas.width !== w) canvas.width = w;
@@ -399,7 +423,6 @@ export function Scanner({
               lastBoxUpdateRef.current = now;
               setQrBox(box);
             }
-            maybeAutoFocus(box, w, h);
           } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
             boxVisibleRef.current = false;
             lastBoxUpdateRef.current = now;
@@ -478,6 +501,10 @@ export function Scanner({
       const valid = computed === t.header.crc;
       const mime = t.header.mime || "application/octet-stream";
       const blob = new Blob([bytes as BlobPart], { type: mime });
+      if (valid) sfx.success();
+      else sfx.error();
+      if (!valid) throw new Error("Received with errors — scan it again for a clean file.");
+
       await saveItem({
         id: t.header.id + "-" + Date.now(),
         filename: t.header.name,
@@ -489,8 +516,6 @@ export function Scanner({
         valid,
         blob,
       });
-      if (valid) sfx.success();
-      else sfx.error();
 
       const previewUrl = URL.createObjectURL(blob);
       doneUrlRef.current = previewUrl;
@@ -499,12 +524,10 @@ export function Scanner({
         name: t.header.name,
         mime,
         size: t.header.size,
+        blob,
         url: previewUrl,
         aspectRatio,
       });
-      if (!valid) {
-        setError("Received with errors — CRC mismatch. The file is saved but may be corrupted.");
-      }
       transferRef.current = null;
       lastSeenRef.current.clear();
       setScanInfo(null);
@@ -512,6 +535,10 @@ export function Scanner({
       await stop(true);
       onSaved();
     } catch (e) {
+      transferRef.current = null;
+      lastSeenRef.current.clear();
+      setScanInfo(null);
+      setProgress({ have: 0, total: 0 });
       setError(e instanceof Error ? e.message : "The scanned file could not be reconstructed yet.");
     } finally {
       finishingRef.current = false;
@@ -543,7 +570,7 @@ export function Scanner({
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
       <div
-        className="glass-strong relative mx-auto flex w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl"
+        className={`glass-strong relative mx-auto flex w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl ${done ? "order-2 mt-3" : ""}`}
         style={{
           aspectRatio: `${containerAspect} / 1`,
           transition: "aspect-ratio 0.55s cubic-bezier(0.2, 0.8, 0.2, 1)",
@@ -608,11 +635,23 @@ export function Scanner({
                 Received
               </div>
             </div>
-            <div className="border-t border-glass-border bg-background/50 px-3 py-2 backdrop-blur">
-              <div className="truncate text-xs font-semibold">{done.name}</div>
-              <div className="text-[10px] text-muted-foreground">
-                {(done.size / 1024).toFixed(1)} KB · {mediaLabel(done.mime)}
-              </div>
+            <div className="grid grid-cols-2 gap-2 border-t border-glass-border bg-background/50 p-2 backdrop-blur">
+              <button
+                type="button"
+                onClick={() => void shareDone()}
+                className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-primary to-accent py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97]"
+              >
+                <Share2 className="h-4 w-4" />
+                Share
+              </button>
+              <button
+                type="button"
+                onClick={downloadDone}
+                className="glass flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold active:scale-[0.97]"
+              >
+                <Download className="h-4 w-4" />
+                Download
+              </button>
             </div>
           </div>
         )}
@@ -650,7 +689,7 @@ export function Scanner({
         </div>
       )}
 
-      <div className="mt-3 flex items-center justify-center gap-2">
+      <div className={`${done ? "order-1 mt-0" : "mt-3"} flex items-center justify-center gap-2`}>
         {!active && !stopping ? (
           <button
             onClick={() => void start()}
@@ -666,23 +705,10 @@ export function Scanner({
               onClick={() => void flipCamera()}
               disabled={stopping || starting}
               aria-label={`Flip camera (current: ${facing === "environment" ? "back" : "front"})`}
-              className="glass flex h-12 shrink-0 items-center justify-center gap-1.5 rounded-2xl px-3.5 text-sm font-semibold active:scale-95 disabled:opacity-60 sm:h-14 sm:px-4 sm:text-base"
+              className="glass flex h-12 shrink-0 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-semibold active:scale-95 disabled:opacity-60 sm:h-14 sm:px-5 sm:text-base"
             >
               <SwitchCamera className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
-              Flip
-            </button>
-            <button
-              onClick={toggleAutoFocus}
-              disabled={stopping || starting}
-              aria-label={autoFocus ? "Disable auto focus" : "Enable auto focus"}
-              aria-pressed={autoFocus}
-              className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-60 sm:h-14 sm:w-14 ${
-                autoFocus
-                  ? "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/30"
-                  : "glass"
-              }`}
-            >
-              <Focus className="h-4 w-4 sm:h-5 sm:w-5" />
+              <span className="pr-0.5">Flip</span>
             </button>
             <button
               onClick={() => void stop(true)}
@@ -701,7 +727,7 @@ export function Scanner({
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="mx-auto mt-10 w-full max-w-sm animate-fade-up">
+        <div className="order-3 mx-auto mt-10 w-full max-w-sm animate-fade-up">
           <div className="flex items-center justify-center gap-2 text-center text-xs">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
             <span className="min-w-0 truncate text-center font-semibold">
@@ -726,6 +752,7 @@ export function Scanner({
           <div className="mt-2 truncate text-center text-[10px] text-muted-foreground">
             {scanInfo ? scanInfo.name : "Position the camera toward the qr code accurately"}
           </div>
+          <AnimatedPercent value={pct} />
         </div>
       )}
     </div>

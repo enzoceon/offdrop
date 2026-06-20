@@ -80,13 +80,14 @@ export function History({ refreshKey }: { refreshKey: number }) {
   const [filter, setFilter] = useState<FilterKey>("all");
   const [pendingDelete, setPendingDelete] = useState<HistoryItem | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [previewItem, setPreviewItem] = useState<HistoryItem | null>(null);
   const urlsRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
     listItems().then((items) => {
       if (cancelled) return;
-      setItems(items);
+      setItems(items.filter((item) => item.valid !== false));
       // Revoke previous URLs and re-create
       Object.values(urlsRef.current).forEach((u) => URL.revokeObjectURL(u));
       const map: Record<string, string> = {};
@@ -110,6 +111,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items.filter((it) => {
+      if (it.valid === false) return false;
       const dir = it.direction || "received";
       if (filter === "sent" && dir !== "sent") return false;
       if (filter === "received" && dir !== "received") return false;
@@ -172,6 +174,10 @@ export function History({ refreshKey }: { refreshKey: number }) {
     }
   }
 
+  function closePreview() {
+    setPreviewItem(null);
+  }
+
   const filterButtons: { key: FilterKey; label: string; icon: React.ReactNode }[] = [
     { key: "all", label: "All", icon: <LayoutGrid className="h-4 w-4" /> },
     { key: "sent", label: "Sent", icon: <Send className="h-4 w-4" /> },
@@ -183,27 +189,27 @@ export function History({ refreshKey }: { refreshKey: number }) {
       {/* Search + filter */}
       <div className="px-5 pb-3 sm:px-8">
         <div className="mx-auto flex w-full max-w-3xl items-center gap-2">
-          <div className="liquid-control flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full px-3 sm:h-12 sm:px-4">
+          <div className="glass flex h-12 min-w-0 flex-1 items-center gap-2 rounded-2xl px-4">
             <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground sm:h-4 sm:w-4" strokeWidth={2.2} />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search…"
               aria-label="Search files"
-              className="min-w-0 flex-1 bg-transparent text-xs font-medium placeholder:text-muted-foreground focus:outline-none sm:text-sm"
+              className="min-w-0 flex-1 bg-transparent text-sm font-semibold placeholder:text-muted-foreground focus:outline-none"
             />
             {query && (
               <button
                 type="button"
                 onClick={() => setQuery("")}
                 aria-label="Clear search"
-                className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-secondary text-muted-foreground active:scale-90 sm:h-6 sm:w-6"
+                className="glass grid h-8 w-8 shrink-0 place-items-center rounded-xl text-muted-foreground active:scale-90"
               >
-                <X className="h-3 w-3" />
+                <X className="h-4 w-4" />
               </button>
             )}
           </div>
-          <div className="liquid-control flex h-10 shrink-0 items-center rounded-full p-1 sm:h-12 sm:p-1.5">
+          <div className="glass grid h-12 shrink-0 grid-cols-3 items-center gap-1 rounded-2xl p-1">
             {filterButtons.map((f) => {
               const active = filter === f.key;
               return (
@@ -213,7 +219,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
                   onClick={() => setFilter(f.key)}
                   aria-label={f.label}
                   aria-pressed={active}
-                  className={`grid h-8 w-8 place-items-center rounded-full transition-all sm:h-9 sm:w-9 ${
+                  className={`grid h-10 w-10 place-items-center rounded-xl transition-all ${
                     active
                       ? "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-md shadow-primary/30"
                       : "text-muted-foreground active:scale-90"
@@ -254,7 +260,15 @@ export function History({ refreshKey }: { refreshKey: number }) {
               return (
                 <div key={it.id} className="glass overflow-hidden rounded-2xl animate-fade-up sm:rounded-3xl">
                   <div className="flex gap-3 p-3 sm:gap-4 sm:p-4">
-                    <div className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary sm:h-24 sm:w-24 sm:rounded-2xl">
+                    <div
+                      onClick={() => urls[it.id] && it.mime.startsWith("image/") && setPreviewItem(it)}
+                      className={`relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary text-left transition-transform sm:h-24 sm:w-24 sm:rounded-2xl ${
+                        urls[it.id] && it.mime.startsWith("image/") ? "cursor-pointer active:scale-95" : ""
+                      }`}
+                      role={it.mime.startsWith("image/") ? "button" : undefined}
+                      aria-label={it.mime.startsWith("image/") ? "Open image preview" : undefined}
+                      tabIndex={it.mime.startsWith("image/") ? 0 : undefined}
+                    >
                       <MediaPreview item={it} url={urls[it.id]} />
                       {it.mime.startsWith("video/") && (
                         <Film className="absolute h-5 w-5 text-primary-foreground drop-shadow" />
@@ -371,6 +385,31 @@ export function History({ refreshKey }: { refreshKey: number }) {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {previewItem && urls[previewItem.id] && previewItem.mime.startsWith("image/") && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-background/35 px-4 py-20 backdrop-blur-sm animate-fade-up"
+          role="dialog"
+          aria-modal="true"
+          onClick={closePreview}
+        >
+          <img
+            src={urls[previewItem.id]}
+            alt={previewItem.filename}
+            className="max-h-[calc(100dvh-6rem)] max-w-[calc(100vw-2rem)] rounded-xl object-contain shadow-2xl shadow-foreground/20"
+            onClick={(event) => event.stopPropagation()}
+          />
+          <button
+            type="button"
+            onClick={closePreview}
+            className="glass absolute right-3 z-[81] grid h-9 w-9 place-items-center rounded-full text-foreground active:scale-90 sm:right-4 sm:h-10 sm:w-10"
+            style={{ top: "max(env(safe-area-inset-top), 0.75rem)" }}
+            aria-label="Close preview"
+          >
+            <X className="h-4 w-4" strokeWidth={2.4} />
+          </button>
         </div>
       )}
     </div>

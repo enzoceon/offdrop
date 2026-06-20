@@ -53,7 +53,7 @@ function formatDuration(seconds: number) {
   return mins ? `${mins}m ${secs.toString().padStart(2, "0")}s` : `${secs}s`;
 }
 
-export function Sender() {
+export function Sender({ active = true }: { active?: boolean }) {
   const [file, setFile] = useState<File | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]);
   const [totalData, setTotalData] = useState(0);
@@ -100,6 +100,7 @@ export function Sender() {
         receivedAt: Date.now(),
         direction: "sent",
         valid: true,
+        blob: f,
       });
     } catch (error) {
       setQrError(error instanceof Error ? error.message : "This file could not be prepared.");
@@ -116,10 +117,10 @@ export function Sender() {
     const text = chunks[idx]?.text ?? "";
     if (!text) return;
     QRCode.toCanvas(canvas, text, {
-      errorCorrectionLevel: "M",
+      errorCorrectionLevel: "Q",
       version: 20,
       margin: 2,
-      width: 720,
+      width: 820,
       color: { dark: "#000000", light: "#ffffff" },
     })
       .then(() => {
@@ -210,6 +211,10 @@ export function Sender() {
     },
     [preview],
   );
+
+  useEffect(() => {
+    if (!active && previewOpen) closePreview();
+  }, [active, previewOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -462,11 +467,10 @@ export function Sender() {
 
       {previewOpen && preview && canOpenPreview && (
         <div
-          className="fixed inset-0 z-[80] bg-background/45 backdrop-blur-[56px] animate-fade-up"
+          className="fixed inset-0 z-[80] bg-background/35 backdrop-blur-sm animate-fade-up"
           role="dialog"
           aria-modal="true"
         >
-          <div className="absolute inset-0 bg-background/20" />
           <div className="absolute inset-0 flex items-center justify-center px-4 py-20 sm:px-8">
             {file.type.startsWith("image/") && (
               <img
