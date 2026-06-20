@@ -108,9 +108,9 @@ export function History({ refreshKey }: { refreshKey: number }) {
         <div className="grid h-20 w-20 place-items-center rounded-3xl bg-secondary">
           <FileQuestion className="h-9 w-9 text-muted-foreground" />
         </div>
-        <h2 className="text-display mt-5 text-2xl">No transfers yet</h2>
+        <h2 className="text-display mt-5 text-2xl">Nothing here yet</h2>
         <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-          <span className="block">Received files show up here.</span>
+          <span className="block">Received files will show up here.</span>
           <span className="block">Everything stays on this device locally.</span>
         </p>
       </div>
