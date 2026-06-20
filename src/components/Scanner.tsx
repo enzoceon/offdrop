@@ -666,32 +666,33 @@ export function Scanner({
               onClick={() => void flipCamera()}
               disabled={stopping || starting}
               aria-label={`Flip camera (current: ${facing === "environment" ? "back" : "front"})`}
-              className="glass grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-60"
+              className="glass flex h-12 shrink-0 items-center justify-center gap-1.5 rounded-2xl px-3.5 text-sm font-semibold active:scale-95 disabled:opacity-60 sm:h-14 sm:px-4 sm:text-base"
             >
-              <RefreshCw className="h-4 w-4" />
+              <SwitchCamera className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
+              Flip
             </button>
             <button
               onClick={toggleAutoFocus}
               disabled={stopping || starting}
               aria-label={autoFocus ? "Disable auto focus" : "Enable auto focus"}
               aria-pressed={autoFocus}
-              className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-60 ${
+              className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-60 sm:h-14 sm:w-14 ${
                 autoFocus
                   ? "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/30"
                   : "glass"
               }`}
             >
-              <Focus className="h-4 w-4" />
+              <Focus className="h-4 w-4 sm:h-5 sm:w-5" />
             </button>
             <button
               onClick={() => void stop(true)}
               disabled={stopping}
-              className="glass flex flex-1 max-w-[14rem] items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80"
+              className="glass flex max-w-[14rem] flex-1 items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80 sm:py-4 sm:text-base"
             >
               {stopping ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
               ) : (
-                <CameraOff className="h-4 w-4" />
+                <CameraOff className="h-4 w-4 sm:h-5 sm:w-5" />
               )}
               {stopping ? "Stopping" : "Stop Camera"}
             </button>
