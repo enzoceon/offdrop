@@ -926,22 +926,31 @@ export function Scanner({
                 <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
                 Received
               </div>
+              <button
+                type="button"
+                onClick={clearDonePreview}
+                className="glass absolute right-3 top-3 z-10 grid h-8 w-8 place-items-center rounded-full text-foreground active:scale-90"
+                aria-label="Close received preview"
+              >
+                <X className="h-3.5 w-3.5" strokeWidth={2.5} />
+              </button>
             </div>
             <div className="grid grid-cols-2 gap-2 border-t border-glass-border bg-background/50 p-2 backdrop-blur">
               <button
                 type="button"
                 onClick={() => void shareDone()}
-                className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-primary to-accent py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97]"
+                className="glass flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold active:scale-[0.97]"
               >
                 <Share2 className="h-4 w-4" />
                 Share
               </button>
               <button
                 type="button"
-                onClick={downloadDone}
-                className="glass flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold active:scale-[0.97]"
+                onClick={() => void downloadDone()}
+                disabled={downloading}
+                className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-primary to-accent py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97] disabled:opacity-85"
               >
-                <Download className="h-4 w-4" />
+                {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                 Download
               </button>
             </div>
