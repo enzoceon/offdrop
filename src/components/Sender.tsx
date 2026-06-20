@@ -7,6 +7,7 @@ import {
   Pause,
   RotateCcw,
   X,
+  Repeat2,
   Music2,
   FileText,
   HardDrive,
@@ -14,9 +15,20 @@ import {
   Clock,
   Loader2,
   Volume2,
+  VolumeX,
 } from "lucide-react";
-import { planFile, buildSequence, type Slot } from "@/lib/qr-protocol";
+import { type Slot } from "@/lib/qr-protocol";
+import { planTransferInWorker } from "@/lib/transfer-planner.client";
+import { saveItem } from "@/lib/history";
+import { sfx } from "@/lib/feedback";
 import { cn } from "@/lib/utils";
+
+const SPEEDS = [
+  { label: "Gentle", fps: 2 },
+  { label: "Normal", fps: 5 },
+  { label: "Fast", fps: 8 },
+  { label: "Turbo", fps: 10 },
+];
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -39,13 +51,15 @@ export function Sender() {
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(5);
+  const [loop, setLoop] = useState(true);
+  const [muted, setMuted] = useState(() => sfx.muted);
   const [preview, setPreview] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
+  const [qrImage, setQrImage] = useState<string | null>(null);
   const [mediaPlaying, setMediaPlaying] = useState(false);
   const [mediaTime, setMediaTime] = useState(0);
   const [mediaDuration, setMediaDuration] = useState(0);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const videoPreviewRef = useRef<HTMLVideoElement>(null);
   const audioPreviewRef = useRef<HTMLAudioElement>(null);
@@ -60,13 +74,23 @@ export function Sender() {
     setTotalData(0);
     setIdx(0);
     setPlaying(false);
+    setQrImage(null);
     setPreview(URL.createObjectURL(f));
     setPreviewOpen(false);
     const buf = new Uint8Array(await f.arrayBuffer());
-    const plan = planFile({ name: f.name, type: f.type, size: f.size, bytes: buf });
-    const seq = buildSequence(plan);
-    setTotalData(plan.total);
-    setSlots(seq);
+    const planned = await planTransferInWorker(f, buf);
+    setTotalData(planned.totalData);
+    setSlots(planned.slots);
+    sfx.fileFound();
+    void saveItem({
+      id: planned.id + "-sent-" + Date.now(),
+      filename: f.name,
+      mime: f.type || "application/octet-stream",
+      size: f.size,
+      receivedAt: Date.now(),
+      direction: "sent",
+      valid: true,
+    });
   }
 
   // Render current QR
