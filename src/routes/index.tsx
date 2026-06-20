@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { GlassTabs, type TabKey } from "@/components/GlassTabs";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { MuteToggle } from "@/components/MuteToggle";
 import { Sender } from "@/components/Sender";
 import { Scanner } from "@/components/Scanner";
 import { History } from "@/components/History";
