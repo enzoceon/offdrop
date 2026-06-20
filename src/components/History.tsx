@@ -385,6 +385,31 @@ export function History({ refreshKey }: { refreshKey: number }) {
           </div>
         </div>
       )}
+
+      {previewItem && urls[previewItem.id] && previewItem.mime.startsWith("image/") && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-background/35 px-4 py-20 backdrop-blur-sm animate-fade-up"
+          role="dialog"
+          aria-modal="true"
+          onClick={closePreview}
+        >
+          <img
+            src={urls[previewItem.id]}
+            alt={previewItem.filename}
+            className="max-h-[calc(100dvh-6rem)] max-w-[calc(100vw-2rem)] rounded-xl object-contain shadow-2xl shadow-foreground/20"
+            onClick={(event) => event.stopPropagation()}
+          />
+          <button
+            type="button"
+            onClick={closePreview}
+            className="glass absolute right-3 z-[81] grid h-9 w-9 place-items-center rounded-full text-foreground active:scale-90 sm:right-4 sm:h-10 sm:w-10"
+            style={{ top: "max(env(safe-area-inset-top), 0.75rem)" }}
+            aria-label="Close preview"
+          >
+            <X className="h-4 w-4" strokeWidth={2.4} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
