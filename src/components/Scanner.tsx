@@ -253,7 +253,6 @@ export function Scanner({
             width: { ideal: 1920 },
             height: { ideal: 1080 },
             frameRate: { ideal: 30, max: 60 },
-            advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
           },
           audio: false,
         });
@@ -269,18 +268,6 @@ export function Scanner({
         });
       }
       streamRef.current = stream;
-      for (const track of stream.getVideoTracks()) {
-        const capabilities = track.getCapabilities?.() as MediaTrackCapabilities & {
-          focusMode?: string[];
-        };
-        if (capabilities?.focusMode?.includes("continuous")) {
-          await track
-            .applyConstraints({
-              advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
-            })
-            .catch(() => {});
-        }
-      }
       if (videoRef.current) {
         const video = videoRef.current;
         video.muted = true;
