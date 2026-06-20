@@ -15,8 +15,6 @@ import {
   Layers3,
   Clock,
   Loader2,
-  Volume2,
-  VolumeX,
 } from "lucide-react";
 import { type Slot } from "@/lib/qr-protocol";
 import { saveItem } from "@/lib/history";
