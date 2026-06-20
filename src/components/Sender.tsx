@@ -519,16 +519,17 @@ export function Sender({ active = true }: { active?: boolean }) {
 
       {previewOpen && preview && canOpenPreview && (
         <div
-          className="fixed inset-0 z-[80] bg-background/35 backdrop-blur-sm animate-fade-up"
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-background/35 px-4 py-20 backdrop-blur-sm animate-fade-up"
           role="dialog"
           aria-modal="true"
+          onClick={closePreview}
         >
-          <div className="absolute inset-0 flex items-center justify-center px-4 py-20 sm:px-8">
+          <div className="contents" onClick={(event) => event.stopPropagation()}>
             {file.type.startsWith("image/") && (
               <img
                 src={preview}
                 alt={file.name}
-                className="block max-h-[calc(100dvh-6rem)] max-w-[calc(100vw-2rem)] rounded-xl object-contain shadow-2xl shadow-foreground/20"
+                className="max-h-[calc(100dvh-6rem)] max-w-[calc(100vw-2rem)] rounded-xl object-contain shadow-2xl shadow-foreground/20"
               />
             )}
 
