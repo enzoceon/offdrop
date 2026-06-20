@@ -341,6 +341,27 @@ export function Scanner({
   const [zoomVisible, setZoomVisible] = useState(false);
   const [pan, setPan] = useState<PanPoint>({ x: 0, y: 0 });
 
+  function showZoomHud() {
+    setZoomVisible(true);
+    window.clearTimeout(zoomHideRef.current);
+    zoomHideRef.current = window.setTimeout(() => setZoomVisible(false), ZOOM_HIDE_MS);
+  }
+
+  function setVisualZoom(next: number, center?: PanPoint) {
+    const value = clamp(next, zoomRange.min, zoomRange.max);
+    setZoom(value);
+    if (center) {
+      const box = videoRef.current?.getBoundingClientRect();
+      if (box) {
+        const dx = (box.width / 2 - (center.x - box.left)) * (value - 1) * 0.08;
+        const dy = (box.height / 2 - (center.y - box.top)) * (value - 1) * 0.08;
+        setPan((p) => ({ x: clamp(p.x + dx, -42, 42), y: clamp(p.y + dy, -42, 42) }));
+      }
+    }
+    void applyCameraZoom(streamRef.current, value);
+    showZoomHud();
+  }
+
   async function start(facingMode: "environment" | "user" = facingRef.current, force = false) {
     if (!force && (active || starting || stopping)) return;
     facingRef.current = facingMode;
