@@ -80,6 +80,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
   const [filter, setFilter] = useState<FilterKey>("all");
   const [pendingDelete, setPendingDelete] = useState<HistoryItem | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [previewItem, setPreviewItem] = useState<HistoryItem | null>(null);
   const urlsRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
@@ -172,6 +173,10 @@ export function History({ refreshKey }: { refreshKey: number }) {
     }
   }
 
+  function closePreview() {
+    setPreviewItem(null);
+  }
+
   const filterButtons: { key: FilterKey; label: string; icon: React.ReactNode }[] = [
     { key: "all", label: "All", icon: <LayoutGrid className="h-4 w-4" /> },
     { key: "sent", label: "Sent", icon: <Send className="h-4 w-4" /> },
@@ -183,27 +188,27 @@ export function History({ refreshKey }: { refreshKey: number }) {
       {/* Search + filter */}
       <div className="px-5 pb-3 sm:px-8">
         <div className="mx-auto flex w-full max-w-3xl items-center gap-2">
-          <div className="liquid-control flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full px-3 sm:h-12 sm:px-4">
+          <div className="glass flex h-12 min-w-0 flex-1 items-center gap-2 rounded-2xl px-4">
             <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground sm:h-4 sm:w-4" strokeWidth={2.2} />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search…"
               aria-label="Search files"
-              className="min-w-0 flex-1 bg-transparent text-xs font-medium placeholder:text-muted-foreground focus:outline-none sm:text-sm"
+                className="min-w-0 flex-1 bg-transparent text-sm font-semibold placeholder:text-muted-foreground focus:outline-none"
             />
             {query && (
               <button
                 type="button"
                 onClick={() => setQuery("")}
                 aria-label="Clear search"
-                className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-secondary text-muted-foreground active:scale-90 sm:h-6 sm:w-6"
+                className="glass grid h-8 w-8 shrink-0 place-items-center rounded-xl text-muted-foreground active:scale-90"
               >
-                <X className="h-3 w-3" />
+                <X className="h-4 w-4" />
               </button>
             )}
           </div>
-          <div className="liquid-control flex h-10 shrink-0 items-center rounded-full p-1 sm:h-12 sm:p-1.5">
+          <div className="glass grid h-12 shrink-0 grid-cols-3 items-center gap-1 rounded-2xl p-1">
             {filterButtons.map((f) => {
               const active = filter === f.key;
               return (
@@ -213,7 +218,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
                   onClick={() => setFilter(f.key)}
                   aria-label={f.label}
                   aria-pressed={active}
-                  className={`grid h-8 w-8 place-items-center rounded-full transition-all sm:h-9 sm:w-9 ${
+                  className={`grid h-10 w-10 place-items-center rounded-xl transition-all ${
                     active
                       ? "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-md shadow-primary/30"
                       : "text-muted-foreground active:scale-90"
