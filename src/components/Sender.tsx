@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createClientOnlyFn } from "@tanstack/react-start";
 import QRCode from "qrcode";
 import jsQR from "jsqr";
 import {
@@ -18,7 +19,6 @@ import {
   VolumeX,
 } from "lucide-react";
 import { type Slot } from "@/lib/qr-protocol";
-import { planTransferInWorker } from "@/lib/transfer-planner.client";
 import { saveItem } from "@/lib/history";
 import { sfx } from "@/lib/feedback";
 import { cn } from "@/lib/utils";
@@ -29,6 +29,11 @@ const SPEEDS = [
   { label: "Fast", fps: 8 },
   { label: "Turbo", fps: 10 },
 ];
+
+const planTransferOnClient = createClientOnlyFn(async (file: File, bytes: Uint8Array) => {
+  const { planTransferInWorker } = await import("@/lib/transfer-planner.client");
+  return planTransferInWorker(file, bytes);
+});
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
