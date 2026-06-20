@@ -128,8 +128,12 @@ export function History({ refreshKey }: { refreshKey: number }) {
     if (!pendingDelete || deleting) return;
     setDeleting(true);
     try {
-      await deleteItem(pendingDelete.id);
       const id = pendingDelete.id;
+      const [_] = await Promise.all([
+        deleteItem(id),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
+      void _;
       const u = urlsRef.current[id];
       if (u) URL.revokeObjectURL(u);
       delete urlsRef.current[id];
@@ -177,29 +181,29 @@ export function History({ refreshKey }: { refreshKey: number }) {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Search + filter */}
-      <div className="px-5 pb-3">
-        <div className="flex items-center gap-2">
-          <div className="liquid-control flex h-11 flex-1 items-center gap-2 rounded-full px-3.5">
-            <Search className="h-4 w-4 shrink-0 text-muted-foreground" strokeWidth={2.2} />
+      <div className="px-5 pb-3 sm:px-8">
+        <div className="mx-auto flex w-full max-w-3xl items-center gap-2">
+          <div className="liquid-control flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full px-3 sm:h-12 sm:px-4">
+            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground sm:h-4 sm:w-4" strokeWidth={2.2} />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search files…"
+              placeholder="Search…"
               aria-label="Search files"
-              className="min-w-0 flex-1 bg-transparent text-sm font-medium placeholder:text-muted-foreground focus:outline-none"
+              className="min-w-0 flex-1 bg-transparent text-xs font-medium placeholder:text-muted-foreground focus:outline-none sm:text-sm"
             />
             {query && (
               <button
                 type="button"
                 onClick={() => setQuery("")}
                 aria-label="Clear search"
-                className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-secondary text-muted-foreground active:scale-90"
+                className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-secondary text-muted-foreground active:scale-90 sm:h-6 sm:w-6"
               >
                 <X className="h-3 w-3" />
               </button>
             )}
           </div>
-          <div className="liquid-control flex h-11 shrink-0 items-center rounded-full p-1">
+          <div className="liquid-control flex h-10 shrink-0 items-center rounded-full p-1 sm:h-12 sm:p-1.5">
             {filterButtons.map((f) => {
               const active = filter === f.key;
               return (
@@ -209,7 +213,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
                   onClick={() => setFilter(f.key)}
                   aria-label={f.label}
                   aria-pressed={active}
-                  className={`grid h-9 w-9 place-items-center rounded-full transition-colors ${
+                  className={`grid h-8 w-8 place-items-center rounded-full transition-all sm:h-9 sm:w-9 ${
                     active
                       ? "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-md shadow-primary/30"
                       : "text-muted-foreground active:scale-90"
@@ -243,14 +247,14 @@ export function History({ refreshKey }: { refreshKey: number }) {
           </p>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto px-5 pb-2">
-          <div className="space-y-3">
+        <div className="flex-1 overflow-y-auto px-5 pb-2 sm:px-8">
+          <div className="mx-auto max-w-3xl space-y-3 sm:space-y-4">
             {filtered.map((it) => {
               const dir = it.direction || "received";
               return (
-                <div key={it.id} className="glass overflow-hidden rounded-2xl animate-fade-up">
-                  <div className="flex gap-3 p-3">
-                    <div className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary">
+                <div key={it.id} className="glass overflow-hidden rounded-2xl animate-fade-up sm:rounded-3xl">
+                  <div className="flex gap-3 p-3 sm:gap-4 sm:p-4">
+                    <div className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary sm:h-24 sm:w-24 sm:rounded-2xl">
                       <MediaPreview item={it} url={urls[it.id]} />
                       {it.mime.startsWith("video/") && (
                         <Film className="absolute h-5 w-5 text-primary-foreground drop-shadow" />
@@ -260,25 +264,25 @@ export function History({ refreshKey }: { refreshKey: number }) {
                       )}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-bold leading-tight">
-                        <FileText className="h-3.5 w-3.5 shrink-0 text-primary" />
+                      <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-bold leading-tight sm:text-base">
+                        <FileText className="h-3.5 w-3.5 shrink-0 text-primary sm:h-4 sm:w-4" />
                         <span className="truncate">{it.filename}</span>
                       </h3>
-                      <div className="mt-1 grid grid-cols-[auto_auto] items-center justify-start gap-x-3 gap-y-1 text-[10px] font-medium text-muted-foreground">
+                      <div className="mt-1 grid grid-cols-[auto_auto] items-center justify-start gap-x-3 gap-y-1 text-[10px] font-medium text-muted-foreground sm:text-xs">
                         <span className="flex items-center gap-1">
-                          <HardDrive className="h-3 w-3 text-primary" />
+                          <HardDrive className="h-3 w-3 text-primary sm:h-3.5 sm:w-3.5" />
                           {formatBytes(it.size)}
                         </span>
                         <span className="flex items-center gap-1">
                           {dir === "sent" ? (
-                            <Send className="h-3 w-3 text-primary" />
+                            <Send className="h-3 w-3 text-primary sm:h-3.5 sm:w-3.5" />
                           ) : (
-                            <QrCode className="h-3 w-3 text-primary" />
+                            <QrCode className="h-3 w-3 text-primary sm:h-3.5 sm:w-3.5" />
                           )}
                           {dir === "sent" ? "Sent" : "Received"}
                         </span>
                         <span className="col-span-2 flex items-center gap-1">
-                          <Clock className="h-3 w-3 text-primary" />
+                          <Clock className="h-3 w-3 text-primary sm:h-3.5 sm:w-3.5" />
                           {formatDuration(it.durationMs)} ·{" "}
                           {new Date(it.receivedAt).toLocaleString(undefined, {
                             month: "short",
@@ -288,27 +292,27 @@ export function History({ refreshKey }: { refreshKey: number }) {
                           })}
                         </span>
                       </div>
-                      <div className="mt-2 flex items-center gap-1.5">
+                      <div className="mt-2 flex items-center gap-1.5 sm:mt-3 sm:gap-2">
                         <button
                           onClick={() => onDownload(it)}
                           disabled={!it.blob}
-                          className="liquid-control flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold active:scale-95 disabled:opacity-50"
+                          className="flex items-center gap-1.5 rounded-full bg-gradient-to-br from-primary to-accent px-3 py-1.5 text-[11px] font-semibold text-primary-foreground shadow-md shadow-primary/25 active:scale-95 disabled:opacity-50 sm:px-4 sm:py-2 sm:text-xs"
                         >
-                          <Download className="h-3 w-3 text-primary" /> Save
+                          <Download className="h-3 w-3 sm:h-3.5 sm:w-3.5" /> Save
                         </button>
                         <button
                           onClick={() => onShare(it)}
                           disabled={!it.blob}
-                          className="liquid-control flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold active:scale-95 disabled:opacity-50"
+                          className="flex items-center gap-1.5 rounded-full bg-gradient-to-br from-primary to-accent px-3 py-1.5 text-[11px] font-semibold text-primary-foreground shadow-md shadow-primary/25 active:scale-95 disabled:opacity-50 sm:px-4 sm:py-2 sm:text-xs"
                         >
-                          <Share2 className="h-3 w-3 text-primary" /> Share
+                          <Share2 className="h-3 w-3 sm:h-3.5 sm:w-3.5" /> Share
                         </button>
                         <button
                           onClick={() => requestDelete(it)}
                           aria-label="Delete file"
-                          className="liquid-control ml-auto grid h-7 w-7 place-items-center rounded-full text-destructive active:scale-90"
+                          className="liquid-control ml-auto grid h-8 w-8 place-items-center rounded-full text-destructive active:scale-90 sm:h-9 sm:w-9"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Trash2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                         </button>
                       </div>
                     </div>
@@ -338,31 +342,34 @@ export function History({ refreshKey }: { refreshKey: number }) {
               </h2>
             </div>
             <p className="mx-auto mt-3 max-w-[19rem] text-center text-sm text-muted-foreground">
-              <span className="font-semibold text-foreground">{pendingDelete.filename}</span>{" "}
-              will be removed from this device.
+              This file will be removed from this device.
             </p>
             <p className="mx-auto mt-1 max-w-[19rem] text-center text-sm text-muted-foreground">
               This action cannot be undone.
             </p>
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={confirmDelete}
-                disabled={deleting}
-                className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97] disabled:opacity-85"
-              >
-                {deleting && <Loader2 className="h-4 w-4 animate-spin" />}
-                Yes
-              </button>
-              <button
-                type="button"
-                onClick={cancelDelete}
-                disabled={deleting}
-                className="glass flex items-center justify-center rounded-2xl py-3 text-sm font-bold active:scale-[0.97] disabled:opacity-70"
-              >
-                No
-              </button>
-            </div>
+            {deleting ? (
+              <div className="mt-5 flex items-center justify-center gap-2 py-3 text-sm font-semibold text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                Deleting…
+              </div>
+            ) : (
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={confirmDelete}
+                  className="flex items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-accent py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97]"
+                >
+                  Yes
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelDelete}
+                  className="glass flex items-center justify-center rounded-2xl py-3 text-sm font-bold active:scale-[0.97]"
+                >
+                  No
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
