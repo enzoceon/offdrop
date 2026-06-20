@@ -381,6 +381,11 @@ export function Scanner({
       }
       const stream = await openCameraStream(facingMode);
       streamRef.current = stream;
+      const range = readZoomRange(stream);
+      setZoomRange(range);
+      setZoom(range.min);
+      setPan({ x: 0, y: 0 });
+      setZoomVisible(false);
       if (videoRef.current) {
         const video = videoRef.current;
         video.muted = true;
@@ -392,8 +397,9 @@ export function Scanner({
         await waitForUsableVideo(video);
       }
       void applyCameraFocus(stream, ["continuous"]);
+      if (range.supported) void applyCameraZoom(stream, range.min);
       const remaining = CAMERA_TRANSITION_MS - (performance.now() - startedAt);
-      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+      if (remaining > 0) await sleep(remaining);
       scanningRef.current = true;
       setActive(true);
       setStarting(false);
@@ -426,6 +432,10 @@ export function Scanner({
     setScanInfo(null);
     setProgress({ have: 0, total: 0 });
     setFocusing(false);
+    setFlipping(false);
+    setZoomVisible(false);
+    setPan({ x: 0, y: 0 });
+    window.clearTimeout(zoomHideRef.current);
     boxVisibleRef.current = false;
     cancelAnimationFrame(rafRef.current);
     // Release camera + decoder fully — fixes mobile lag on repeated start/stop
