@@ -328,11 +328,16 @@ export function Sender({ active = true }: { active?: boolean }) {
 
   if (!file) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center px-5">
-        <div className="animate-float mb-8 grid h-28 w-28 place-items-center rounded-[2rem] bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40">
+      <div
+        className={`mx-5 flex flex-1 flex-col items-center justify-center rounded-[2rem] px-5 transition-all ${dragging ? "glass-strong scale-[0.99]" : ""}`}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        <div className={`animate-float mb-8 grid h-28 w-28 place-items-center rounded-[2rem] bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40 transition-transform ${dragging ? "scale-110" : ""}`}>
           <Upload className="h-12 w-12 text-primary-foreground" strokeWidth={2} />
         </div>
-        <h2 className="text-display text-3xl">Drop a file</h2>
+        <h2 className="text-display text-3xl">{dragging ? "Release to add" : "Drop a file"}</h2>
         <p className="mt-2 max-w-xs text-center text-sm text-muted-foreground">
           Photos, videos, audio, documents — OFFDROP turns them into a private QR stream.
         </p>
