@@ -268,18 +268,6 @@ export function Scanner({
         });
       }
       streamRef.current = stream;
-      for (const track of stream.getVideoTracks()) {
-        const capabilities = track.getCapabilities?.() as MediaTrackCapabilities & {
-          focusMode?: string[];
-        };
-        if (capabilities?.focusMode?.includes("continuous")) {
-          await track
-            .applyConstraints({
-              advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
-            })
-            .catch(() => {});
-        }
-      }
       if (videoRef.current) {
         const video = videoRef.current;
         video.muted = true;
