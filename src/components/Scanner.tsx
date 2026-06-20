@@ -21,7 +21,7 @@ type ScannerProps = {
 };
 
 const CAMERA_TRANSITION_MS = 650;
-const DECODE_INTERVAL_MS = 72;
+const DECODE_INTERVAL_MS = 48;
 
 function waitForVideoMetadata(video: HTMLVideoElement) {
   if (video.readyState >= video.HAVE_METADATA) return Promise.resolve();
@@ -254,7 +254,7 @@ export function Scanner({
         video.videoHeight > 0
       ) {
         lastDecodeRef.current = now;
-        const scale = Math.min(1, 760 / Math.max(video.videoWidth, video.videoHeight));
+        const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
         const w = Math.max(1, Math.round(video.videoWidth * scale));
         const h = Math.max(1, Math.round(video.videoHeight * scale));
         if (canvas.width !== w) canvas.width = w;
