@@ -191,13 +191,17 @@ export function Sender() {
     });
   }
 
-  function toggleMute() {
-    setMuted((value) => {
-      const next = !value;
-      sfx.setMuted(next);
+  function handleFpsChange(next: number) {
+    setFps((prev) => {
+      if (prev === next) return prev;
+      const prevTier = tierForFps(prev);
+      const nextTier = tierForFps(next);
+      if (prevTier !== nextTier) sfx.speedTier(nextTier);
+      else sfx.tick();
       return next;
     });
   }
+
 
   useEffect(
     () => () => {
