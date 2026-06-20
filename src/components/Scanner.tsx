@@ -1044,11 +1044,7 @@ export function Scanner({
               title="Focus camera"
               className="glass grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-70 sm:h-14 sm:w-14"
             >
-              {focusing ? (
-                <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
-              ) : (
-                <Focus className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
-              )}
+              <Focus className={`h-4 w-4 sm:h-5 sm:w-5 ${focusing ? "animate-pulse text-primary" : ""}`} strokeWidth={2.2} />
             </button>
             <button
               onClick={() => void stop(true)}
