@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Download,
   Share2,
@@ -9,8 +9,19 @@ import {
   FileIcon,
   Play,
   Pause,
+  Search,
+  X,
+  LayoutGrid,
+  Send,
+  QrCode,
+  FileText,
+  HardDrive,
+  Clock,
+  Loader2,
 } from "lucide-react";
 import { listItems, deleteItem, type HistoryItem } from "@/lib/history";
+
+type FilterKey = "all" | "sent" | "received";
 
 function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
   const [playing, setPlaying] = useState(false);
@@ -39,13 +50,19 @@ function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
           onPause={() => setPlaying(false)}
           onEnded={() => setPlaying(false)}
         />
-        <span className="grid h-10 w-10 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/25">
+        <span className="grid h-9 w-9 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/25">
           {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
         </span>
       </button>
     );
   }
   return <FileIcon className="h-6 w-6 text-muted-foreground" />;
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function formatDuration(ms?: number) {
@@ -59,25 +76,74 @@ function formatDuration(ms?: number) {
 export function History({ refreshKey }: { refreshKey: number }) {
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [urls, setUrls] = useState<Record<string, string>>({});
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<FilterKey>("all");
+  const [pendingDelete, setPendingDelete] = useState<HistoryItem | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const urlsRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
+    let cancelled = false;
     listItems().then((items) => {
+      if (cancelled) return;
       setItems(items);
+      // Revoke previous URLs and re-create
+      Object.values(urlsRef.current).forEach((u) => URL.revokeObjectURL(u));
       const map: Record<string, string> = {};
       items.forEach((it) => {
         if (it.blob) map[it.id] = URL.createObjectURL(it.blob);
       });
+      urlsRef.current = map;
       setUrls(map);
     });
     return () => {
-      Object.values(urls).forEach((u) => URL.revokeObjectURL(u));
+      cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
-  async function onDelete(id: string) {
-    await deleteItem(id);
-    setItems((p) => p.filter((i) => i.id !== id));
+  useEffect(() => {
+    return () => {
+      Object.values(urlsRef.current).forEach((u) => URL.revokeObjectURL(u));
+    };
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items.filter((it) => {
+      const dir = it.direction || "received";
+      if (filter === "sent" && dir !== "sent") return false;
+      if (filter === "received" && dir !== "received") return false;
+      if (!q) return true;
+      return (
+        it.filename.toLowerCase().includes(q) || (it.mime || "").toLowerCase().includes(q)
+      );
+    });
+  }, [items, query, filter]);
+
+  function requestDelete(it: HistoryItem) {
+    setPendingDelete(it);
+  }
+
+  async function confirmDelete() {
+    if (!pendingDelete || deleting) return;
+    setDeleting(true);
+    try {
+      await deleteItem(pendingDelete.id);
+      const id = pendingDelete.id;
+      const u = urlsRef.current[id];
+      if (u) URL.revokeObjectURL(u);
+      delete urlsRef.current[id];
+      setUrls({ ...urlsRef.current });
+      setItems((p) => p.filter((i) => i.id !== id));
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
+    }
+  }
+
+  function cancelDelete() {
+    if (deleting) return;
+    setPendingDelete(null);
   }
 
   function onDownload(it: HistoryItem) {
@@ -102,76 +168,204 @@ export function History({ refreshKey }: { refreshKey: number }) {
     }
   }
 
-  if (items.length === 0) {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-        <div className="grid h-20 w-20 place-items-center rounded-3xl bg-secondary">
-          <FileQuestion className="h-9 w-9 text-muted-foreground" />
-        </div>
-        <h2 className="text-display mt-5 text-2xl">Nothing here yet</h2>
-        <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-          <span className="block">Received files will show up here.</span>
-          <span className="block">Everything stays on this device locally.</span>
-        </p>
-      </div>
-    );
-  }
+  const filterButtons: { key: FilterKey; label: string; icon: React.ReactNode }[] = [
+    { key: "all", label: "All", icon: <LayoutGrid className="h-4 w-4" /> },
+    { key: "sent", label: "Sent", icon: <Send className="h-4 w-4" /> },
+    { key: "received", label: "Received", icon: <QrCode className="h-4 w-4" /> },
+  ];
 
   return (
-    <div className="flex-1 overflow-y-auto px-5 pb-2">
-      <div className="space-y-3">
-        {items.map((it) => {
-          return (
-            <div key={it.id} className="glass overflow-hidden rounded-2xl animate-fade-up">
-              <div className="flex gap-3 p-3">
-                <div className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary">
-                  <MediaPreview item={it} url={urls[it.id]} />
-                  {it.mime.startsWith("video/") && (
-                    <Film className="absolute h-5 w-5 text-primary-foreground drop-shadow" />
-                  )}
-                  {it.mime.startsWith("audio/") && (
-                    <Music2 className="pointer-events-none absolute bottom-1 right-1 h-3.5 w-3.5 text-primary-foreground drop-shadow" />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold">{it.filename}</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    {(it.size / 1024).toFixed(1)} KB · {it.direction || "received"} · {formatDuration(it.durationMs)} · {it.valid === false ? "errors" : "valid"} ·{" "}
-                    {new Date(it.receivedAt).toLocaleString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </div>
-                  <div className="mt-2 flex gap-1.5">
-                    <button
-                      onClick={() => onDownload(it)}
-                      disabled={!it.blob}
-                      className="flex items-center gap-1 rounded-full bg-secondary px-2.5 py-1 text-[11px] font-medium active:scale-95"
-                    >
-                      <Download className="h-3 w-3" /> Save
-                    </button>
-                    <button
-                      onClick={() => onShare(it)}
-                      disabled={!it.blob}
-                      className="flex items-center gap-1 rounded-full bg-secondary px-2.5 py-1 text-[11px] font-medium active:scale-95"
-                    >
-                      <Share2 className="h-3 w-3" /> Share
-                    </button>
-                    <button
-                      onClick={() => onDelete(it.id)}
-                      className="ml-auto grid h-7 w-7 place-items-center rounded-full bg-secondary text-destructive active:scale-95"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
+    <div className="flex flex-1 flex-col overflow-hidden">
+      {/* Search + filter */}
+      <div className="px-5 pb-3">
+        <div className="flex items-center gap-2">
+          <div className="liquid-control flex h-11 flex-1 items-center gap-2 rounded-full px-3.5">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" strokeWidth={2.2} />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search files…"
+              aria-label="Search files"
+              className="min-w-0 flex-1 bg-transparent text-sm font-medium placeholder:text-muted-foreground focus:outline-none"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                aria-label="Clear search"
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-secondary text-muted-foreground active:scale-90"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+          <div className="liquid-control flex h-11 shrink-0 items-center rounded-full p-1">
+            {filterButtons.map((f) => {
+              const active = filter === f.key;
+              return (
+                <button
+                  key={f.key}
+                  type="button"
+                  onClick={() => setFilter(f.key)}
+                  aria-label={f.label}
+                  aria-pressed={active}
+                  className={`grid h-9 w-9 place-items-center rounded-full transition-colors ${
+                    active
+                      ? "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-md shadow-primary/30"
+                      : "text-muted-foreground active:scale-90"
+                  }`}
+                >
+                  {f.icon}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
+
+      {filtered.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+          <div className="grid h-20 w-20 place-items-center rounded-3xl bg-secondary">
+            <FileQuestion className="h-9 w-9 text-muted-foreground" />
+          </div>
+          <h2 className="text-display mt-5 text-2xl">
+            {items.length === 0 ? "Nothing here yet" : "No matches"}
+          </h2>
+          <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
+            {items.length === 0 ? (
+              <>
+                <span className="block">Received files will show up here.</span>
+                <span className="block">Everything stays on this device locally.</span>
+              </>
+            ) : (
+              <span className="block">Try a different search or filter.</span>
+            )}
+          </p>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto px-5 pb-2">
+          <div className="space-y-3">
+            {filtered.map((it) => {
+              const dir = it.direction || "received";
+              return (
+                <div key={it.id} className="glass overflow-hidden rounded-2xl animate-fade-up">
+                  <div className="flex gap-3 p-3">
+                    <div className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary">
+                      <MediaPreview item={it} url={urls[it.id]} />
+                      {it.mime.startsWith("video/") && (
+                        <Film className="absolute h-5 w-5 text-primary-foreground drop-shadow" />
+                      )}
+                      {it.mime.startsWith("audio/") && (
+                        <Music2 className="pointer-events-none absolute bottom-1 right-1 h-3.5 w-3.5 text-primary-foreground drop-shadow" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-bold leading-tight">
+                        <FileText className="h-3.5 w-3.5 shrink-0 text-primary" />
+                        <span className="truncate">{it.filename}</span>
+                      </h3>
+                      <div className="mt-1 grid grid-cols-[auto_auto] items-center justify-start gap-x-3 gap-y-1 text-[10px] font-medium text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                          <HardDrive className="h-3 w-3 text-primary" />
+                          {formatBytes(it.size)}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          {dir === "sent" ? (
+                            <Send className="h-3 w-3 text-primary" />
+                          ) : (
+                            <QrCode className="h-3 w-3 text-primary" />
+                          )}
+                          {dir === "sent" ? "Sent" : "Received"}
+                        </span>
+                        <span className="col-span-2 flex items-center gap-1">
+                          <Clock className="h-3 w-3 text-primary" />
+                          {formatDuration(it.durationMs)} ·{" "}
+                          {new Date(it.receivedAt).toLocaleString(undefined, {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex items-center gap-1.5">
+                        <button
+                          onClick={() => onDownload(it)}
+                          disabled={!it.blob}
+                          className="liquid-control flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold active:scale-95 disabled:opacity-50"
+                        >
+                          <Download className="h-3 w-3 text-primary" /> Save
+                        </button>
+                        <button
+                          onClick={() => onShare(it)}
+                          disabled={!it.blob}
+                          className="liquid-control flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold active:scale-95 disabled:opacity-50"
+                        >
+                          <Share2 className="h-3 w-3 text-primary" /> Share
+                        </button>
+                        <button
+                          onClick={() => requestDelete(it)}
+                          aria-label="Delete file"
+                          className="liquid-control ml-auto grid h-7 w-7 place-items-center rounded-full text-destructive active:scale-90"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {pendingDelete && (
+        <div
+          className="fixed inset-0 z-[70] flex items-end justify-center bg-background/35 px-4 pb-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          onClick={cancelDelete}
+        >
+          <div
+            className="glass-strong safe-bottom w-full max-w-md rounded-[2rem] p-4 text-center animate-fade-up"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mx-auto flex items-center justify-center gap-2">
+              <Trash2 className="h-5 w-5 text-destructive" strokeWidth={2.4} />
+              <h2 className="text-display text-lg leading-tight text-foreground">
+                Delete this file?
+              </h2>
+            </div>
+            <p className="mx-auto mt-3 max-w-[19rem] text-center text-sm text-muted-foreground">
+              <span className="font-semibold text-foreground">{pendingDelete.filename}</span>{" "}
+              will be removed from this device.
+            </p>
+            <p className="mx-auto mt-1 max-w-[19rem] text-center text-sm text-muted-foreground">
+              This action cannot be undone.
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97] disabled:opacity-85"
+              >
+                {deleting && <Loader2 className="h-4 w-4 animate-spin" />}
+                Yes
+              </button>
+              <button
+                type="button"
+                onClick={cancelDelete}
+                disabled={deleting}
+                className="glass flex items-center justify-center rounded-2xl py-3 text-sm font-bold active:scale-[0.97] disabled:opacity-70"
+              >
+                No
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
