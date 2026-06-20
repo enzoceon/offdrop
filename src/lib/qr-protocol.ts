@@ -92,13 +92,13 @@ export interface PlanInput {
 }
 
 export function planFile(input: PlanInput): ChunkPlan;
-export function planFile(bytes: Uint8Array, name: string, mime: string, size: number): ChunkPlan;
-export function planFile(inputOrBytes: PlanInput | Uint8Array, name?: string, mime?: string, size?: number): ChunkPlan {
+export function planFile(bytes: Uint8Array, name: string, fileType: string, size: number): ChunkPlan;
+export function planFile(inputOrBytes: PlanInput | Uint8Array, name?: string, fileType?: string, size?: number): ChunkPlan {
   const file: PlanInput = inputOrBytes instanceof Uint8Array
     ? {
         bytes: inputOrBytes,
         name: name || "offdrop-file",
-        type: mime || "application/octet-stream",
+        type: fileType || "application/octet-stream",
         size: size ?? inputOrBytes.length,
       }
     : inputOrBytes;
