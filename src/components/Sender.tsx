@@ -12,6 +12,7 @@ import {
   Layers3,
   Clock,
   Loader2,
+  Volume2,
 } from "lucide-react";
 import { fileToChunks } from "@/lib/qr-protocol";
 import { cn } from "@/lib/utils";
@@ -35,12 +36,17 @@ export function Sender() {
   const [chunks, setChunks] = useState<string[]>([]);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(3);
+  const [fps, setFps] = useState(5);
   const [preview, setPreview] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
+  const [mediaPlaying, setMediaPlaying] = useState(false);
+  const [mediaTime, setMediaTime] = useState(0);
+  const [mediaDuration, setMediaDuration] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const videoPreviewRef = useRef<HTMLVideoElement>(null);
+  const audioPreviewRef = useRef<HTMLAudioElement>(null);
 
   async function onPick(f: File) {
     if (preview) URL.revokeObjectURL(preview);
@@ -60,7 +66,7 @@ export function Sender() {
     setQrError(null);
     QRCode.toCanvas(canvasRef.current, chunks[idx], {
       errorCorrectionLevel: "M",
-      margin: 1,
+      margin: 4,
       width: 520,
       color: { dark: "#0a0a14", light: "#ffffff" },
     }).catch((err) => {
@@ -85,6 +91,9 @@ export function Sender() {
     setIdx(0);
     setPlaying(false);
     setPreviewOpen(false);
+    setMediaPlaying(false);
+    setMediaTime(0);
+    setMediaDuration(0);
     if (preview) URL.revokeObjectURL(preview);
     setPreview(null);
     if (inputRef.current) inputRef.current.value = "";
@@ -100,9 +109,41 @@ export function Sender() {
   const cycleSeconds = chunks.length / fps;
   const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
   const progress = chunks.length ? ((idx + 1) / chunks.length) * 100 : 0;
-  const canOpenPreview = Boolean(
-    preview && (file?.type.startsWith("image/") || file?.type.startsWith("video/")),
-  );
+  const canOpenPreview = Boolean(preview && file?.type.match(/^(image|video|audio)\//));
+
+  function activePreviewMedia() {
+    return videoPreviewRef.current ?? audioPreviewRef.current;
+  }
+
+  function syncPreviewMedia(media: HTMLMediaElement) {
+    setMediaTime(media.currentTime || 0);
+    setMediaDuration(Number.isFinite(media.duration) ? media.duration : 0);
+    setMediaPlaying(!media.paused);
+  }
+
+  async function togglePreviewPlayback() {
+    const media = activePreviewMedia();
+    if (!media) return;
+    if (media.paused) {
+      await media.play();
+    } else {
+      media.pause();
+    }
+    syncPreviewMedia(media);
+  }
+
+  function seekPreview(value: number) {
+    const media = activePreviewMedia();
+    if (!media) return;
+    media.currentTime = value;
+    syncPreviewMedia(media);
+  }
+
+  function closePreview() {
+    activePreviewMedia()?.pause();
+    setMediaPlaying(false);
+    setPreviewOpen(false);
+  }
 
   if (!file) {
     return (
@@ -138,13 +179,13 @@ export function Sender() {
 
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
-      <div className="glass mb-3 flex items-center gap-3 rounded-2xl p-3">
+      <div className="glass mx-auto mb-3 flex w-full max-w-md items-center gap-3 rounded-2xl p-3">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           {preview && file.type.startsWith("image/") ? (
             <button
               type="button"
               onClick={() => setPreviewOpen(true)}
-              className="h-12 w-12 shrink-0 overflow-hidden rounded-2xl shadow-sm active:scale-95"
+              className="h-14 w-14 shrink-0 overflow-hidden rounded-xl shadow-sm transition-transform active:scale-95"
               aria-label="Open image preview"
             >
               <img src={preview} alt={file.name} className="h-full w-full object-cover" />
@@ -153,13 +194,22 @@ export function Sender() {
             <button
               type="button"
               onClick={() => setPreviewOpen(true)}
-              className="h-12 w-12 shrink-0 overflow-hidden rounded-2xl bg-secondary shadow-sm active:scale-95"
+              className="h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-secondary shadow-sm transition-transform active:scale-95"
               aria-label="Open video preview"
             >
               <video src={preview} muted playsInline className="h-full w-full object-cover" />
             </button>
+          ) : preview && file.type.startsWith("audio/") ? (
+            <button
+              type="button"
+              onClick={() => setPreviewOpen(true)}
+              className="audio-tile grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-xl shadow-sm transition-transform active:scale-95"
+              aria-label="Open audio preview"
+            >
+              <Music2 className="h-5 w-5" />
+            </button>
           ) : (
-            <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-secondary shadow-sm">
+            <div className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-secondary shadow-sm">
               {file.type.startsWith("audio/") ? (
                 <Music2 className="h-5 w-5" />
               ) : (
@@ -191,7 +241,7 @@ export function Sender() {
           </div>
           <button
             onClick={reset}
-            className="liquid-control flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-all hover:text-foreground active:scale-90"
+            className="glass grid h-10 w-10 shrink-0 place-items-center rounded-full text-muted-foreground transition-all hover:text-foreground active:scale-90"
             aria-label="Remove file"
           >
             <X className="h-4 w-4" />
@@ -256,7 +306,7 @@ export function Sender() {
         <input
           type="range"
           min={1}
-          max={3}
+          max={8}
           value={fps}
           onChange={(e) => setFps(+e.target.value)}
           className="ios-range flex-1"
@@ -266,31 +316,102 @@ export function Sender() {
 
       {previewOpen && preview && canOpenPreview && (
         <div
-          className="fixed inset-0 z-[80] bg-background/95 backdrop-blur-2xl animate-fade-up"
+          className="fixed inset-0 z-[80] bg-background/92 backdrop-blur-2xl animate-fade-up"
           role="dialog"
           aria-modal="true"
         >
-          <div className="absolute inset-0 flex items-center justify-center p-2 sm:p-4">
-            {file.type.startsWith("image/") ? (
-              <img
-                src={preview}
-                alt={file.name}
-                className="h-full w-full rounded-2xl object-contain shadow-2xl"
-              />
-            ) : (
-              <video
-                src={preview}
-                controls
-                autoPlay
-                playsInline
-                className="h-full w-full rounded-2xl object-contain shadow-2xl"
-              />
+          <div className="absolute inset-0 flex items-center justify-center px-4 py-20 sm:px-8">
+            {file.type.startsWith("image/") && (
+              <div className="max-h-full max-w-full overflow-hidden rounded-[1.4rem] shadow-2xl ring-1 ring-glass-border">
+                <img
+                  src={preview}
+                  alt={file.name}
+                  className="block max-h-[calc(100dvh-10rem)] max-w-[calc(100vw-2rem)] object-contain"
+                />
+              </div>
+            )}
+
+            {file.type.startsWith("video/") && (
+              <div className="glass-strong flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-[1.5rem] p-2">
+                <video
+                  ref={videoPreviewRef}
+                  src={preview}
+                  playsInline
+                  className="max-h-[calc(100dvh-15rem)] w-full rounded-[1.1rem] object-contain"
+                  onLoadedMetadata={(event) => syncPreviewMedia(event.currentTarget)}
+                  onTimeUpdate={(event) => syncPreviewMedia(event.currentTarget)}
+                  onPlay={(event) => syncPreviewMedia(event.currentTarget)}
+                  onPause={(event) => syncPreviewMedia(event.currentTarget)}
+                />
+                <div className="flex items-center gap-3 px-2 py-3">
+                  <button
+                    type="button"
+                    onClick={() => void togglePreviewPlayback()}
+                    className="glass grid h-11 w-11 shrink-0 place-items-center rounded-full active:scale-90"
+                    aria-label={mediaPlaying ? "Pause video" : "Play video"}
+                  >
+                    {mediaPlaying ? <Pause className="h-4.5 w-4.5" /> : <Play className="h-4.5 w-4.5" />}
+                  </button>
+                  <input
+                    type="range"
+                    min={0}
+                    max={mediaDuration || 0}
+                    step="0.1"
+                    value={Math.min(mediaTime, mediaDuration || 0)}
+                    onChange={(event) => seekPreview(Number(event.target.value))}
+                    className="ios-range flex-1"
+                  />
+                  <span className="w-20 text-right text-[10px] font-semibold tabular-nums text-muted-foreground">
+                    {formatDuration(mediaTime)} / {formatDuration(mediaDuration)}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {file.type.startsWith("audio/") && (
+              <div className="glass-strong w-full max-w-md rounded-[1.5rem] p-5">
+                <div className="audio-tile mx-auto grid h-20 w-20 place-items-center rounded-[1.25rem] shadow-xl">
+                  <Volume2 className="h-8 w-8 text-primary" />
+                </div>
+                <p className="mt-4 truncate text-center text-sm font-bold">{file.name}</p>
+                <audio
+                  ref={audioPreviewRef}
+                  src={preview}
+                  onLoadedMetadata={(event) => syncPreviewMedia(event.currentTarget)}
+                  onTimeUpdate={(event) => syncPreviewMedia(event.currentTarget)}
+                  onPlay={(event) => syncPreviewMedia(event.currentTarget)}
+                  onPause={(event) => syncPreviewMedia(event.currentTarget)}
+                />
+                <div className="mt-5 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void togglePreviewPlayback()}
+                    className="glass grid h-12 w-12 shrink-0 place-items-center rounded-full active:scale-90"
+                    aria-label={mediaPlaying ? "Pause audio" : "Play audio"}
+                  >
+                    {mediaPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+                  </button>
+                  <input
+                    type="range"
+                    min={0}
+                    max={mediaDuration || 0}
+                    step="0.1"
+                    value={Math.min(mediaTime, mediaDuration || 0)}
+                    onChange={(event) => seekPreview(Number(event.target.value))}
+                    className="ios-range flex-1"
+                  />
+                </div>
+                <div className="mt-1 flex justify-between text-[10px] font-semibold tabular-nums text-muted-foreground">
+                  <span>{formatDuration(mediaTime)}</span>
+                  <span>{formatDuration(mediaDuration)}</span>
+                </div>
+              </div>
             )}
           </div>
           <button
             type="button"
-            onClick={() => setPreviewOpen(false)}
-            className="liquid-control absolute right-4 z-[81] flex h-12 w-12 items-center justify-center rounded-full text-foreground active:scale-90"
+            onClick={closePreview}
+            className="glass absolute right-4 z-[81] grid h-12 w-12 place-items-center rounded-full text-foreground active:scale-90"
             style={{ top: "max(env(safe-area-inset-top), 1rem)" }}
             aria-label="Close preview"
           >
