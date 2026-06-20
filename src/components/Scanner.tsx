@@ -321,6 +321,7 @@ export function Scanner({
   const zoomHideRef = useRef<number>(0);
   const pinchRef = useRef<{ distance: number; zoom: number; center: PanPoint } | null>(null);
   const panRef = useRef<{ pointerId: number; point: PanPoint; offset: PanPoint } | null>(null);
+  const lastAutoZoomRef = useRef(0);
 
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -592,6 +593,28 @@ export function Scanner({
     setVisualZoom(zoom + (event.deltaY < 0 ? zoomRange.step * 3 : -zoomRange.step * 3), {
       x: event.clientX,
       y: event.clientY,
+    });
+  }
+
+  function autoFrameQr(box: QrBox, now: number) {
+    if (now - lastAutoZoomRef.current < 700 || focusing || flipping) return;
+    const xs = box.corners.map((p) => p.x);
+    const ys = box.corners.map((p) => p.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const qrW = Math.max(1, maxX - minX);
+    const qrH = Math.max(1, maxY - minY);
+    const frameSide = Math.min(box.w, box.h);
+    const currentFill = Math.max(qrW, qrH) / frameSide;
+    const targetFill = 0.78;
+    if (Math.abs(currentFill - targetFill) < 0.08) return;
+    const next = zoom * clamp(targetFill / currentFill, 0.86, 1.16);
+    lastAutoZoomRef.current = now;
+    setVisualZoom(next, {
+      x: ((minX + maxX) / 2 / box.w) * (videoRef.current?.clientWidth || box.w),
+      y: ((minY + maxY) / 2 / box.h) * (videoRef.current?.clientHeight || box.h),
     });
   }
 
