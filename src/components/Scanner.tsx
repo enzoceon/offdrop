@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent, type TouchEvent, type WheelEvent } from "react";
 import jsQR from "jsqr";
 import {
   Camera,
@@ -540,14 +540,14 @@ export function Scanner({
     }
   }
 
-  function handleCameraPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+  function handleCameraPointerDown(event: PointerEvent<HTMLDivElement>) {
     if (!active) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     panRef.current = { pointerId: event.pointerId, point: { x: event.clientX, y: event.clientY }, offset: pan };
     showZoomHud();
   }
 
-  function handleCameraPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+  function handleCameraPointerMove(event: PointerEvent<HTMLDivElement>) {
     if (!active) return;
     const currentPan = panRef.current;
     if (!currentPan || currentPan.pointerId !== event.pointerId || zoom <= zoomRange.min + 0.01) return;
@@ -559,11 +559,11 @@ export function Scanner({
     showZoomHud();
   }
 
-  function handleCameraPointerUp(event: React.PointerEvent<HTMLDivElement>) {
+  function handleCameraPointerUp(event: PointerEvent<HTMLDivElement>) {
     if (panRef.current?.pointerId === event.pointerId) panRef.current = null;
   }
 
-  function handleCameraTouchStart(event: React.TouchEvent<HTMLDivElement>) {
+  function handleCameraTouchStart(event: TouchEvent<HTMLDivElement>) {
     if (!active) return;
     if (event.touches.length === 2) {
       const a = { x: event.touches[0].clientX, y: event.touches[0].clientY };
@@ -573,7 +573,7 @@ export function Scanner({
     }
   }
 
-  function handleCameraTouchMove(event: React.TouchEvent<HTMLDivElement>) {
+  function handleCameraTouchMove(event: TouchEvent<HTMLDivElement>) {
     if (!active || event.touches.length !== 2 || !pinchRef.current) return;
     event.preventDefault();
     const a = { x: event.touches[0].clientX, y: event.touches[0].clientY };
@@ -586,7 +586,7 @@ export function Scanner({
     pinchRef.current = null;
   }
 
-  function handleWheelZoom(event: React.WheelEvent<HTMLDivElement>) {
+  function handleWheelZoom(event: WheelEvent<HTMLDivElement>) {
     if (!active || !event.ctrlKey) return;
     event.preventDefault();
     setVisualZoom(zoom + (event.deltaY < 0 ? zoomRange.step * 3 : -zoomRange.step * 3), {
