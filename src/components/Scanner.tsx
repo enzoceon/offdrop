@@ -632,7 +632,13 @@ export function Scanner({
   }
 
   function updateProgress(t: Transfer) {
-    setProgress({ have: t.chunks.size, total: t.header.total });
+    const next = { have: t.chunks.size, total: t.header.total };
+    progressPendingRef.current = next;
+    const now = performance.now();
+    if (next.have === next.total || now - progressCommitRef.current > PROGRESS_COMMIT_MS) {
+      progressCommitRef.current = now;
+      setProgress(next);
+    }
   }
 
   function handleScan(payload: string) {
@@ -644,9 +650,9 @@ export function Scanner({
     const seenAt = lastSeenRef.current.get(seenKey);
     if (seenAt && now - seenAt < 80) return;
     lastSeenRef.current.set(seenKey, now);
-    if (lastSeenRef.current.size > 2000) {
+    if (lastSeenRef.current.size > 1200 && now - progressCommitRef.current > SEEN_CLEANUP_MS) {
       for (const [key, ts] of lastSeenRef.current) {
-        if (now - ts > 45000) lastSeenRef.current.delete(key);
+        if (now - ts > 25000) lastSeenRef.current.delete(key);
       }
     }
 
