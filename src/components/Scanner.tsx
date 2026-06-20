@@ -167,7 +167,7 @@ async function openCameraStream(facingMode: "environment" | "user") {
 async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] = ["single-shot", "continuous"]) {
   const track = stream?.getVideoTracks()[0] as CameraControlTrack | undefined;
   if (!track || track.readyState !== "live") return false;
-  const capabilities = track.getCapabilities?.();
+  const capabilities = track.getCapabilities?.() as CameraControlCapabilities | undefined;
   const availableModes = capabilities?.focusMode ?? [];
   const candidates = availableModes.length ? modes.filter((mode) => availableModes.includes(mode)) : modes;
   for (const mode of candidates) {
