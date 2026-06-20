@@ -829,9 +829,14 @@ export function Scanner({
     }
   }, [stopRequestKey, onStopRequestComplete]);
 
+  useEffect(() => {
+    if (!visible) clearDonePreview();
+  }, [visible]);
+
   useEffect(
     () => () => {
       void stopRef.current();
+      window.clearTimeout(zoomHideRef.current);
       if (doneUrlRef.current) URL.revokeObjectURL(doneUrlRef.current);
     },
     [],
