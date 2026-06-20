@@ -117,10 +117,10 @@ export function Sender({ active = true }: { active?: boolean }) {
     const text = chunks[idx]?.text ?? "";
     if (!text) return;
     QRCode.toCanvas(canvas, text, {
-      errorCorrectionLevel: "M",
+      errorCorrectionLevel: "Q",
       version: 20,
       margin: 2,
-      width: 720,
+      width: 820,
       color: { dark: "#000000", light: "#ffffff" },
     })
       .then(() => {
