@@ -21,7 +21,7 @@ async function decodeRendered(text: string) {
 }
 
 async function run() {
-  const size = 192 * 1024 + 137;
+  const size = 24 * 1024 + 137;
   const bytes = new Uint8Array(size);
   for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 31 + 17) & 255;
 
