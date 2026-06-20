@@ -135,7 +135,7 @@ function Index() {
 
       <main className="flex flex-1 flex-col overflow-hidden pb-28">
         <section className={tab === "send" ? "contents" : "hidden"} aria-hidden={tab !== "send"}>
-          <Sender />
+          <Sender active={tab === "send"} />
         </section>
         <section className={tab === "scan" ? "contents" : "hidden"} aria-hidden={tab !== "scan"}>
           <Scanner
@@ -145,6 +145,7 @@ function Index() {
             onSaved={() => {
               setHistoryKey((k) => k + 1);
             }}
+            onCompleteAction={() => setTab("history")}
           />
 
         </section>
