@@ -428,6 +428,10 @@ export function Scanner({
       const valid = computed === t.header.crc;
       const mime = t.header.mime || "application/octet-stream";
       const blob = new Blob([bytes as BlobPart], { type: mime });
+      if (valid) sfx.success();
+      else sfx.error();
+      if (!valid) throw new Error("Received with errors — scan it again for a clean file.");
+
       await saveItem({
         id: t.header.id + "-" + Date.now(),
         filename: t.header.name,
@@ -439,8 +443,6 @@ export function Scanner({
         valid,
         blob,
       });
-      if (valid) sfx.success();
-      else sfx.error();
 
       const previewUrl = URL.createObjectURL(blob);
       doneUrlRef.current = previewUrl;
@@ -449,12 +451,10 @@ export function Scanner({
         name: t.header.name,
         mime,
         size: t.header.size,
+        blob,
         url: previewUrl,
         aspectRatio,
       });
-      if (!valid) {
-        setError("Received with errors — CRC mismatch. The file is saved but may be corrupted.");
-      }
       transferRef.current = null;
       lastSeenRef.current.clear();
       setScanInfo(null);
