@@ -173,13 +173,13 @@ export function Sender() {
 
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
-      <div className="glass mb-3 flex items-center gap-3 rounded-2xl p-3">
+      <div className="glass mx-auto mb-3 flex w-full max-w-md items-center gap-3 rounded-2xl p-3">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           {preview && file.type.startsWith("image/") ? (
             <button
               type="button"
               onClick={() => setPreviewOpen(true)}
-              className="h-12 w-12 shrink-0 overflow-hidden rounded-2xl shadow-sm active:scale-95"
+              className="h-14 w-14 shrink-0 overflow-hidden rounded-xl shadow-sm transition-transform active:scale-95"
               aria-label="Open image preview"
             >
               <img src={preview} alt={file.name} className="h-full w-full object-cover" />
@@ -188,13 +188,22 @@ export function Sender() {
             <button
               type="button"
               onClick={() => setPreviewOpen(true)}
-              className="h-12 w-12 shrink-0 overflow-hidden rounded-2xl bg-secondary shadow-sm active:scale-95"
+              className="h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-secondary shadow-sm transition-transform active:scale-95"
               aria-label="Open video preview"
             >
               <video src={preview} muted playsInline className="h-full w-full object-cover" />
             </button>
+          ) : preview && file.type.startsWith("audio/") ? (
+            <button
+              type="button"
+              onClick={() => setPreviewOpen(true)}
+              className="audio-tile grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-xl shadow-sm transition-transform active:scale-95"
+              aria-label="Open audio preview"
+            >
+              <Music2 className="h-5 w-5" />
+            </button>
           ) : (
-            <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-secondary shadow-sm">
+            <div className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-secondary shadow-sm">
               {file.type.startsWith("audio/") ? (
                 <Music2 className="h-5 w-5" />
               ) : (
@@ -226,7 +235,7 @@ export function Sender() {
           </div>
           <button
             onClick={reset}
-            className="liquid-control flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-all hover:text-foreground active:scale-90"
+            className="glass grid h-10 w-10 shrink-0 place-items-center rounded-full text-muted-foreground transition-all hover:text-foreground active:scale-90"
             aria-label="Remove file"
           >
             <X className="h-4 w-4" />
@@ -291,7 +300,7 @@ export function Sender() {
         <input
           type="range"
           min={1}
-          max={3}
+          max={8}
           value={fps}
           onChange={(e) => setFps(+e.target.value)}
           className="ios-range flex-1"
