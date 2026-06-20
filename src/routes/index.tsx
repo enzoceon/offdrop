@@ -103,7 +103,10 @@ function Index() {
             <p className="text-[10px] text-muted-foreground">Offline file transfer</p>
           </div>
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <MuteToggle />
+          <ThemeToggle />
+        </div>
       </header>
 
       <main className="flex flex-1 flex-col overflow-hidden pb-28">
