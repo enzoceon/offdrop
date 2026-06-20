@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { GlassTabs, type TabKey } from "@/components/GlassTabs";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { MuteToggle } from "@/components/MuteToggle";
+import { RefreshButton } from "@/components/RefreshButton";
 import { Sender } from "@/components/Sender";
 import { Scanner } from "@/components/Scanner";
 import { History } from "@/components/History";
@@ -106,6 +107,7 @@ function Index() {
         <div className="flex items-center gap-2">
           <MuteToggle />
           <ThemeToggle />
+          <RefreshButton />
         </div>
       </header>
 
