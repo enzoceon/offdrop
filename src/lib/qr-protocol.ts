@@ -217,9 +217,17 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(s);
 }
 
+function textToBase64(value: string): string {
+  return bytesToBase64(new TextEncoder().encode(value));
+}
+
 function base64ToBytes(b64: string): Uint8Array {
   const s = atob(b64);
   const out = new Uint8Array(s.length);
   for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
   return out;
+}
+
+function base64ToText(b64: string): string {
+  return new TextDecoder().decode(base64ToBytes(b64));
 }
