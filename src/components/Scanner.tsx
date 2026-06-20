@@ -524,10 +524,11 @@ export function Scanner({
   async function autofocusCamera() {
     if (!active || stopping || starting || focusing) return;
     setFocusing(true);
-    const startedAt = performance.now();
+    vibrate(18);
     try {
       const focused = await applyCameraFocus(streamRef.current, ["single-shot", "continuous"]);
       if (!focused) await restartCameraForFocus();
+      vibrate([10, 30, 10]);
     } catch {
       try {
         await restartCameraForFocus();
@@ -535,8 +536,6 @@ export function Scanner({
         /* Keep native camera focus running if the browser blocks manual focus control. */
       }
     } finally {
-      const remaining = 1000 - (performance.now() - startedAt);
-      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
       setFocusing(false);
     }
   }
@@ -549,14 +548,16 @@ export function Scanner({
     setDone(null);
   }
 
-  function downloadDone() {
-    if (!done?.blob || !done.url) return;
+  async function downloadDone() {
+    if (!done?.blob || !done.url || downloading) return;
+    setDownloading(true);
     const a = document.createElement("a");
     a.href = done.url;
     a.download = done.name || "offdrop-file";
     a.click();
+    await sleep(1000);
     clearDonePreview();
-    onCompleteAction?.();
+    setDownloading(false);
   }
 
   async function shareDone() {
@@ -566,7 +567,7 @@ export function Scanner({
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: done.name });
       } else {
-        downloadDone();
+        void downloadDone();
         return;
       }
       clearDonePreview();
