@@ -1,7 +1,12 @@
 // OFFDROP QR-stream protocol — splits a file into small QR chunks and reassembles.
 // Header format (version prefix, JSON, then "|", then base64 chunk data):
-//   OD1|{"i":"<id>","n":<seq>,"t":<total>,"m":"<mime>","f":"<filename>","s":<bytes>}|<base64>
-// The receiver collects unique n values until it has t, then concatenates.
+//   OD2|{"i":"<id>","n":<seq>,"t":<total>,"m":"<mime>","f":"<filename>","s":<bytes>,"c":<chunkSize>}|<base64>
+// The receiver collects unique n values until it has the required count, then concatenates.
+//
+// IMPORTANT: chunk size is chosen per-transfer (based on file size) and carried
+// in every frame's metadata ("c"). The receiver MUST use the chunk size from the
+// metadata to compute how many frames are required — never a hardcoded constant —
+// because different transfers may use different chunk sizes.
 
 export interface ChunkMeta {
   i: string; // transfer id
@@ -10,6 +15,7 @@ export interface ChunkMeta {
   m: string; // mime
   f: string; // filename
   s: number; // total size (bytes)
+  c: number; // chunk size (base64 chars) used for THIS transfer
 }
 
 export interface Transfer {
@@ -18,22 +24,58 @@ export interface Transfer {
   filename: string;
   size: number;
   total: number;
+  chunkSize: number;
   chunks: Map<number, string>;
 }
 
-export const PROTOCOL_PREFIX = "OD1";
+export const PROTOCOL_PREFIX = "OD2";
 
-// Small chunks deliberately scan better on real mobile cameras than dense QR blocks.
-export const CHUNK_SIZE = 64;
-export const MIN_FRAMES = 60;
+// MIN_FRAMES keeps very tiny files from cycling too fast to be visually trackable.
+export const MIN_FRAMES = 12;
+
+// --- Adaptive chunk sizing -------------------------------------------------
+// A fixed tiny chunk size (e.g. 64 base64 chars) makes any real file require
+// thousands of QR frames, which makes transfers take many minutes and fail in
+// practice (any single missed frame means waiting for the whole loop to come
+// back around). Instead we target a roughly constant number of frames per
+// transfer, scaling chunk size UP for bigger files, while staying well under
+// real QR byte-mode capacity at error-correction level M (~2,331 bytes max at
+// QR version 40). We cap well below that to leave headroom for metadata
+// (filename, transfer id, etc.) and to keep the QR module density low enough
+// to scan reliably on a phone camera.
+
+// Roughly how many frames we're willing to ask the user to scan for a typical
+// transfer. Tune this for your own latency/reliability tradeoff.
+const TARGET_FRAMES = 220;
+
+// Floor: keeps tiny files (a few KB) from being split into needlessly many
+// frames, and guarantees we never choose 0/negative chunk sizes.
+const MIN_CHUNK_SIZE = 80;
+
+// Ceiling: keeps payload size (chunk + JSON metadata) safely under QR
+// byte-mode capacity at correctionLevel "M", even for long filenames.
+const MAX_CHUNK_SIZE = 1000;
 
 export function expectedBase64Length(byteSize: number): number {
   if (byteSize <= 0) return 0;
   return Math.ceil(byteSize / 3) * 4;
 }
 
-export function requiredDataChunks(byteSize: number): number {
-  return Math.ceil(expectedBase64Length(byteSize) / CHUNK_SIZE);
+/**
+ * Pick a base64-chars-per-QR chunk size for a file of this size, aiming for
+ * roughly TARGET_FRAMES total frames, clamped to [MIN_CHUNK_SIZE, MAX_CHUNK_SIZE].
+ */
+export function chooseChunkSize(byteSize: number): number {
+  const base64Len = expectedBase64Length(byteSize);
+  if (base64Len <= MIN_CHUNK_SIZE) return Math.max(1, base64Len || 1);
+  const ideal = Math.ceil(base64Len / TARGET_FRAMES);
+  return Math.min(MAX_CHUNK_SIZE, Math.max(MIN_CHUNK_SIZE, ideal));
+}
+
+/** Number of *data-bearing* frames required for a transfer, given the chunk size actually used for it. */
+export function requiredDataChunks(byteSize: number, chunkSize: number): number {
+  if (chunkSize <= 0) return 0;
+  return Math.ceil(expectedBase64Length(byteSize) / chunkSize);
 }
 
 export function buildChunkPayload(meta: ChunkMeta, data: string): string {
@@ -54,10 +96,11 @@ export function parseChunkPayload(payload: string): { meta: ChunkMeta; data: str
       typeof meta.t !== "number" ||
       typeof meta.m !== "string" ||
       typeof meta.f !== "string" ||
-      typeof meta.s !== "number"
+      typeof meta.s !== "number" ||
+      typeof meta.c !== "number"
     )
       return null;
-    if (meta.n < 0 || meta.t < 1 || meta.n >= meta.t) return null;
+    if (meta.n < 0 || meta.t < 1 || meta.n >= meta.t || meta.c < 1) return null;
     return { meta, data: framed.slice(idx + 1) };
   } catch {
     return null;
@@ -68,9 +111,10 @@ export async function fileToChunks(file: File): Promise<{ id: string; chunks: st
   const buf = new Uint8Array(await file.arrayBuffer());
   const b64 = bytesToBase64(buf);
   const id = Math.random().toString(36).slice(2, 8);
+  const chunkSize = chooseChunkSize(file.size);
   const pieces: string[] = [];
-  for (let i = 0; i < b64.length; i += CHUNK_SIZE) {
-    pieces.push(b64.slice(i, i + CHUNK_SIZE));
+  for (let i = 0; i < b64.length; i += chunkSize) {
+    pieces.push(b64.slice(i, i + chunkSize));
   }
   while (pieces.length < MIN_FRAMES) pieces.push("");
   const total = pieces.length;
@@ -83,6 +127,7 @@ export async function fileToChunks(file: File): Promise<{ id: string; chunks: st
         m: file.type || "application/octet-stream",
         f: file.name,
         s: file.size,
+        c: chunkSize,
       },
       data,
     ),
@@ -91,8 +136,8 @@ export async function fileToChunks(file: File): Promise<{ id: string; chunks: st
 }
 
 export function transferComplete(t: Transfer): boolean {
-  if (t.total < 1) return false;
-  const required = requiredDataChunks(t.size);
+  if (t.total < 1 || t.chunkSize < 1) return false;
+  const required = requiredDataChunks(t.size, t.chunkSize);
   if (required > t.total) return false;
   for (let i = 0; i < required; i++) {
     if (!t.chunks.has(i)) return false;
@@ -102,7 +147,7 @@ export function transferComplete(t: Transfer): boolean {
 
 export function assembleTransfer(t: Transfer): Blob {
   const parts: string[] = [];
-  const required = requiredDataChunks(t.size);
+  const required = requiredDataChunks(t.size, t.chunkSize);
   for (let i = 0; i < required; i++) {
     const chunk = t.chunks.get(i);
     if (chunk === undefined) throw new Error("Transfer is missing QR frames.");
