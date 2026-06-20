@@ -1,6 +1,6 @@
 // OFFDROP QR-stream protocol — splits a file into small QR chunks and reassembles.
-// Header format (version prefix, JSON, then "|", then base64 chunk data):
-//   OD2|{"i":"<id>","n":<seq>,"t":<total>,"m":"<mime>","f":"<filename>","s":<bytes>,"c":<chunkSize>}|<base64>
+// Header format (compact version prefix, pipe-separated metadata, then base64 chunk data):
+//   OD3|<id>|<seq36>|<total36>|<bytes36>|<chunkSize36>|<mime64>|<filename64>|<base64>
 // The receiver collects unique n values until it has the required count, then concatenates.
 //
 // IMPORTANT: chunk size is chosen per-transfer (based on file size) and carried
@@ -28,7 +28,8 @@ export interface Transfer {
   chunks: Map<number, string>;
 }
 
-export const PROTOCOL_PREFIX = "OD2";
+export const PROTOCOL_PREFIX = "OD3";
+const LEGACY_PROTOCOL_PREFIX = "OD2";
 
 // MIN_FRAMES keeps very tiny files from cycling too fast to be visually trackable.
 export const MIN_FRAMES = 12;
@@ -46,15 +47,15 @@ export const MIN_FRAMES = 12;
 
 // Roughly how many frames we're willing to ask the user to scan for a typical
 // transfer. Tune this for your own latency/reliability tradeoff.
-const TARGET_FRAMES = 220;
+const TARGET_FRAMES = 360;
 
 // Floor: keeps tiny files (a few KB) from being split into needlessly many
 // frames, and guarantees we never choose 0/negative chunk sizes.
-const MIN_CHUNK_SIZE = 80;
+const MIN_CHUNK_SIZE = 240;
 
 // Ceiling: keeps payload size (chunk + JSON metadata) safely under QR
 // byte-mode capacity at correctionLevel "M", even for long filenames.
-const MAX_CHUNK_SIZE = 1000;
+const MAX_CHUNK_SIZE = 420;
 
 export function expectedBase64Length(byteSize: number): number {
   if (byteSize <= 0) return 0;
@@ -79,32 +80,80 @@ export function requiredDataChunks(byteSize: number, chunkSize: number): number 
 }
 
 export function buildChunkPayload(meta: ChunkMeta, data: string): string {
-  return `${PROTOCOL_PREFIX}|${JSON.stringify(meta)}|${data}`;
+  return [
+    PROTOCOL_PREFIX,
+    meta.i,
+    meta.n.toString(36),
+    meta.t.toString(36),
+    meta.s.toString(36),
+    meta.c.toString(36),
+    textToBase64(meta.m),
+    textToBase64(meta.f),
+    data,
+  ].join("|");
 }
 
 export function parseChunkPayload(payload: string): { meta: ChunkMeta; data: string } | null {
-  const framed = payload.startsWith(`${PROTOCOL_PREFIX}|`)
-    ? payload.slice(PROTOCOL_PREFIX.length + 1)
-    : payload;
+  if (payload.startsWith(`${PROTOCOL_PREFIX}|`)) {
+    const parts = payload.split("|");
+    if (parts.length !== 9) return null;
+    try {
+      const meta: ChunkMeta = {
+        i: parts[1],
+        n: parseBase36(parts[2]),
+        t: parseBase36(parts[3]),
+        s: parseBase36(parts[4]),
+        c: parseBase36(parts[5]),
+        m: base64ToText(parts[6]),
+        f: base64ToText(parts[7]),
+      };
+      if (!validMeta(meta)) return null;
+      return { meta, data: parts[8] };
+    } catch {
+      return null;
+    }
+  }
+
+  if (!payload.startsWith(`${LEGACY_PROTOCOL_PREFIX}|`)) return null;
+  const framed = payload.slice(LEGACY_PROTOCOL_PREFIX.length + 1);
   const idx = framed.lastIndexOf("|");
   if (idx < 0) return null;
   try {
     const meta = JSON.parse(framed.slice(0, idx)) as ChunkMeta;
-    if (
-      typeof meta.i !== "string" ||
-      typeof meta.n !== "number" ||
-      typeof meta.t !== "number" ||
-      typeof meta.m !== "string" ||
-      typeof meta.f !== "string" ||
-      typeof meta.s !== "number" ||
-      typeof meta.c !== "number"
-    )
-      return null;
-    if (meta.n < 0 || meta.t < 1 || meta.n >= meta.t || meta.c < 1) return null;
+    if (!validMeta(meta)) return null;
     return { meta, data: framed.slice(idx + 1) };
   } catch {
     return null;
   }
+}
+
+function validMeta(meta: ChunkMeta): boolean {
+  return (
+    typeof meta.i === "string" &&
+    meta.i.length > 0 &&
+    typeof meta.n === "number" &&
+    Number.isSafeInteger(meta.n) &&
+    typeof meta.t === "number" &&
+    Number.isSafeInteger(meta.t) &&
+    typeof meta.m === "string" &&
+    meta.m.length > 0 &&
+    typeof meta.f === "string" &&
+    meta.f.length > 0 &&
+    typeof meta.s === "number" &&
+    Number.isSafeInteger(meta.s) &&
+    typeof meta.c === "number" &&
+    Number.isSafeInteger(meta.c) &&
+    meta.n >= 0 &&
+    meta.t >= 1 &&
+    meta.n < meta.t &&
+    meta.s >= 0 &&
+    meta.c >= 1
+  );
+}
+
+function parseBase36(value: string): number {
+  if (!/^[0-9a-z]+$/i.test(value)) return Number.NaN;
+  return parseInt(value, 36);
 }
 
 export async function fileToChunks(file: File): Promise<{ id: string; chunks: string[] }> {
