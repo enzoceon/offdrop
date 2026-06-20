@@ -1,7 +1,9 @@
-// IndexedDB-backed local history of received transfers.
+import { openDB, type IDBPDatabase } from "idb";
+
+// IndexedDB-backed local history of transfers.
 const DB = "offdrop";
 const STORE = "items";
-let dbPromise: Promise<IDBDatabase> | null = null;
+let dbPromise: Promise<IDBPDatabase> | null = null;
 
 export interface HistoryItem {
   id: string;
@@ -9,52 +11,34 @@ export interface HistoryItem {
   mime: string;
   size: number;
   receivedAt: number;
-  blob: Blob;
+  direction?: "sent" | "received";
+  durationMs?: number;
+  valid?: boolean;
+  blob?: Blob;
 }
 
-function openDB(): Promise<IDBDatabase> {
+function getDB(): Promise<IDBPDatabase> {
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB, 1);
-    req.onupgradeneeded = () => {
-      req.result.createObjectStore(STORE, { keyPath: "id" });
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => {
-      dbPromise = null;
-      reject(req.error);
-    };
+  dbPromise = openDB(DB, 1, {
+    upgrade(db) {
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "id" });
+    },
   });
   return dbPromise;
 }
 
 export async function saveItem(item: HistoryItem): Promise<void> {
-  const db = await openDB();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(item);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const db = await getDB();
+  await db.put(STORE, item);
 }
 
 export async function listItems(): Promise<HistoryItem[]> {
-  const db = await openDB();
-  const items = await new Promise<HistoryItem[]>((resolve, reject) => {
-    const tx = db.transaction(STORE, "readonly");
-    const req = tx.objectStore(STORE).getAll();
-    req.onsuccess = () => resolve(req.result as HistoryItem[]);
-    req.onerror = () => reject(req.error);
-  });
+  const db = await getDB();
+  const items = (await db.getAll(STORE)) as HistoryItem[];
   return items.sort((a, b) => b.receivedAt - a.receivedAt);
 }
 
 export async function deleteItem(id: string): Promise<void> {
-  const db = await openDB();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const db = await getDB();
+  await db.delete(STORE, id);
 }
