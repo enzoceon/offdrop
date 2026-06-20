@@ -5,7 +5,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Sender } from "@/components/Sender";
 import { Scanner } from "@/components/Scanner";
 import { History } from "@/components/History";
-import { CameraOff, Loader2, QrCode } from "lucide-react";
+import { Loader2, QrCode } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
