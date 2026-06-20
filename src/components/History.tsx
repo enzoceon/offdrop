@@ -369,29 +369,25 @@ export function History({ refreshKey }: { refreshKey: number }) {
             <p className="mx-auto mt-1 max-w-[19rem] text-center text-sm text-muted-foreground">
               This action cannot be undone.
             </p>
-            {deleting ? (
-              <div className="mt-5 flex items-center justify-center gap-2 py-3 text-sm font-semibold text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                Deleting…
-              </div>
-            ) : (
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={confirmDelete}
-                  className="flex items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-accent py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97]"
-                >
-                  Yes
-                </button>
-                <button
-                  type="button"
-                  onClick={cancelDelete}
-                  className="glass flex items-center justify-center rounded-2xl py-3 text-sm font-bold active:scale-[0.97]"
-                >
-                  No
-                </button>
-              </div>
-            )}
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97] disabled:opacity-85"
+              >
+                {deleting && <Loader2 className="h-4 w-4 animate-spin" />}
+                Yes
+              </button>
+              <button
+                type="button"
+                onClick={cancelDelete}
+                disabled={deleting}
+                className="liquid-control flex items-center justify-center rounded-2xl py-3 text-sm font-bold active:scale-[0.97] disabled:opacity-70"
+              >
+                No
+              </button>
+            </div>
           </div>
         </div>
       )}
