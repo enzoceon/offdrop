@@ -1,232 +1,204 @@
-// OFFDROP QR-stream protocol — splits a file into small QR chunks and reassembles.
-// Header format (compact version prefix, pipe-separated metadata, then base64 chunk data):
-//   OD3|<id>|<seq36>|<total36>|<bytes36>|<chunkSize36>|<mime64>|<filename64>|<base64>
-// The receiver collects unique n values until it has the required count, then concatenates.
+// OFFDROP QR-stream protocol — chunk + reconstruct files via QR sequences.
 //
-// IMPORTANT: chunk size is chosen per-transfer (based on file size) and carried
-// in every frame's metadata ("c"). The receiver MUST use the chunk size from the
-// metadata to compute how many frames are required — never a hardcoded constant —
-// because different transfers may use different chunk sizes.
+// Compact pipe-delimited frame format (smaller than JSON, fits more bytes per QR):
+//   Header:  H|<id>|<name>|<mime>|<size>|<total>|<crc32>
+//   Data:    D|<id>|<index>|<base64payload>
+//
+// CRC32 over the original file bytes is included in the header so the receiver
+// can verify integrity end-to-end after reconstruction.
 
-export interface ChunkMeta {
-  i: string; // transfer id
-  n: number; // sequence
-  t: number; // total
-  m: string; // mime
-  f: string; // filename
-  s: number; // total size (bytes)
-  c: number; // chunk size (base64 chars) used for THIS transfer
-}
-
-export interface Transfer {
-  id: string;
-  mime: string;
-  filename: string;
-  size: number;
-  total: number;
-  chunkSize: number;
-  chunks: Map<number, string>;
-}
-
-export const PROTOCOL_PREFIX = "OD3";
-const LEGACY_PROTOCOL_PREFIX = "OD2";
-
-// MIN_FRAMES keeps very tiny files from cycling too fast to be visually trackable.
-export const MIN_FRAMES = 12;
-
-// --- Adaptive chunk sizing -------------------------------------------------
-// A fixed tiny chunk size (e.g. 64 base64 chars) makes any real file require
-// thousands of QR frames, which makes transfers take many minutes and fail in
-// practice (any single missed frame means waiting for the whole loop to come
-// back around). Instead we target a roughly constant number of frames per
-// transfer, scaling chunk size UP for bigger files, while staying well under
-// real QR byte-mode capacity at error-correction level M (~2,331 bytes max at
-// QR version 40). We cap far below that to keep module density low enough for
-// phone-to-phone scanning instead of merely generating a technically valid QR.
-
-// Roughly how many frames we're willing to ask the user to scan for a typical
-// transfer. Tune this for your own latency/reliability tradeoff.
-const TARGET_FRAMES = 360;
-
-// Floor: keeps tiny files (a few KB) from being split into needlessly many
-// frames, and guarantees we never choose 0/negative chunk sizes.
-const MIN_CHUNK_SIZE = 240;
-
-// Ceiling: keeps payload size safely below dense QR limits at correctionLevel
-// "M", even for long filenames.
-const MAX_CHUNK_SIZE = 420;
-
-export function expectedBase64Length(byteSize: number): number {
-  if (byteSize <= 0) return 0;
-  return Math.ceil(byteSize / 3) * 4;
-}
-
-/**
- * Pick a base64-chars-per-QR chunk size for a file of this size, aiming for
- * roughly TARGET_FRAMES total frames, clamped to [MIN_CHUNK_SIZE, MAX_CHUNK_SIZE].
- */
-export function chooseChunkSize(byteSize: number): number {
-  const base64Len = expectedBase64Length(byteSize);
-  if (base64Len <= MIN_CHUNK_SIZE) return Math.max(1, base64Len || 1);
-  const ideal = Math.ceil(base64Len / TARGET_FRAMES);
-  return Math.min(MAX_CHUNK_SIZE, Math.max(MIN_CHUNK_SIZE, ideal));
-}
-
-/** Number of *data-bearing* frames required for a transfer, given the chunk size actually used for it. */
-export function requiredDataChunks(byteSize: number, chunkSize: number): number {
-  if (chunkSize <= 0) return 0;
-  return Math.ceil(expectedBase64Length(byteSize) / chunkSize);
-}
-
-export function buildChunkPayload(meta: ChunkMeta, data: string): string {
-  return [
-    PROTOCOL_PREFIX,
-    meta.i,
-    meta.n.toString(36),
-    meta.t.toString(36),
-    meta.s.toString(36),
-    meta.c.toString(36),
-    textToBase64(meta.m),
-    textToBase64(meta.f),
-    data,
-  ].join("|");
-}
-
-export function parseChunkPayload(payload: string): { meta: ChunkMeta; data: string } | null {
-  if (payload.startsWith(`${PROTOCOL_PREFIX}|`)) {
-    const parts = payload.split("|");
-    if (parts.length !== 9) return null;
-    try {
-      const meta: ChunkMeta = {
-        i: parts[1],
-        n: parseBase36(parts[2]),
-        t: parseBase36(parts[3]),
-        s: parseBase36(parts[4]),
-        c: parseBase36(parts[5]),
-        m: base64ToText(parts[6]),
-        f: base64ToText(parts[7]),
-      };
-      if (!validMeta(meta)) return null;
-      return { meta, data: parts[8] };
-    } catch {
-      return null;
-    }
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[i] = c >>> 0;
   }
+  return t;
+})();
 
-  if (!payload.startsWith(`${LEGACY_PROTOCOL_PREFIX}|`)) return null;
-  const framed = payload.slice(LEGACY_PROTOCOL_PREFIX.length + 1);
-  const idx = framed.lastIndexOf("|");
-  if (idx < 0) return null;
-  try {
-    const meta = JSON.parse(framed.slice(0, idx)) as ChunkMeta;
-    if (!validMeta(meta)) return null;
-    return { meta, data: framed.slice(idx + 1) };
-  } catch {
-    return null;
+export function crc32(bytes: Uint8Array): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+// Hand-rolled base64 (no btoa/atob; works on any byte range without string-size limits).
+const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_LOOKUP = new Uint8Array(256);
+for (let i = 0; i < 64; i++) B64_LOOKUP[B64.charCodeAt(i)] = i;
+
+export function bytesToB64(bytes: Uint8Array): string {
+  let out = "";
+  const len = bytes.length;
+  let i = 0;
+  for (; i + 2 < len; i += 3) {
+    const a = bytes[i], b = bytes[i + 1], c = bytes[i + 2];
+    out +=
+      B64[a >> 2] +
+      B64[((a & 3) << 4) | (b >> 4)] +
+      B64[((b & 15) << 2) | (c >> 6)] +
+      B64[c & 63];
   }
-}
-
-function validMeta(meta: ChunkMeta): boolean {
-  return (
-    typeof meta.i === "string" &&
-    meta.i.length > 0 &&
-    typeof meta.n === "number" &&
-    Number.isSafeInteger(meta.n) &&
-    typeof meta.t === "number" &&
-    Number.isSafeInteger(meta.t) &&
-    typeof meta.m === "string" &&
-    meta.m.length > 0 &&
-    typeof meta.f === "string" &&
-    meta.f.length > 0 &&
-    typeof meta.s === "number" &&
-    Number.isSafeInteger(meta.s) &&
-    typeof meta.c === "number" &&
-    Number.isSafeInteger(meta.c) &&
-    meta.n >= 0 &&
-    meta.t >= 1 &&
-    meta.n < meta.t &&
-    meta.s >= 0 &&
-    meta.c >= 1
-  );
-}
-
-function parseBase36(value: string): number {
-  if (!/^[0-9a-z]+$/i.test(value)) return Number.NaN;
-  return parseInt(value, 36);
-}
-
-export async function fileToChunks(file: File): Promise<{ id: string; chunks: string[] }> {
-  const buf = new Uint8Array(await file.arrayBuffer());
-  const b64 = bytesToBase64(buf);
-  const id = Math.random().toString(36).slice(2, 8);
-  const chunkSize = chooseChunkSize(file.size);
-  const pieces: string[] = [];
-  for (let i = 0; i < b64.length; i += chunkSize) {
-    pieces.push(b64.slice(i, i + chunkSize));
+  if (i < len) {
+    const a = bytes[i];
+    const b = i + 1 < len ? bytes[i + 1] : 0;
+    out += B64[a >> 2] + B64[((a & 3) << 4) | (b >> 4)];
+    out += i + 1 < len ? B64[(b & 15) << 2] : "=";
+    out += "=";
   }
-  while (pieces.length < MIN_FRAMES) pieces.push("");
-  const total = pieces.length;
-  const chunks = pieces.map((data, n) =>
-    buildChunkPayload(
-      {
-        i: id,
-        n,
-        t: total,
-        m: file.type || "application/octet-stream",
-        f: file.name,
-        s: file.size,
-        c: chunkSize,
-      },
-      data,
-    ),
-  );
-  return { id, chunks };
-}
-
-export function transferComplete(t: Transfer): boolean {
-  if (t.total < 1 || t.chunkSize < 1) return false;
-  const required = requiredDataChunks(t.size, t.chunkSize);
-  if (required > t.total) return false;
-  for (let i = 0; i < required; i++) {
-    if (!t.chunks.has(i)) return false;
-  }
-  return true;
-}
-
-export function assembleTransfer(t: Transfer): Blob {
-  const parts: string[] = [];
-  const required = requiredDataChunks(t.size, t.chunkSize);
-  for (let i = 0; i < required; i++) {
-    const chunk = t.chunks.get(i);
-    if (chunk === undefined) throw new Error("Transfer is missing QR frames.");
-    parts.push(chunk);
-  }
-  const b64 = parts.join("");
-  const bytes = base64ToBytes(b64);
-  if (bytes.byteLength !== t.size) throw new Error("Transfer size verification failed.");
-  return new Blob([bytes as BlobPart], { type: t.mime });
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let s = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    s += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(s);
-}
-
-function textToBase64(value: string): string {
-  return bytesToBase64(new TextEncoder().encode(value));
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const s = atob(b64);
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
   return out;
 }
 
-function base64ToText(b64: string): string {
-  return new TextDecoder().decode(base64ToBytes(b64));
+export function b64ToBytes(s: string): Uint8Array {
+  const clean = s.replace(/[^A-Za-z0-9+/=]/g, "");
+  const pad = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0;
+  const outLen = Math.max(0, Math.floor((clean.length * 3) / 4) - pad);
+  const out = new Uint8Array(outLen);
+  let p = 0;
+  for (let i = 0; i < clean.length; i += 4) {
+    const n =
+      (B64_LOOKUP[clean.charCodeAt(i)] << 18) |
+      (B64_LOOKUP[clean.charCodeAt(i + 1)] << 12) |
+      (B64_LOOKUP[clean.charCodeAt(i + 2)] << 6) |
+      B64_LOOKUP[clean.charCodeAt(i + 3)];
+    if (p < outLen) out[p++] = (n >> 16) & 0xff;
+    if (p < outLen) out[p++] = (n >> 8) & 0xff;
+    if (p < outLen) out[p++] = n & 0xff;
+  }
+  return out;
+}
+
+export interface ChunkPlan {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  total: number;
+  crc: number;
+  headerFrame: string;
+  dataFrames: string[];
+}
+
+// 300 raw bytes -> 400 base64 chars + small text header = ~414 chars per QR,
+// which fits comfortably inside QR @ EC level M and stays decodable on phones.
+const RAW_CHUNK_BYTES = 300;
+
+export interface PlanInput {
+  name: string;
+  type: string;
+  size: number;
+  bytes: Uint8Array;
+}
+
+export function planFile(file: PlanInput): ChunkPlan {
+  const id = Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
+  const total = Math.max(1, Math.ceil(file.bytes.length / RAW_CHUNK_BYTES));
+  const crc = crc32(file.bytes);
+  const dataFrames: string[] = new Array(total);
+  for (let i = 0; i < total; i++) {
+    const slice = file.bytes.subarray(i * RAW_CHUNK_BYTES, (i + 1) * RAW_CHUNK_BYTES);
+    dataFrames[i] = `D|${id}|${i}|${bytesToB64(slice)}`;
+  }
+  const mime = file.type || "application/octet-stream";
+  const safeName = file.name.replace(/\|/g, "_");
+  const headerFrame = `H|${id}|${safeName}|${mime}|${file.size}|${total}|${crc}`;
+  return { id, name: safeName, mime, size: file.size, total, crc, headerFrame, dataFrames };
+}
+
+export interface ParsedHeader {
+  kind: "header";
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  total: number;
+  crc: number;
+}
+export interface ParsedData {
+  kind: "data";
+  id: string;
+  index: number;
+  payload: Uint8Array;
+}
+
+export function parseFrame(text: string): ParsedHeader | ParsedData | null {
+  if (!text) return null;
+  if (text.startsWith("H|")) {
+    const parts = text.split("|");
+    if (parts.length < 7) return null;
+    const size = Number(parts[4]);
+    const total = Number(parts[5]);
+    const crc = Number(parts[6]);
+    if (!Number.isFinite(size) || !Number.isFinite(total) || !Number.isFinite(crc)) return null;
+    return {
+      kind: "header",
+      id: parts[1],
+      name: parts[2],
+      mime: parts[3],
+      size,
+      total,
+      crc: crc >>> 0,
+    };
+  }
+  if (text.startsWith("D|")) {
+    const idPipe = text.indexOf("|", 2);
+    const idxPipe = text.indexOf("|", idPipe + 1);
+    if (idPipe < 0 || idxPipe < 0) return null;
+    const id = text.slice(2, idPipe);
+    const index = Number(text.slice(idPipe + 1, idxPipe));
+    const b64 = text.slice(idxPipe + 1);
+    if (!Number.isFinite(index) || index < 0) return null;
+    return { kind: "data", id, index, payload: b64ToBytes(b64) };
+  }
+  return null;
+}
+
+export function reconstruct(chunks: Uint8Array[], expectedSize: number): Uint8Array {
+  const out = new Uint8Array(expectedSize);
+  let offset = 0;
+  for (const c of chunks) {
+    if (offset >= expectedSize) break;
+    const take = c.subarray(0, Math.min(c.length, expectedSize - offset));
+    out.set(take, offset);
+    offset += take.length;
+  }
+  return out.subarray(0, offset);
+}
+
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+// Practical ceiling — beyond this a QR transfer is impractical (would take many
+// minutes to loop through). We surface a warning in the UI rather than silently fail.
+export const PRACTICAL_LIMIT_BYTES = 2 * 1024 * 1024; // 2 MB
+
+// How often to interleave a header frame in the playback sequence so a receiver
+// joining mid-stream can latch onto the transfer quickly.
+export const HEADER_EVERY = 6;
+
+export interface Slot {
+  text: string;
+  isHeader: boolean;
+  /** Underlying data-chunk index (0..total-1), or null if this slot is a header. */
+  dataIndex: number | null;
+}
+
+export function buildSequence(plan: ChunkPlan): Slot[] {
+  const out: Slot[] = [];
+  // Always lead with a header so cold scans lock on instantly.
+  out.push({ text: plan.headerFrame, isHeader: true, dataIndex: null });
+  for (let i = 0; i < plan.total; i++) {
+    out.push({ text: plan.dataFrames[i], isHeader: false, dataIndex: i });
+    // Sprinkle headers throughout so a late-joining receiver can latch on
+    // no matter where in the loop it tunes in.
+    if ((i + 1) % HEADER_EVERY === 0 && i < plan.total - 1) {
+      out.push({ text: plan.headerFrame, isHeader: true, dataIndex: null });
+    }
+  }
+  return out;
 }

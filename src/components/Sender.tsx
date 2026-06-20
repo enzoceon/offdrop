@@ -15,7 +15,7 @@ import {
   Loader2,
   Volume2,
 } from "lucide-react";
-import { fileToChunks } from "@/lib/qr-protocol";
+import { planFile, buildSequence, type Slot } from "@/lib/qr-protocol";
 import { cn } from "@/lib/utils";
 
 function formatBytes(bytes: number) {
@@ -34,7 +34,8 @@ function formatDuration(seconds: number) {
 
 export function Sender() {
   const [file, setFile] = useState<File | null>(null);
-  const [chunks, setChunks] = useState<string[]>([]);
+  const [slots, setSlots] = useState<Slot[]>([]);
+  const [totalData, setTotalData] = useState(0);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(5);
@@ -49,16 +50,23 @@ export function Sender() {
   const videoPreviewRef = useRef<HTMLVideoElement>(null);
   const audioPreviewRef = useRef<HTMLAudioElement>(null);
 
+  // Back-compat alias for the rest of the component.
+  const chunks = slots;
+
   async function onPick(f: File) {
     if (preview) URL.revokeObjectURL(preview);
     setFile(f);
-    setChunks([]);
+    setSlots([]);
+    setTotalData(0);
     setIdx(0);
     setPlaying(false);
     setPreview(URL.createObjectURL(f));
     setPreviewOpen(false);
-    const { chunks } = await fileToChunks(f);
-    setChunks(chunks);
+    const buf = new Uint8Array(await f.arrayBuffer());
+    const plan = planFile({ name: f.name, type: f.type, size: f.size, bytes: buf });
+    const seq = buildSequence(plan);
+    setTotalData(plan.total);
+    setSlots(seq);
   }
 
   // Render current QR
@@ -66,9 +74,11 @@ export function Sender() {
     if (!canvasRef.current || chunks.length === 0) return;
     setQrError(null);
     const canvas = canvasRef.current;
-    QRCode.toCanvas(canvas, chunks[idx], {
+    const text = chunks[idx]?.text ?? "";
+    if (!text) return;
+    QRCode.toCanvas(canvas, text, {
       errorCorrectionLevel: "M",
-      margin: 6,
+      margin: 4,
       width: 720,
       color: { dark: "#000000", light: "#ffffff" },
     })
@@ -79,7 +89,7 @@ export function Sender() {
         const verified = jsQR(image.data, canvas.width, canvas.height, {
           inversionAttempts: "attemptBoth",
         });
-        if (verified?.data !== chunks[idx]) throw new Error("Generated QR failed verification.");
+        if (verified?.data !== text) throw new Error("Generated QR failed verification.");
       })
       .catch((err) => {
         console.error("QR generation failed:", err);
@@ -99,7 +109,8 @@ export function Sender() {
 
   function reset() {
     setFile(null);
-    setChunks([]);
+    setSlots([]);
+    setTotalData(0);
     setIdx(0);
     setPlaying(false);
     setPreviewOpen(false);
@@ -120,7 +131,16 @@ export function Sender() {
 
   const cycleSeconds = chunks.length / fps;
   const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
-  const progress = chunks.length ? ((idx + 1) / chunks.length) * 100 : 0;
+  const currentDataIndex =
+    chunks[idx]?.dataIndex ??
+    (() => {
+      // Hold the most recent data position for header slots.
+      for (let i = idx; i >= 0; i--) {
+        if (chunks[i]?.dataIndex != null) return chunks[i].dataIndex!;
+      }
+      return 0;
+    })();
+  const progress = totalData ? ((currentDataIndex + 1) / totalData) * 100 : 0;
   const canOpenPreview = Boolean(preview && file?.type.match(/^(image|video|audio)\//));
 
   function activePreviewMedia() {
@@ -241,7 +261,7 @@ export function Sender() {
               </span>
               <span className="flex items-center gap-1">
                 <Layers3 className="h-3 w-3 text-primary" />
-                {playing && chunks.length ? `${idx + 1} / ${chunks.length}` : chunks.length} frames
+                {playing && totalData ? `${currentDataIndex + 1} / ${totalData}` : totalData} frames
               </span>
               <span className="col-span-2 flex items-center gap-1">
                 <Clock className="h-3 w-3 text-primary" />
