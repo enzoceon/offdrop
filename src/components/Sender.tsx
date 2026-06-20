@@ -23,12 +23,18 @@ import { saveItem } from "@/lib/history";
 import { sfx } from "@/lib/feedback";
 import { cn } from "@/lib/utils";
 
-const SPEEDS = [
-  { label: "Gentle", fps: 2 },
-  { label: "Normal", fps: 5 },
-  { label: "Fast", fps: 8 },
-  { label: "Turbo", fps: 10 },
+type SpeedTier = "Gentle" | "Normal" | "Fast" | "Turbo";
+
+const TIER_RANGES: { tier: SpeedTier; min: number; max: number; span: number }[] = [
+  { tier: "Gentle", min: 1, max: 2, span: 2 },
+  { tier: "Normal", min: 3, max: 5, span: 3 },
+  { tier: "Fast", min: 6, max: 8, span: 3 },
+  { tier: "Turbo", min: 9, max: 10, span: 2 },
 ];
+
+function tierForFps(fps: number): SpeedTier {
+  return TIER_RANGES.find((t) => fps >= t.min && fps <= t.max)?.tier ?? "Normal";
+}
 
 const planTransferOnClient = createClientOnlyFn(async (file: File, bytes: Uint8Array) => {
   const { planTransferInWorker } = await import("@/lib/transfer-planner.client");
