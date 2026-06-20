@@ -139,8 +139,8 @@ function Index() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="mx-auto flex items-center justify-center gap-2">
-              <CameraOff className="h-5 w-5 text-foreground" strokeWidth={2.4} />
-              <h2 className="text-display text-lg leading-tight text-foreground">Stop receiving?</h2>
+              <CameraOff className="h-5 w-5 text-muted-foreground" strokeWidth={2.4} />
+              <h2 className="text-display text-lg leading-tight text-muted-foreground">Stop receiving?</h2>
             </div>
             <p className="mx-auto mt-3 max-w-[19rem] text-center text-sm text-muted-foreground">
               Leaving Receive will close the camera.
