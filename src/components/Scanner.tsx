@@ -473,11 +473,11 @@ export function Scanner({
 
         {active && (
           <>
-            <div className="pointer-events-none absolute inset-3 rounded-xl">
-              <span className="absolute left-0 top-0 h-7 w-7 rounded-tl-xl border-l-[3px] border-t-[3px] border-primary" />
-              <span className="absolute right-0 top-0 h-7 w-7 rounded-tr-xl border-r-[3px] border-t-[3px] border-primary" />
-              <span className="absolute bottom-0 left-0 h-7 w-7 rounded-bl-xl border-b-[3px] border-l-[3px] border-primary" />
-              <span className="absolute bottom-0 right-0 h-7 w-7 rounded-br-xl border-b-[3px] border-r-[3px] border-primary" />
+            <div className="scanner-corners-in pointer-events-none absolute inset-3 rounded-xl">
+              <span className="absolute left-0 top-0 h-10 w-10 rounded-tl-xl border-l-[3px] border-t-[3px] border-white" />
+              <span className="absolute right-0 top-0 h-10 w-10 rounded-tr-xl border-r-[3px] border-t-[3px] border-white" />
+              <span className="absolute bottom-0 left-0 h-10 w-10 rounded-bl-xl border-b-[3px] border-l-[3px] border-white" />
+              <span className="absolute bottom-0 right-0 h-10 w-10 rounded-br-xl border-b-[3px] border-r-[3px] border-white" />
             </div>
             <div className="pointer-events-none absolute inset-3 overflow-hidden rounded-xl">
               <div className="scan-sweep absolute left-0 right-0 top-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent" />
