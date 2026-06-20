@@ -551,7 +551,7 @@ export function Sender() {
             {file.type.startsWith("audio/") && (
               <div className="glass-strong w-full max-w-md rounded-xl p-5">
                 <div className="audio-tile mx-auto grid h-20 w-20 place-items-center rounded-lg shadow-xl">
-                  <Volume2 className="h-8 w-8 text-primary" />
+                  <Music2 className="h-8 w-8 text-primary" />
                 </div>
                 <p className="mt-4 truncate text-center text-sm font-bold">{file.name}</p>
                 <audio
