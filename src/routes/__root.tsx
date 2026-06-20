@@ -108,9 +108,9 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { property: "og:site_name", content: "OFFDROP" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
-      { title: "OFFDROP — Offline QR File Transfer" },
-      { property: "og:title", content: "OFFDROP — Offline QR File Transfer" },
-      { name: "twitter:title", content: "OFFDROP — Offline QR File Transfer" },
+      { title: "OFFDROP — Offline File Transfer App" },
+      { property: "og:title", content: "OFFDROP — Offline File Transfer App" },
+      { name: "twitter:title", content: "OFFDROP — Offline File Transfer App" },
       {
         name: "description",
         content:
