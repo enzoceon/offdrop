@@ -40,10 +40,9 @@ export const MIN_FRAMES = 12;
 // practice (any single missed frame means waiting for the whole loop to come
 // back around). Instead we target a roughly constant number of frames per
 // transfer, scaling chunk size UP for bigger files, while staying well under
-// real QR byte-mode capacity at error-correction level M (~2,331 bytes max at
-// QR version 40). We cap well below that to leave headroom for metadata
-// (filename, transfer id, etc.) and to keep the QR module density low enough
-// to scan reliably on a phone camera.
+// real QR byte-mode capacity at error-correction level Q (~1,663 bytes max at
+// QR version 40). We cap far below that to keep module density low enough for
+// phone-to-phone scanning instead of merely generating a technically valid QR.
 
 // Roughly how many frames we're willing to ask the user to scan for a typical
 // transfer. Tune this for your own latency/reliability tradeoff.
@@ -53,8 +52,8 @@ const TARGET_FRAMES = 360;
 // frames, and guarantees we never choose 0/negative chunk sizes.
 const MIN_CHUNK_SIZE = 240;
 
-// Ceiling: keeps payload size (chunk + JSON metadata) safely under QR
-// byte-mode capacity at correctionLevel "M", even for long filenames.
+// Ceiling: keeps payload size safely below dense QR limits at correctionLevel
+// "Q", even for long filenames.
 const MAX_CHUNK_SIZE = 420;
 
 export function expectedBase64Length(byteSize: number): number {
