@@ -349,7 +349,11 @@ export function Sender() {
                     className="glass grid h-11 w-11 shrink-0 place-items-center rounded-full active:scale-90"
                     aria-label={mediaPlaying ? "Pause video" : "Play video"}
                   >
-                    {mediaPlaying ? <Pause className="h-4.5 w-4.5" /> : <Play className="h-4.5 w-4.5" />}
+                    {mediaPlaying ? (
+                      <Pause className="h-4.5 w-4.5" />
+                    ) : (
+                      <Play className="h-4.5 w-4.5" />
+                    )}
                   </button>
                   <input
                     type="range"
