@@ -296,7 +296,7 @@ export function Scanner({
   }
 
   function updateProgress(t: Transfer) {
-    const required = Math.min(requiredDataChunks(t.size), t.total);
+    const required = Math.min(requiredDataChunks(t.size, t.chunkSize), t.total);
     let have = 0;
     for (let i = 0; i < required; i++) if (t.chunks.has(i)) have++;
     setProgress({ have, total: required });
@@ -320,20 +320,23 @@ export function Scanner({
 
     let t = transferRef.current;
     if (!t || t.id !== meta.i) {
-      t = {
+      const nextTransfer: Transfer = {
         id: meta.i,
         mime: meta.m,
         filename: meta.f,
         size: meta.s,
         total: meta.t,
+        chunkSize: meta.c,
         chunks: new Map(),
       };
-      transferRef.current = t;
+      transferRef.current = nextTransfer;
+      t = nextTransfer;
     } else {
       t.mime = meta.m;
       t.filename = meta.f;
       t.size = meta.s;
       t.total = meta.t;
+      t.chunkSize = meta.c;
     }
     setScanInfo({ name: t.filename, mime: t.mime, size: t.size });
     if (!t.chunks.has(meta.n)) {
