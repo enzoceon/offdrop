@@ -249,7 +249,7 @@ export function Scanner({
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            facingMode: { ideal: facingMode },
+            facingMode: { exact: facingMode },
             width: { ideal: 1920 },
             height: { ideal: 1080 },
             frameRate: { ideal: 30, max: 60 },
@@ -258,7 +258,15 @@ export function Scanner({
           audio: false,
         });
       } catch {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: facingMode },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+          },
+          audio: false,
+        });
       }
       streamRef.current = stream;
       for (const track of stream.getVideoTracks()) {
