@@ -85,7 +85,7 @@ export function Sender() {
       setPreview(URL.createObjectURL(f));
       setPreviewOpen(false);
       const buf = new Uint8Array(await f.arrayBuffer());
-      const planned = await planTransferInWorker(f, buf);
+      const planned = await planTransferOnClient(f, buf);
       setTotalData(planned.totalData);
       setSlots(planned.slots);
       sfx.fileFound();
