@@ -227,6 +227,7 @@ export function Scanner({
   const [qrBox, setQrBox] = useState<QrBox | null>(null);
   const [done, setDone] = useState<DonePreview | null>(null);
   const [facing, setFacing] = useState<"environment" | "user">("environment");
+  const [focusing, setFocusing] = useState(false);
 
   async function start(facingMode: "environment" | "user" = facingRef.current, force = false) {
     if (!force && (active || starting || stopping)) return;
@@ -340,6 +341,43 @@ export function Scanner({
     const next = facingRef.current === "environment" ? "user" : "environment";
     await stop(false);
     await start(next, true);
+  }
+
+  async function autofocusCamera() {
+    if (!active || stopping || starting || focusing) return;
+    setFocusing(true);
+    const startedAt = performance.now();
+    try {
+      const tracks = streamRef.current?.getVideoTracks() ?? [];
+      for (const track of tracks) {
+        const focusTrack = track as MediaStreamTrack & {
+          getCapabilities?: () => MediaTrackCapabilities & { focusMode?: string[] };
+          applyConstraints: (
+            constraints: MediaTrackConstraints & {
+              advanced?: Array<MediaTrackConstraintSet & { focusMode?: string }>;
+            },
+          ) => Promise<void>;
+        };
+        const capabilities = focusTrack.getCapabilities?.() as
+          | (MediaTrackCapabilities & { focusMode?: string[] })
+          | undefined;
+        const modes = capabilities?.focusMode ?? [];
+        const mode = modes.includes("single-shot")
+          ? "single-shot"
+          : modes.includes("continuous")
+            ? "continuous"
+            : undefined;
+        if (mode) {
+          await focusTrack.applyConstraints({ advanced: [{ focusMode: mode }] });
+        }
+      }
+    } catch {
+      /* Browser/camera may not expose focus controls; keep native focus running. */
+    } finally {
+      const remaining = 1000 - (performance.now() - startedAt);
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+      setFocusing(false);
+    }
   }
 
   function clearDonePreview() {
@@ -692,15 +730,28 @@ export function Scanner({
               onClick={() => void flipCamera()}
               disabled={stopping || starting}
               aria-label={`Flip camera (current: ${facing === "environment" ? "back" : "front"})`}
-              className="glass flex h-12 shrink-0 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-semibold active:scale-95 disabled:opacity-60 sm:h-14 sm:px-5 sm:text-base"
+              className="glass flex h-12 shrink-0 items-center justify-center gap-2 rounded-2xl px-3 text-sm font-semibold active:scale-95 disabled:opacity-60 sm:h-14 sm:px-5 sm:text-base"
             >
               <SwitchCamera className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
               <span className="pr-0.5">Flip</span>
             </button>
             <button
+              onClick={() => void autofocusCamera()}
+              disabled={stopping || starting || focusing}
+              aria-label="Autofocus camera"
+              className="glass flex h-12 shrink-0 items-center justify-center gap-2 rounded-2xl px-3 text-sm font-semibold active:scale-95 disabled:opacity-70 sm:h-14 sm:px-5 sm:text-base"
+            >
+              {focusing ? (
+                <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
+              ) : (
+                <ScanLine className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
+              )}
+              <span className="pr-0.5">Autofocus</span>
+            </button>
+            <button
               onClick={() => void stop(true)}
               disabled={stopping}
-              className="glass flex max-w-[14rem] flex-1 items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80 sm:py-4 sm:text-base"
+              className="glass flex min-w-[8.5rem] max-w-[14rem] flex-1 items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80 sm:py-4 sm:text-base"
             >
               {stopping ? (
                 <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
