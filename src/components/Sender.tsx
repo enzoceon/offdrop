@@ -131,7 +131,16 @@ export function Sender() {
 
   const cycleSeconds = chunks.length / fps;
   const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
-  const progress = chunks.length ? ((idx + 1) / chunks.length) * 100 : 0;
+  const currentDataIndex =
+    chunks[idx]?.dataIndex ??
+    (() => {
+      // Hold the most recent data position for header slots.
+      for (let i = idx; i >= 0; i--) {
+        if (chunks[i]?.dataIndex != null) return chunks[i].dataIndex!;
+      }
+      return 0;
+    })();
+  const progress = totalData ? ((currentDataIndex + 1) / totalData) * 100 : 0;
   const canOpenPreview = Boolean(preview && file?.type.match(/^(image|video|audio)\//));
 
   function activePreviewMedia() {
