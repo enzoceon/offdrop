@@ -15,7 +15,7 @@ import {
   Loader2,
   Volume2,
 } from "lucide-react";
-import { fileToChunks } from "@/lib/qr-protocol";
+import { planFile, buildSequence, type Slot } from "@/lib/qr-protocol";
 import { cn } from "@/lib/utils";
 
 function formatBytes(bytes: number) {
@@ -34,7 +34,8 @@ function formatDuration(seconds: number) {
 
 export function Sender() {
   const [file, setFile] = useState<File | null>(null);
-  const [chunks, setChunks] = useState<string[]>([]);
+  const [slots, setSlots] = useState<Slot[]>([]);
+  const [totalData, setTotalData] = useState(0);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(5);
@@ -49,16 +50,23 @@ export function Sender() {
   const videoPreviewRef = useRef<HTMLVideoElement>(null);
   const audioPreviewRef = useRef<HTMLAudioElement>(null);
 
+  // Back-compat alias for the rest of the component.
+  const chunks = slots;
+
   async function onPick(f: File) {
     if (preview) URL.revokeObjectURL(preview);
     setFile(f);
-    setChunks([]);
+    setSlots([]);
+    setTotalData(0);
     setIdx(0);
     setPlaying(false);
     setPreview(URL.createObjectURL(f));
     setPreviewOpen(false);
-    const { chunks } = await fileToChunks(f);
-    setChunks(chunks);
+    const buf = new Uint8Array(await f.arrayBuffer());
+    const plan = planFile({ name: f.name, type: f.type, size: f.size, bytes: buf });
+    const seq = buildSequence(plan);
+    setTotalData(plan.total);
+    setSlots(seq);
   }
 
   // Render current QR
