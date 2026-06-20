@@ -142,10 +142,11 @@ function Index() {
             stopRequestKey={stopRequestKey}
             onStopRequestComplete={completeScannerStopRequest}
             onBusyChange={setScannerBusy}
+            visible={tab === "scan"}
             onSaved={() => {
               setHistoryKey((k) => k + 1);
             }}
-            onCompleteAction={() => setTab("history")}
+            onCompleteAction={() => {}}
           />
 
         </section>
