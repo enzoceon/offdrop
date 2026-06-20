@@ -162,8 +162,38 @@ async function detectAspectRatio(blob: Blob, mime: string, url: string): Promise
   return mime.startsWith("audio/") ? 16 / 9 : 4 / 3;
 }
 
+function AnimatedPercent({ value }: { value: number }) {
+  const [display, setDisplay] = useState(value);
+  const fromRef = useRef(value);
+
+  useEffect(() => {
+    const from = fromRef.current;
+    const to = value;
+    const start = performance.now();
+    const duration = 420;
+    let frame = 0;
+    const animate = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const next = from + (to - from) * eased;
+      setDisplay(next);
+      if (t < 1) frame = requestAnimationFrame(animate);
+      else fromRef.current = to;
+    };
+    frame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frame);
+  }, [value]);
+
+  return (
+    <div className="mt-3 text-center text-5xl font-medium leading-none tabular-nums text-foreground sm:text-6xl">
+      {Math.round(display)}%
+    </div>
+  );
+}
+
 export function Scanner({
   onSaved,
+  onCompleteAction,
   stopRequestKey = 0,
   onStopRequestComplete,
   onBusyChange,
