@@ -433,7 +433,7 @@ export function Scanner({
         video.videoHeight > 0
       ) {
         lastDecodeRef.current = now;
-        const scale = Math.min(1, 960 / Math.max(video.videoWidth, video.videoHeight));
+        const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(video.videoWidth, video.videoHeight));
         const w = Math.max(1, Math.round(video.videoWidth * scale));
         const h = Math.max(1, Math.round(video.videoHeight * scale));
         if (canvas.width !== w) canvas.width = w;
@@ -441,7 +441,8 @@ export function Scanner({
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (ctx) {
           ctx.drawImage(video, 0, 0, w, h);
-          const code = decodeQr(ctx, w, h);
+          const deepScan = !boxVisibleRef.current && now - lastBoxUpdateRef.current > 420;
+          const code = decodeQr(ctx, w, h, deepScan);
           frameErrorCountRef.current = 0;
           if (code?.data) {
             handleScan(code.data);
@@ -741,15 +742,15 @@ export function Scanner({
             <button
               onClick={() => void autofocusCamera()}
               disabled={stopping || starting || focusing}
-              aria-label="Autofocus camera"
-              className="glass flex h-12 shrink-0 items-center justify-center gap-2 rounded-2xl px-3 text-sm font-semibold active:scale-95 disabled:opacity-70 sm:h-14 sm:px-5 sm:text-base"
+                aria-label="Focus camera"
+                title="Focus camera"
+                className="glass grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-70 sm:h-14 sm:w-14"
             >
               {focusing ? (
                 <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
               ) : (
-                <ScanLine className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
+                  <Focus className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
               )}
-              <span className="pr-0.5">Autofocus</span>
             </button>
             <button
               onClick={() => void stop(true)}
