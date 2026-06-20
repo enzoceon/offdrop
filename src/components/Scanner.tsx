@@ -103,10 +103,10 @@ function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResu
   if (side !== w || side !== h) {
     attempts.push([Math.round((w - side) / 2), Math.round((h - side) / 2), side, side]);
   }
-  // Single tighter center crop for far-range fallback. Autofocus handles the rest.
-  const tight = Math.max(192, Math.round(side * 0.7));
-  if (tight < side) {
-    attempts.push([Math.round((w - tight) / 2), Math.round((h - tight) / 2), tight, tight]);
+  const medium = Math.max(220, Math.round(side * 0.82));
+  const tight = Math.max(192, Math.round(side * 0.62));
+  for (const crop of [medium, tight]) {
+    if (crop < side) attempts.push([Math.round((w - crop) / 2), Math.round((h - crop) / 2), crop, crop]);
   }
 
   let firstAttempt = true;
@@ -397,7 +397,7 @@ export function Scanner({
         video.videoHeight > 0
       ) {
         lastDecodeRef.current = now;
-        const scale = Math.min(1, 720 / Math.max(video.videoWidth, video.videoHeight));
+        const scale = Math.min(1, 960 / Math.max(video.videoWidth, video.videoHeight));
         const w = Math.max(1, Math.round(video.videoWidth * scale));
         const h = Math.max(1, Math.round(video.videoHeight * scale));
         if (canvas.width !== w) canvas.width = w;
