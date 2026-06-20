@@ -452,7 +452,7 @@ export function Scanner({
               </div>
             </div>
             <p className="absolute inset-x-6 bottom-10 text-sm text-muted-foreground sm:bottom-12">
-              Aim at the OFFDROP stream
+              Aim at the OFFDROP qr
             </p>
           </div>
         )}
