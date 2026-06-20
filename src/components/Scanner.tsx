@@ -549,8 +549,6 @@ export function Scanner({
 
   function handleCameraPointerMove(event: React.PointerEvent<HTMLDivElement>) {
     if (!active) return;
-    const touches = Array.from(event.currentTarget.querySelectorAll("video"));
-    void touches;
     const currentPan = panRef.current;
     if (!currentPan || currentPan.pointerId !== event.pointerId || zoom <= zoomRange.min + 0.01) return;
     const next = {
