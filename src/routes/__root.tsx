@@ -11,7 +11,7 @@ import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
-import { registerAppServiceWorker } from "../lib/pwa.client";
+
 
 const themeInitScript = `
 (() => {
@@ -194,7 +194,7 @@ function RootShell({ children }: { children: ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   useEffect(() => {
-    void registerAppServiceWorker();
+    void import("../lib/pwa.client").then((m) => m.registerAppServiceWorker());
   }, []);
 
   return (
