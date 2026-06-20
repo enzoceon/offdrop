@@ -67,7 +67,7 @@ export function Sender() {
     setQrError(null);
     const canvas = canvasRef.current;
     QRCode.toCanvas(canvas, chunks[idx], {
-      errorCorrectionLevel: "Q",
+      errorCorrectionLevel: "M",
       margin: 6,
       width: 720,
       color: { dark: "#000000", light: "#ffffff" },
