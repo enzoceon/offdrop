@@ -313,56 +313,8 @@ export function Scanner({
   async function flipCamera() {
     if (!active || stopping || starting) return;
     const next = facingRef.current === "environment" ? "user" : "environment";
-    await stop();
-    await start(next);
-  }
-
-  function toggleAutoFocus() {
-    setAutoFocus((prev) => {
-      const next = !prev;
-      autofocusRef.current = next;
-      if (!next) {
-        // Reset to base zoom when disabling
-        const track = streamRef.current?.getVideoTracks()[0];
-        const caps = track?.getCapabilities?.() as MediaTrackCapabilities & { zoom?: { min: number } };
-        if (track && caps?.zoom) {
-          track
-            .applyConstraints({ advanced: [{ zoom: caps.zoom.min } as MediaTrackConstraintSet] })
-            .catch(() => {});
-        }
-      }
-      return next;
-    });
-  }
-
-  function maybeAutoFocus(box: QrBox, w: number, h: number) {
-    if (!autofocusRef.current) return;
-    const now = performance.now();
-    if (now - lastAutofocusRef.current < AUTOFOCUS_INTERVAL_MS) return;
-    lastAutofocusRef.current = now;
-    const track = streamRef.current?.getVideoTracks()[0];
-    if (!track) return;
-    const caps = track.getCapabilities?.() as MediaTrackCapabilities & {
-      zoom?: { min: number; max: number; step?: number };
-    };
-    if (!caps?.zoom) return;
-    const settings = track.getSettings() as MediaTrackSettings & { zoom?: number };
-    const cur = settings.zoom ?? caps.zoom.min;
-    const xs = box.corners.map((p) => p.x);
-    const ys = box.corners.map((p) => p.y);
-    const qrSize =
-      Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) /
-      Math.min(w, h);
-    if (qrSize <= 0) return;
-    const target = 0.55;
-    const ratio = target / qrSize;
-    const damped = 1 + (ratio - 1) * 0.55;
-    let next = cur * damped;
-    next = Math.min(caps.zoom.max, Math.max(caps.zoom.min, next));
-    if (Math.abs(next - cur) / Math.max(0.0001, cur) < 0.04) return;
-    track
-      .applyConstraints({ advanced: [{ zoom: next } as MediaTrackConstraintSet] })
-      .catch(() => {});
+    await stop(false);
+    await start(next, true);
   }
 
   function tick() {
@@ -398,7 +350,6 @@ export function Scanner({
               lastBoxUpdateRef.current = now;
               setQrBox(box);
             }
-            maybeAutoFocus(box, w, h);
           } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
             boxVisibleRef.current = false;
             lastBoxUpdateRef.current = now;
