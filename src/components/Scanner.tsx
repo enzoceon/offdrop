@@ -527,6 +527,10 @@ export function Scanner({
       await stop(true);
       onSaved();
     } catch (e) {
+      transferRef.current = null;
+      lastSeenRef.current.clear();
+      setScanInfo(null);
+      setProgress({ have: 0, total: 0 });
       setError(e instanceof Error ? e.message : "The scanned file could not be reconstructed yet.");
     } finally {
       finishingRef.current = false;
