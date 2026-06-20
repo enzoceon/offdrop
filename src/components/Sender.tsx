@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 import { createClientOnlyFn } from "@tanstack/react-start";
 import QRCode from "qrcode";
 import jsQR from "jsqr";
@@ -53,6 +53,41 @@ function formatDuration(seconds: number) {
   return mins ? `${mins}m ${secs.toString().padStart(2, "0")}s` : `${secs}s`;
 }
 
+function drawRoundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function renderRoundedQr(text: string) {
+  const qr = QRCode.create(text, { errorCorrectionLevel: "Q", version: 20 });
+  const canvas = document.createElement("canvas");
+  const width = 820;
+  const margin = 2;
+  const count = qr.modules.size;
+  const cell = width / (count + margin * 2);
+  canvas.width = width;
+  canvas.height = width;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("QR canvas is unavailable.");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, width);
+  ctx.fillStyle = "#000000";
+  const radius = Math.max(0.5, cell * 0.12);
+  for (let row = 0; row < count; row++) {
+    for (let col = 0; col < count; col++) {
+      if (!qr.modules.get(row, col)) continue;
+      drawRoundRect(ctx, (col + margin) * cell, (row + margin) * cell, cell + 0.03, cell + 0.03, radius);
+    }
+  }
+  return canvas;
+}
+
 export function Sender({ active = true }: { active?: boolean }) {
   const [file, setFile] = useState<File | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]);
@@ -65,6 +100,7 @@ export function Sender({ active = true }: { active?: boolean }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
   const [qrImage, setQrImage] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
   const [mediaPlaying, setMediaPlaying] = useState(false);
   const [mediaTime, setMediaTime] = useState(0);
   const [mediaDuration, setMediaDuration] = useState(0);
