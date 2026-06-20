@@ -139,6 +139,12 @@ export function Sender() {
     syncPreviewMedia(media);
   }
 
+  function closePreview() {
+    activePreviewMedia()?.pause();
+    setMediaPlaying(false);
+    setPreviewOpen(false);
+  }
+
   if (!file) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center px-5">
@@ -310,31 +316,102 @@ export function Sender() {
 
       {previewOpen && preview && canOpenPreview && (
         <div
-          className="fixed inset-0 z-[80] bg-background/95 backdrop-blur-2xl animate-fade-up"
+          className="fixed inset-0 z-[80] bg-background/92 backdrop-blur-2xl animate-fade-up"
           role="dialog"
           aria-modal="true"
         >
-          <div className="absolute inset-0 flex items-center justify-center p-2 sm:p-4">
-            {file.type.startsWith("image/") ? (
-              <img
-                src={preview}
-                alt={file.name}
-                className="h-full w-full rounded-2xl object-contain shadow-2xl"
-              />
-            ) : (
-              <video
-                src={preview}
-                controls
-                autoPlay
-                playsInline
-                className="h-full w-full rounded-2xl object-contain shadow-2xl"
-              />
+          <div className="absolute inset-0 flex items-center justify-center px-4 py-20 sm:px-8">
+            {file.type.startsWith("image/") && (
+              <div className="max-h-full max-w-full overflow-hidden rounded-[1.4rem] shadow-2xl ring-1 ring-glass-border">
+                <img
+                  src={preview}
+                  alt={file.name}
+                  className="block max-h-[calc(100dvh-10rem)] max-w-[calc(100vw-2rem)] object-contain"
+                />
+              </div>
+            )}
+
+            {file.type.startsWith("video/") && (
+              <div className="glass-strong flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-[1.5rem] p-2">
+                <video
+                  ref={videoPreviewRef}
+                  src={preview}
+                  playsInline
+                  className="max-h-[calc(100dvh-15rem)] w-full rounded-[1.1rem] object-contain"
+                  onLoadedMetadata={(event) => syncPreviewMedia(event.currentTarget)}
+                  onTimeUpdate={(event) => syncPreviewMedia(event.currentTarget)}
+                  onPlay={(event) => syncPreviewMedia(event.currentTarget)}
+                  onPause={(event) => syncPreviewMedia(event.currentTarget)}
+                />
+                <div className="flex items-center gap-3 px-2 py-3">
+                  <button
+                    type="button"
+                    onClick={() => void togglePreviewPlayback()}
+                    className="glass grid h-11 w-11 shrink-0 place-items-center rounded-full active:scale-90"
+                    aria-label={mediaPlaying ? "Pause video" : "Play video"}
+                  >
+                    {mediaPlaying ? <Pause className="h-4.5 w-4.5" /> : <Play className="h-4.5 w-4.5" />}
+                  </button>
+                  <input
+                    type="range"
+                    min={0}
+                    max={mediaDuration || 0}
+                    step="0.1"
+                    value={Math.min(mediaTime, mediaDuration || 0)}
+                    onChange={(event) => seekPreview(Number(event.target.value))}
+                    className="ios-range flex-1"
+                  />
+                  <span className="w-20 text-right text-[10px] font-semibold tabular-nums text-muted-foreground">
+                    {formatDuration(mediaTime)} / {formatDuration(mediaDuration)}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {file.type.startsWith("audio/") && (
+              <div className="glass-strong w-full max-w-md rounded-[1.5rem] p-5">
+                <div className="audio-tile mx-auto grid h-20 w-20 place-items-center rounded-[1.25rem] shadow-xl">
+                  <Volume2 className="h-8 w-8 text-primary" />
+                </div>
+                <p className="mt-4 truncate text-center text-sm font-bold">{file.name}</p>
+                <audio
+                  ref={audioPreviewRef}
+                  src={preview}
+                  onLoadedMetadata={(event) => syncPreviewMedia(event.currentTarget)}
+                  onTimeUpdate={(event) => syncPreviewMedia(event.currentTarget)}
+                  onPlay={(event) => syncPreviewMedia(event.currentTarget)}
+                  onPause={(event) => syncPreviewMedia(event.currentTarget)}
+                />
+                <div className="mt-5 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void togglePreviewPlayback()}
+                    className="glass grid h-12 w-12 shrink-0 place-items-center rounded-full active:scale-90"
+                    aria-label={mediaPlaying ? "Pause audio" : "Play audio"}
+                  >
+                    {mediaPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+                  </button>
+                  <input
+                    type="range"
+                    min={0}
+                    max={mediaDuration || 0}
+                    step="0.1"
+                    value={Math.min(mediaTime, mediaDuration || 0)}
+                    onChange={(event) => seekPreview(Number(event.target.value))}
+                    className="ios-range flex-1"
+                  />
+                </div>
+                <div className="mt-1 flex justify-between text-[10px] font-semibold tabular-nums text-muted-foreground">
+                  <span>{formatDuration(mediaTime)}</span>
+                  <span>{formatDuration(mediaDuration)}</span>
+                </div>
+              </div>
             )}
           </div>
           <button
             type="button"
-            onClick={() => setPreviewOpen(false)}
-            className="liquid-control absolute right-4 z-[81] flex h-12 w-12 items-center justify-center rounded-full text-foreground active:scale-90"
+            onClick={closePreview}
+            className="glass absolute right-4 z-[81] grid h-12 w-12 place-items-center rounded-full text-foreground active:scale-90"
             style={{ top: "max(env(safe-area-inset-top), 1rem)" }}
             aria-label="Close preview"
           >
