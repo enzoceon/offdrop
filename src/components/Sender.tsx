@@ -220,7 +220,6 @@ export function Sender() {
       }
       if (event.key.toLowerCase() === "r") resetPlayback();
       if (event.key.toLowerCase() === "l") toggleLoop();
-      if (event.key.toLowerCase() === "m") toggleMute();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
