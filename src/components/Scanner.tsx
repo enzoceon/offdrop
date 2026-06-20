@@ -5,6 +5,7 @@ import {
   CameraOff,
   CheckCircle2,
   Download,
+  Focus,
   Loader2,
   ScanLine,
   Share2,
@@ -47,7 +48,13 @@ type ScannerProps = {
 };
 
 const CAMERA_TRANSITION_MS = 320;
-const DECODE_INTERVAL_MS = 34;
+const DECODE_INTERVAL_MS = 58;
+const DECODE_MAX_EDGE = 720;
+
+type FocusMode = "single-shot" | "continuous" | "manual";
+type FocusableVideoTrack = MediaStreamTrack & {
+  getCapabilities?: () => MediaTrackCapabilities & { focusMode?: FocusMode[] };
+};
 
 function waitForVideoMetadata(video: HTMLVideoElement) {
   if (video.readyState >= video.HAVE_METADATA) return Promise.resolve();
@@ -97,25 +104,61 @@ function waitForUsableVideo(video: HTMLVideoElement) {
   });
 }
 
-function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResult | null {
-  const side = Math.min(w, h);
-  const attempts: Array<[number, number, number, number]> = [[0, 0, w, h]];
-  if (side !== w || side !== h) {
-    attempts.push([Math.round((w - side) / 2), Math.round((h - side) / 2), side, side]);
+async function openCameraStream(facingMode: "environment" | "user") {
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { exact: facingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30, max: 30 },
+      },
+      audio: false,
+    });
+  } catch {
+    return navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 960 },
+        height: { ideal: 540 },
+        frameRate: { ideal: 24, max: 30 },
+      },
+      audio: false,
+    });
   }
-  const medium = Math.max(220, Math.round(side * 0.82));
-  const tight = Math.max(192, Math.round(side * 0.62));
-  for (const crop of [medium, tight]) {
-    if (crop < side) attempts.push([Math.round((w - crop) / 2), Math.round((h - crop) / 2), crop, crop]);
-  }
+}
 
-  let firstAttempt = true;
-  for (const [sx, sy, sw, sh] of attempts) {
+async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] = ["single-shot", "continuous"]) {
+  const track = stream?.getVideoTracks()[0] as FocusableVideoTrack | undefined;
+  if (!track || track.readyState !== "live") return false;
+  const capabilities = track.getCapabilities?.() as
+    | (MediaTrackCapabilities & { focusMode?: FocusMode[] })
+    | undefined;
+  const availableModes = capabilities?.focusMode ?? [];
+  const candidates = availableModes.length ? modes.filter((mode) => availableModes.includes(mode)) : modes;
+  for (const mode of candidates) {
+    try {
+      await track.applyConstraints({ advanced: [{ focusMode: mode } as MediaTrackConstraintSet] });
+      return true;
+    } catch {
+      /* Try the next browser-supported focus mode. */
+    }
+  }
+  return false;
+}
+
+function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number, deep = false): ScanResult | null {
+  const side = Math.min(w, h);
+  const center: [number, number, number, number] = [Math.round((w - side) / 2), Math.round((h - side) / 2), side, side];
+  const attempts: Array<[number, number, number, number, boolean]> = [[...center, false]];
+  if (deep && (side !== w || side !== h)) attempts.push([0, 0, w, h, false]);
+  if (deep) attempts.push([...center, true]);
+
+  for (const [sx, sy, sw, sh, attemptInvert] of attempts) {
     const img = ctx.getImageData(sx, sy, sw, sh);
     const code = jsQR(img.data, sw, sh, {
-      inversionAttempts: firstAttempt ? "dontInvert" : "attemptBoth",
+      inversionAttempts: attemptInvert ? "attemptBoth" : "dontInvert",
     });
-    firstAttempt = false;
     if (!code?.data) continue;
     const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = code.location;
     const offset = (p: Point): Point => ({ x: p.x + sx, y: p.y + sy });
@@ -246,28 +289,7 @@ export function Scanner({
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("Camera permission is unavailable in this browser.");
       }
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { exact: facingMode },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-            frameRate: { ideal: 30, max: 60 },
-          },
-          audio: false,
-        });
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: facingMode },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 },
-          },
-          audio: false,
-        });
-      }
+      const stream = await openCameraStream(facingMode);
       streamRef.current = stream;
       if (videoRef.current) {
         const video = videoRef.current;
@@ -279,6 +301,7 @@ export function Scanner({
         await video.play();
         await waitForUsableVideo(video);
       }
+      void applyCameraFocus(stream, ["continuous"]);
       const remaining = CAMERA_TRANSITION_MS - (performance.now() - startedAt);
       if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
       scanningRef.current = true;
@@ -312,6 +335,7 @@ export function Scanner({
     setQrBox(null);
     setScanInfo(null);
     setProgress({ have: 0, total: 0 });
+    setFocusing(false);
     boxVisibleRef.current = false;
     cancelAnimationFrame(rafRef.current);
     // Release camera + decoder fully — fixes mobile lag on repeated start/stop
@@ -343,36 +367,38 @@ export function Scanner({
     await start(next, true);
   }
 
+  async function restartCameraForFocus() {
+    const video = videoRef.current;
+    if (!video) return false;
+    scanningRef.current = false;
+    cancelAnimationFrame(rafRef.current);
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    const stream = await openCameraStream(facingRef.current);
+    streamRef.current = stream;
+    video.srcObject = stream;
+    await waitForVideoMetadata(video);
+    await video.play();
+    await waitForUsableVideo(video);
+    void applyCameraFocus(stream, ["continuous"]);
+    scanningRef.current = true;
+    lastDecodeRef.current = 0;
+    tick();
+    return true;
+  }
+
   async function autofocusCamera() {
     if (!active || stopping || starting || focusing) return;
     setFocusing(true);
     const startedAt = performance.now();
     try {
-      const tracks = streamRef.current?.getVideoTracks() ?? [];
-      for (const track of tracks) {
-        const focusTrack = track as MediaStreamTrack & {
-          getCapabilities?: () => MediaTrackCapabilities & { focusMode?: string[] };
-          applyConstraints: (
-            constraints: MediaTrackConstraints & {
-              advanced?: Array<MediaTrackConstraintSet & { focusMode?: string }>;
-            },
-          ) => Promise<void>;
-        };
-        const capabilities = focusTrack.getCapabilities?.() as
-          | (MediaTrackCapabilities & { focusMode?: string[] })
-          | undefined;
-        const modes = capabilities?.focusMode ?? [];
-        const mode = modes.includes("single-shot")
-          ? "single-shot"
-          : modes.includes("continuous")
-            ? "continuous"
-            : undefined;
-        if (mode) {
-          await focusTrack.applyConstraints({ advanced: [{ focusMode: mode }] });
-        }
-      }
+      const focused = await applyCameraFocus(streamRef.current, ["single-shot", "continuous"]);
+      if (!focused) await restartCameraForFocus();
     } catch {
-      /* Browser/camera may not expose focus controls; keep native focus running. */
+      try {
+        await restartCameraForFocus();
+      } catch {
+        /* Keep native camera focus running if the browser blocks manual focus control. */
+      }
     } finally {
       const remaining = 1000 - (performance.now() - startedAt);
       if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
@@ -430,7 +456,7 @@ export function Scanner({
         video.videoHeight > 0
       ) {
         lastDecodeRef.current = now;
-        const scale = Math.min(1, 960 / Math.max(video.videoWidth, video.videoHeight));
+        const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(video.videoWidth, video.videoHeight));
         const w = Math.max(1, Math.round(video.videoWidth * scale));
         const h = Math.max(1, Math.round(video.videoHeight * scale));
         if (canvas.width !== w) canvas.width = w;
@@ -438,7 +464,8 @@ export function Scanner({
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (ctx) {
           ctx.drawImage(video, 0, 0, w, h);
-          const code = decodeQr(ctx, w, h);
+          const deepScan = !boxVisibleRef.current && now - lastBoxUpdateRef.current > 420;
+          const code = decodeQr(ctx, w, h, deepScan);
           frameErrorCountRef.current = 0;
           if (code?.data) {
             handleScan(code.data);
@@ -738,15 +765,15 @@ export function Scanner({
             <button
               onClick={() => void autofocusCamera()}
               disabled={stopping || starting || focusing}
-              aria-label="Autofocus camera"
-              className="glass flex h-12 shrink-0 items-center justify-center gap-2 rounded-2xl px-3 text-sm font-semibold active:scale-95 disabled:opacity-70 sm:h-14 sm:px-5 sm:text-base"
+                aria-label="Focus camera"
+                title="Focus camera"
+                className="glass grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-70 sm:h-14 sm:w-14"
             >
               {focusing ? (
                 <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
               ) : (
-                <ScanLine className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
+                  <Focus className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
               )}
-              <span className="pr-0.5">Autofocus</span>
             </button>
             <button
               onClick={() => void stop(true)}
