@@ -980,6 +980,32 @@ export function Scanner({
                 ))}
               </svg>
             )}
+            {flipping && (
+              <div className="pointer-events-none absolute inset-0 grid place-items-center bg-background/18 backdrop-blur-sm">
+                <div className="glass grid h-16 w-16 place-items-center rounded-2xl">
+                  <SwitchCamera className="h-7 w-7 animate-pulse text-primary" strokeWidth={2.4} />
+                </div>
+              </div>
+            )}
+            {zoomVisible && (
+              <div className="pointer-events-none absolute inset-x-6 bottom-5 flex items-center gap-3 rounded-full bg-background/70 px-4 py-2 backdrop-blur">
+                <span className="h-4 w-1 rounded-full bg-primary" />
+                <div className="flex h-6 flex-1 items-center gap-1.5 overflow-hidden">
+                  {Array.from({ length: 34 }).map((_, i) => {
+                    const activeTick = i / 33 <= (zoom - zoomRange.min) / Math.max(0.01, zoomRange.max - zoomRange.min);
+                    return (
+                      <span
+                        key={i}
+                        className={`h-3 w-0.5 shrink-0 rounded-full ${activeTick ? "bg-primary" : "bg-foreground/70"}`}
+                      />
+                    );
+                  })}
+                </div>
+                <span className="min-w-8 text-right text-[10px] font-bold tabular-nums text-foreground">
+                  {zoom.toFixed(1)}×
+                </span>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1004,30 +1030,30 @@ export function Scanner({
           <>
             <button
               onClick={() => void flipCamera()}
-              disabled={stopping || starting}
+              disabled={stopping || starting || flipping}
               aria-label={`Flip camera (current: ${facing === "environment" ? "back" : "front"})`}
-              className="glass flex h-12 shrink-0 items-center justify-center gap-2 rounded-2xl px-3 text-sm font-semibold active:scale-95 disabled:opacity-60 sm:h-14 sm:px-5 sm:text-base"
+              className="glass flex h-12 min-w-[6.8rem] shrink-0 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-semibold active:scale-95 disabled:opacity-60 sm:h-14 sm:min-w-[8.2rem] sm:px-5 sm:text-base"
             >
-              <SwitchCamera className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
+              <SwitchCamera className={`h-4 w-4 sm:h-5 sm:w-5 ${facing === "user" ? "scale-x-[-1]" : ""}`} strokeWidth={2.2} />
               <span className="pr-0.5">Flip</span>
             </button>
             <button
               onClick={() => void autofocusCamera()}
               disabled={stopping || starting || focusing}
-                aria-label="Focus camera"
-                title="Focus camera"
-                className="glass grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-70 sm:h-14 sm:w-14"
+              aria-label="Focus camera"
+              title="Focus camera"
+              className="glass grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-70 sm:h-14 sm:w-14"
             >
               {focusing ? (
                 <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
               ) : (
-                  <Focus className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
+                <Focus className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
               )}
             </button>
             <button
               onClick={() => void stop(true)}
               disabled={stopping}
-              className="glass flex min-w-[8.5rem] max-w-[14rem] flex-1 items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80 sm:py-4 sm:text-base"
+              className="glass flex min-w-[7.7rem] max-w-[12.5rem] flex-1 items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80 sm:py-4 sm:text-base"
             >
               {stopping ? (
                 <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
