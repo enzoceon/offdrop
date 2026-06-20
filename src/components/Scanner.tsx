@@ -12,6 +12,7 @@ import {
   SwitchCamera,
   Music2,
   FileText,
+  X,
 } from "lucide-react";
 import {
   parseFrame,
@@ -45,16 +46,51 @@ type ScannerProps = {
   stopRequestKey?: number;
   onStopRequestComplete?: () => void;
   onBusyChange?: (busy: boolean) => void;
+  visible?: boolean;
 };
 
-const CAMERA_TRANSITION_MS = 320;
-const DECODE_INTERVAL_MS = 58;
+const CAMERA_TRANSITION_MS = 180;
+const DECODE_INTERVAL_MS = 64;
 const DECODE_MAX_EDGE = 720;
+const PROGRESS_COMMIT_MS = 120;
+const SEEN_CLEANUP_MS = 1800;
+const ZOOM_HIDE_MS = 1600;
 
 type FocusMode = "single-shot" | "continuous" | "manual";
-type FocusableVideoTrack = MediaStreamTrack & {
-  getCapabilities?: () => MediaTrackCapabilities & { focusMode?: FocusMode[] };
+type CameraSettingRange = { min: number; max: number; step?: number };
+type CameraControlCapabilities = MediaTrackCapabilities & {
+  focusMode?: FocusMode[];
+  zoom?: CameraSettingRange;
 };
+type CameraControlTrack = MediaStreamTrack & {
+  getCapabilities?: () => CameraControlCapabilities;
+};
+type ZoomRange = { min: number; max: number; step: number; supported: boolean };
+type PanPoint = { x: number; y: number };
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function vibrate(pattern: number | number[]) {
+  try {
+    if ("vibrate" in navigator) navigator.vibrate(pattern);
+  } catch {
+    /* ignore unavailable haptics */
+  }
+}
+
+function distance(a: PanPoint, b: PanPoint) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function midpoint(a: PanPoint, b: PanPoint): PanPoint {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
 
 function waitForVideoMetadata(video: HTMLVideoElement) {
   if (video.readyState >= video.HAVE_METADATA) return Promise.resolve();
