@@ -111,6 +111,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items.filter((it) => {
+      if (it.valid === false) return false;
       const dir = it.direction || "received";
       if (filter === "sent" && dir !== "sent") return false;
       if (filter === "received" && dir !== "received") return false;
@@ -259,7 +260,13 @@ export function History({ refreshKey }: { refreshKey: number }) {
               return (
                 <div key={it.id} className="glass overflow-hidden rounded-2xl animate-fade-up sm:rounded-3xl">
                   <div className="flex gap-3 p-3 sm:gap-4 sm:p-4">
-                    <div className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary sm:h-24 sm:w-24 sm:rounded-2xl">
+                    <button
+                      type="button"
+                      onClick={() => urls[it.id] && it.mime.startsWith("image/") && setPreviewItem(it)}
+                      disabled={!urls[it.id] || !it.mime.startsWith("image/")}
+                      className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary text-left transition-transform active:scale-95 disabled:active:scale-100 sm:h-24 sm:w-24 sm:rounded-2xl"
+                      aria-label={it.mime.startsWith("image/") ? "Open image preview" : undefined}
+                    >
                       <MediaPreview item={it} url={urls[it.id]} />
                       {it.mime.startsWith("video/") && (
                         <Film className="absolute h-5 w-5 text-primary-foreground drop-shadow" />
@@ -267,7 +274,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
                       {it.mime.startsWith("audio/") && (
                         <Music2 className="pointer-events-none absolute bottom-1 right-1 h-3.5 w-3.5 text-primary-foreground drop-shadow" />
                       )}
-                    </div>
+                    </button>
                     <div className="min-w-0 flex-1">
                       <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-bold leading-tight sm:text-base">
                         <FileText className="h-3.5 w-3.5 shrink-0 text-primary sm:h-4 sm:w-4" />
