@@ -185,7 +185,7 @@ export function Sender() {
             <button
               type="button"
               onClick={() => setPreviewOpen(true)}
-              className="h-14 w-14 shrink-0 overflow-hidden rounded-xl shadow-sm transition-transform active:scale-95"
+              className="h-14 w-14 shrink-0 overflow-hidden rounded-lg shadow-sm transition-transform active:scale-95"
               aria-label="Open image preview"
             >
               <img src={preview} alt={file.name} className="h-full w-full object-cover" />
@@ -194,7 +194,7 @@ export function Sender() {
             <button
               type="button"
               onClick={() => setPreviewOpen(true)}
-              className="h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-secondary shadow-sm transition-transform active:scale-95"
+              className="h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-secondary shadow-sm transition-transform active:scale-95"
               aria-label="Open video preview"
             >
               <video src={preview} muted playsInline className="h-full w-full object-cover" />
@@ -203,13 +203,13 @@ export function Sender() {
             <button
               type="button"
               onClick={() => setPreviewOpen(true)}
-              className="audio-tile grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-xl shadow-sm transition-transform active:scale-95"
+              className="audio-tile grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-lg shadow-sm transition-transform active:scale-95"
               aria-label="Open audio preview"
             >
               <Music2 className="h-5 w-5" />
             </button>
           ) : (
-            <div className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-secondary shadow-sm">
+            <div className="grid h-14 w-14 shrink-0 place-items-center rounded-lg bg-secondary shadow-sm">
               {file.type.startsWith("audio/") ? (
                 <Music2 className="h-5 w-5" />
               ) : (
