@@ -378,7 +378,7 @@ export function Sender() {
         </div>
       </div>
 
-      <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl p-4">
+      <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-lg p-4">
         {qrImage && chunks.length > 0 && (
           <img src={qrImage} alt="OFFDROP transfer QR frame" className="h-full w-full object-contain" />
         )}
