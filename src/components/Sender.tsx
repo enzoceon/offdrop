@@ -145,21 +145,32 @@ export function Sender({ active = true }: { active?: boolean }) {
     }
   }
 
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDragging(true);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setDragging(false);
+    const dropped = event.dataTransfer.files?.[0];
+    if (dropped) void onPick(dropped);
+  }
+
   // Render current QR
   useEffect(() => {
     if (chunks.length === 0) return;
     setQrError(null);
-    const canvas = document.createElement("canvas");
     const text = chunks[idx]?.text ?? "";
     if (!text) return;
-    QRCode.toCanvas(canvas, text, {
-      errorCorrectionLevel: "Q",
-      version: 20,
-      margin: 2,
-      width: 820,
-      color: { dark: "#000000", light: "#ffffff" },
-    })
+    Promise.resolve()
       .then(() => {
+        const canvas = renderRoundedQr(text);
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) throw new Error("QR verification canvas is unavailable.");
         const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
