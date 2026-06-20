@@ -138,13 +138,12 @@ function Index() {
             className="glass-strong safe-bottom w-full max-w-md rounded-[2rem] p-4 text-center animate-fade-up"
             onClick={(event) => event.stopPropagation()}
           >
-            <p className="mx-auto max-w-[18rem] text-sm font-semibold text-foreground">
+            <p className="mx-auto max-w-[19rem] text-center text-sm text-muted-foreground">
+              Stop receiving?
+            </p>
+            <p className="mx-auto mt-3 max-w-[18rem] text-sm font-semibold text-foreground">
               Leaving Receive will close the camera.
             </p>
-            <h2 className="mt-3 flex items-center justify-center gap-2 text-display text-lg">
-              <CameraOff className="h-5 w-5 text-primary" />
-              Stop receiving?
-            </h2>
             <p className="mx-auto mt-1 max-w-[19rem] text-center text-sm text-muted-foreground">
               The current OFFDROP processing will stop.
             </p>
