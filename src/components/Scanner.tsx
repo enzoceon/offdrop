@@ -131,7 +131,10 @@ async function openCameraStream(facingMode: "environment" | "user") {
 async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] = ["single-shot", "continuous"]) {
   const track = stream?.getVideoTracks()[0] as FocusableVideoTrack | undefined;
   if (!track || track.readyState !== "live") return false;
-  const availableModes = track.getCapabilities?.().focusMode ?? [];
+  const capabilities = track.getCapabilities?.() as
+    | (MediaTrackCapabilities & { focusMode?: FocusMode[] })
+    | undefined;
+  const availableModes = capabilities?.focusMode ?? [];
   const candidates = availableModes.length ? modes.filter((mode) => availableModes.includes(mode)) : modes;
   for (const mode of candidates) {
     try {
@@ -286,28 +289,7 @@ export function Scanner({
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("Camera permission is unavailable in this browser.");
       }
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { exact: facingMode },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-            frameRate: { ideal: 30, max: 60 },
-          },
-          audio: false,
-        });
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: facingMode },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 },
-          },
-          audio: false,
-        });
-      }
+      const stream = await openCameraStream(facingMode);
       streamRef.current = stream;
       if (videoRef.current) {
         const video = videoRef.current;
@@ -319,6 +301,7 @@ export function Scanner({
         await video.play();
         await waitForUsableVideo(video);
       }
+      void applyCameraFocus(stream, ["continuous"]);
       const remaining = CAMERA_TRANSITION_MS - (performance.now() - startedAt);
       if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
       scanningRef.current = true;
@@ -352,6 +335,7 @@ export function Scanner({
     setQrBox(null);
     setScanInfo(null);
     setProgress({ have: 0, total: 0 });
+    setFocusing(false);
     boxVisibleRef.current = false;
     cancelAnimationFrame(rafRef.current);
     // Release camera + decoder fully — fixes mobile lag on repeated start/stop
@@ -388,29 +372,8 @@ export function Scanner({
     setFocusing(true);
     const startedAt = performance.now();
     try {
-      const tracks = streamRef.current?.getVideoTracks() ?? [];
-      for (const track of tracks) {
-        const focusTrack = track as MediaStreamTrack & {
-          getCapabilities?: () => MediaTrackCapabilities & { focusMode?: string[] };
-          applyConstraints: (
-            constraints: MediaTrackConstraints & {
-              advanced?: Array<MediaTrackConstraintSet & { focusMode?: string }>;
-            },
-          ) => Promise<void>;
-        };
-        const capabilities = focusTrack.getCapabilities?.() as
-          | (MediaTrackCapabilities & { focusMode?: string[] })
-          | undefined;
-        const modes = capabilities?.focusMode ?? [];
-        const mode = modes.includes("single-shot")
-          ? "single-shot"
-          : modes.includes("continuous")
-            ? "continuous"
-            : undefined;
-        if (mode) {
-          await focusTrack.applyConstraints({ advanced: [{ focusMode: mode }] });
-        }
-      }
+      const focused = await applyCameraFocus(streamRef.current, ["single-shot", "continuous"]);
+      if (!focused) await applyCameraFocus(streamRef.current, ["continuous"]);
     } catch {
       /* Browser/camera may not expose focus controls; keep native focus running. */
     } finally {
