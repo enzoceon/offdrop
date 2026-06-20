@@ -87,7 +87,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
     let cancelled = false;
     listItems().then((items) => {
       if (cancelled) return;
-      setItems(items);
+      setItems(items.filter((item) => item.valid !== false));
       // Revoke previous URLs and re-create
       Object.values(urlsRef.current).forEach((u) => URL.revokeObjectURL(u));
       const map: Record<string, string> = {};
@@ -196,7 +196,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search…"
               aria-label="Search files"
-                className="min-w-0 flex-1 bg-transparent text-sm font-semibold placeholder:text-muted-foreground focus:outline-none"
+              className="min-w-0 flex-1 bg-transparent text-sm font-semibold placeholder:text-muted-foreground focus:outline-none"
             />
             {query && (
               <button
