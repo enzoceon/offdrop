@@ -322,13 +322,11 @@ export function Sender() {
         >
           <div className="absolute inset-0 flex items-center justify-center px-4 py-20 sm:px-8">
             {file.type.startsWith("image/") && (
-              <div className="max-h-full max-w-full overflow-hidden rounded-[1.4rem] shadow-2xl ring-1 ring-glass-border">
-                <img
-                  src={preview}
-                  alt={file.name}
-                  className="block max-h-[calc(100dvh-10rem)] max-w-[calc(100vw-2rem)] object-contain"
-                />
-              </div>
+              <img
+                src={preview}
+                alt={file.name}
+                className="block max-h-[calc(100dvh-6rem)] max-w-[calc(100vw-2rem)] object-contain"
+              />
             )}
 
             {file.type.startsWith("video/") && (
