@@ -261,7 +261,7 @@ export function Sender() {
               </span>
               <span className="flex items-center gap-1">
                 <Layers3 className="h-3 w-3 text-primary" />
-                {playing && chunks.length ? `${idx + 1} / ${chunks.length}` : chunks.length} frames
+                {playing && totalData ? `${currentDataIndex + 1} / ${totalData}` : totalData} frames
               </span>
               <span className="col-span-2 flex items-center gap-1">
                 <Clock className="h-3 w-3 text-primary" />
