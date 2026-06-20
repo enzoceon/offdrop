@@ -850,8 +850,17 @@ export function Scanner({
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
       <div
         className={`glass-strong relative mx-auto flex w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl ${done ? "order-2 mt-3" : ""}`}
+        onPointerDown={handleCameraPointerDown}
+        onPointerMove={handleCameraPointerMove}
+        onPointerUp={handleCameraPointerUp}
+        onPointerCancel={handleCameraPointerUp}
+        onTouchStart={handleCameraTouchStart}
+        onTouchMove={handleCameraTouchMove}
+        onTouchEnd={handleCameraTouchEnd}
+        onWheel={handleWheelZoom}
         style={{
           aspectRatio: `${containerAspect} / 1`,
+          touchAction: active ? "none" : "manipulation",
           transition: "aspect-ratio 0.55s cubic-bezier(0.2, 0.8, 0.2, 1)",
         }}
       >
@@ -860,7 +869,11 @@ export function Scanner({
           playsInline
           muted
           className="h-full w-full object-cover"
-          style={{ display: active || starting ? "block" : "none" }}
+          style={{
+            display: active || starting ? "block" : "none",
+            transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoomRange.supported ? 1 : zoom})`,
+            transition: flipping ? "opacity 0.16s ease, transform 0.16s ease" : "transform 0.12s ease-out",
+          }}
         />
         <canvas ref={canvasRef} className="hidden" />
 
