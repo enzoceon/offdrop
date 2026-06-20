@@ -393,7 +393,7 @@ export function Sender() {
 
       <div className="mt-3 mx-auto flex w-full max-w-md items-center justify-center gap-2">
         <button
-          onClick={() => setPlaying((p) => !p)}
+          onClick={togglePlaying}
           disabled={chunks.length === 0}
           className={cn(
             "flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold transition-all active:scale-[0.97] disabled:opacity-60",
@@ -406,10 +406,7 @@ export function Sender() {
           {playing ? "Pause" : "Play"}
         </button>
         <button
-          onClick={() => {
-            setIdx(0);
-            setPlaying(false);
-          }}
+          onClick={resetPlayback}
           className="glass flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold active:scale-95"
         >
           <RotateCcw className="h-4 w-4" />
@@ -417,17 +414,41 @@ export function Sender() {
         </button>
       </div>
 
-      <div className="glass mt-3 mx-auto flex w-full max-w-md items-center gap-3 rounded-2xl px-4 py-3">
-        <span className="text-xs font-bold text-muted-foreground">Speed</span>
-        <input
-          type="range"
-          min={1}
-          max={8}
-          value={fps}
-          onChange={(e) => setFps(+e.target.value)}
-          className="ios-range flex-1"
-        />
-        <span className="w-10 text-right text-xs font-semibold tabular-nums">{fps} fps</span>
+      <div className="glass mt-3 mx-auto grid w-full max-w-md grid-cols-[1fr_auto_auto] items-center gap-2 rounded-2xl px-3 py-3">
+        <div className="grid grid-cols-4 gap-1.5">
+          {SPEEDS.map((speed) => (
+            <button
+              key={speed.label}
+              type="button"
+              onClick={() => setFps(speed.fps)}
+              className={cn(
+                "rounded-xl px-2 py-2 text-[10px] font-bold active:scale-95",
+                fps === speed.fps ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
+              )}
+            >
+              {speed.label}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={toggleLoop}
+          className={cn(
+            "grid h-10 w-10 place-items-center rounded-full active:scale-95",
+            loop ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
+          )}
+          aria-label={loop ? "Loop on" : "Loop off"}
+        >
+          <Repeat2 className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={toggleMute}
+          className="grid h-10 w-10 place-items-center rounded-full bg-secondary active:scale-95"
+          aria-label={muted ? "Unmute feedback" : "Mute feedback"}
+        >
+          {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+        </button>
       </div>
 
       {previewOpen && preview && canOpenPreview && (
