@@ -5,6 +5,7 @@ import {
   CameraOff,
   CheckCircle2,
   Download,
+  Focus,
   Loader2,
   ScanLine,
   Share2,
@@ -47,7 +48,13 @@ type ScannerProps = {
 };
 
 const CAMERA_TRANSITION_MS = 320;
-const DECODE_INTERVAL_MS = 34;
+const DECODE_INTERVAL_MS = 58;
+const DECODE_MAX_EDGE = 720;
+
+type FocusMode = "single-shot" | "continuous" | "manual";
+type FocusableVideoTrack = MediaStreamTrack & {
+  getCapabilities?: () => MediaTrackCapabilities & { focusMode?: FocusMode[] };
+};
 
 function waitForVideoMetadata(video: HTMLVideoElement) {
   if (video.readyState >= video.HAVE_METADATA) return Promise.resolve();
@@ -97,25 +104,58 @@ function waitForUsableVideo(video: HTMLVideoElement) {
   });
 }
 
-function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResult | null {
-  const side = Math.min(w, h);
-  const attempts: Array<[number, number, number, number]> = [[0, 0, w, h]];
-  if (side !== w || side !== h) {
-    attempts.push([Math.round((w - side) / 2), Math.round((h - side) / 2), side, side]);
+async function openCameraStream(facingMode: "environment" | "user") {
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { exact: facingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30, max: 30 },
+      },
+      audio: false,
+    });
+  } catch {
+    return navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 960 },
+        height: { ideal: 540 },
+        frameRate: { ideal: 24, max: 30 },
+      },
+      audio: false,
+    });
   }
-  const medium = Math.max(220, Math.round(side * 0.82));
-  const tight = Math.max(192, Math.round(side * 0.62));
-  for (const crop of [medium, tight]) {
-    if (crop < side) attempts.push([Math.round((w - crop) / 2), Math.round((h - crop) / 2), crop, crop]);
-  }
+}
 
-  let firstAttempt = true;
-  for (const [sx, sy, sw, sh] of attempts) {
+async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] = ["single-shot", "continuous"]) {
+  const track = stream?.getVideoTracks()[0] as FocusableVideoTrack | undefined;
+  if (!track || track.readyState !== "live") return false;
+  const availableModes = track.getCapabilities?.().focusMode ?? [];
+  const candidates = availableModes.length ? modes.filter((mode) => availableModes.includes(mode)) : modes;
+  for (const mode of candidates) {
+    try {
+      await track.applyConstraints({ advanced: [{ focusMode: mode } as MediaTrackConstraintSet] });
+      return true;
+    } catch {
+      /* Try the next browser-supported focus mode. */
+    }
+  }
+  return false;
+}
+
+function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number, deep = false): ScanResult | null {
+  const side = Math.min(w, h);
+  const center: [number, number, number, number] = [Math.round((w - side) / 2), Math.round((h - side) / 2), side, side];
+  const attempts: Array<[number, number, number, number, boolean]> = [[...center, false]];
+  if (deep && (side !== w || side !== h)) attempts.push([0, 0, w, h, false]);
+  if (deep) attempts.push([...center, true]);
+
+  for (const [sx, sy, sw, sh, attemptInvert] of attempts) {
     const img = ctx.getImageData(sx, sy, sw, sh);
     const code = jsQR(img.data, sw, sh, {
-      inversionAttempts: firstAttempt ? "dontInvert" : "attemptBoth",
+      inversionAttempts: attemptInvert ? "attemptBoth" : "dontInvert",
     });
-    firstAttempt = false;
     if (!code?.data) continue;
     const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = code.location;
     const offset = (p: Point): Point => ({ x: p.x + sx, y: p.y + sy });
