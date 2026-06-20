@@ -5,7 +5,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Sender } from "@/components/Sender";
 import { Scanner } from "@/components/Scanner";
 import { History } from "@/components/History";
-import { Loader2, QrCode } from "lucide-react";
+import { CameraOff, Loader2, QrCode } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -138,10 +138,11 @@ function Index() {
             className="glass-strong safe-bottom w-full max-w-md rounded-[2rem] p-4 text-center animate-fade-up"
             onClick={(event) => event.stopPropagation()}
           >
-            <p className="mx-auto max-w-[19rem] text-center text-sm text-muted-foreground">
-              Stop receiving?
-            </p>
-            <p className="mx-auto mt-3 max-w-[18rem] text-sm font-semibold text-foreground">
+            <div className="mx-auto flex items-center justify-center gap-2">
+              <CameraOff className="h-5 w-5 text-foreground" strokeWidth={2.4} />
+              <h2 className="text-display text-lg leading-tight text-foreground">Stop receiving?</h2>
+            </div>
+            <p className="mx-auto mt-3 max-w-[19rem] text-center text-sm text-muted-foreground">
               Leaving Receive will close the camera.
             </p>
             <p className="mx-auto mt-1 max-w-[19rem] text-center text-sm text-muted-foreground">
