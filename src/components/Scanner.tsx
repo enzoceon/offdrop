@@ -2,13 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
 import { Camera, CameraOff, CheckCircle2, Loader2, ScanLine } from "lucide-react";
 import {
-  parseChunkPayload,
-  transferComplete,
-  assembleTransfer,
-  requiredDataChunks,
-  type Transfer,
+  parseFrame,
+  reconstruct,
+  crc32,
+  type ParsedHeader,
 } from "@/lib/qr-protocol";
 import { saveItem } from "@/lib/history";
+
+interface Transfer {
+  header: ParsedHeader;
+  chunks: Map<number, Uint8Array>;
+  startedAt: number;
+}
 
 type Point = { x: number; y: number };
 type QrBox = { w: number; h: number; corners: [Point, Point, Point, Point] };
@@ -296,55 +301,54 @@ export function Scanner({
   }
 
   function updateProgress(t: Transfer) {
-    const required = Math.min(requiredDataChunks(t.size, t.chunkSize), t.total);
-    let have = 0;
-    for (let i = 0; i < required; i++) if (t.chunks.has(i)) have++;
-    setProgress({ have, total: required });
+    setProgress({ have: t.chunks.size, total: t.header.total });
   }
 
   function handleScan(payload: string) {
     if (finishingRef.current) return;
-    const parsed = parseChunkPayload(payload);
+    const parsed = parseFrame(payload);
     if (!parsed) return;
-    const { meta, data } = parsed;
-    const seenKey = `${meta.i}:${meta.n}`;
+
+    const seenKey = `${parsed.kind}:${parsed.id}:${parsed.kind === "data" ? parsed.index : "h"}`;
     const now = performance.now();
     const seenAt = lastSeenRef.current.get(seenKey);
     if (seenAt && now - seenAt < 80) return;
     lastSeenRef.current.set(seenKey, now);
-    if (lastSeenRef.current.size > 1000) {
+    if (lastSeenRef.current.size > 2000) {
       for (const [key, ts] of lastSeenRef.current) {
         if (now - ts > 45000) lastSeenRef.current.delete(key);
       }
     }
 
-    let t = transferRef.current;
-    if (!t || t.id !== meta.i) {
-      const nextTransfer: Transfer = {
-        id: meta.i,
-        mime: meta.m,
-        filename: meta.f,
-        size: meta.s,
-        total: meta.t,
-        chunkSize: meta.c,
-        chunks: new Map(),
-      };
-      transferRef.current = nextTransfer;
-      t = nextTransfer;
-    } else {
-      t.mime = meta.m;
-      t.filename = meta.f;
-      t.size = meta.s;
-      t.total = meta.t;
-      t.chunkSize = meta.c;
+    if (parsed.kind === "header") {
+      let t = transferRef.current;
+      if (!t || t.header.id !== parsed.id) {
+        t = {
+          header: parsed,
+          chunks: new Map<number, Uint8Array>(),
+          startedAt: Date.now(),
+        };
+        transferRef.current = t;
+      }
+      setScanInfo({ name: t.header.name, mime: t.header.mime, size: t.header.size });
+      updateProgress(t);
+      return;
     }
-    setScanInfo({ name: t.filename, mime: t.mime, size: t.size });
-    if (!t.chunks.has(meta.n)) {
-      t.chunks.set(meta.n, data);
+
+    // Data frame: latch a placeholder header by id if we don't have one yet so
+    // out-of-order joins still collect data while waiting for the next header.
+    let t = transferRef.current;
+    if (!t || t.header.id !== parsed.id) {
+      // Without a header we don't yet know total/size/crc — drop until header arrives.
+      return;
+    }
+    if (parsed.index >= t.header.total) return;
+    if (!t.chunks.has(parsed.index)) {
+      t.chunks.set(parsed.index, parsed.payload);
       updateProgress(t);
       if (navigator.vibrate) navigator.vibrate(8);
     }
-    if (transferComplete(t)) void finish();
+    if (t.chunks.size === t.header.total) void finish();
   }
 
   async function finish() {
@@ -352,17 +356,31 @@ export function Scanner({
     if (!t || finishingRef.current) return;
     finishingRef.current = true;
     try {
-      const blob = assembleTransfer(t);
+      const ordered: Uint8Array[] = new Array(t.header.total);
+      for (let i = 0; i < t.header.total; i++) {
+        const c = t.chunks.get(i);
+        if (!c) throw new Error("Transfer is missing QR frames.");
+        ordered[i] = c;
+      }
+      const bytes = reconstruct(ordered, t.header.size);
+      const computed = crc32(bytes);
+      const valid = computed === t.header.crc;
+      const blob = new Blob([bytes as BlobPart], {
+        type: t.header.mime || "application/octet-stream",
+      });
       await saveItem({
-        id: t.id + "-" + Date.now(),
-        filename: t.filename,
-        mime: t.mime,
-        size: t.size,
+        id: t.header.id + "-" + Date.now(),
+        filename: t.header.name,
+        mime: t.header.mime,
+        size: t.header.size,
         receivedAt: Date.now(),
         blob,
       });
-      if (navigator.vibrate) navigator.vibrate([20, 40, 20]);
-      setDone({ name: t.filename });
+      if (navigator.vibrate) navigator.vibrate(valid ? [20, 40, 20] : [60, 40, 60]);
+      setDone({ name: t.header.name });
+      if (!valid) {
+        setError("Received with errors — CRC mismatch. The file is saved but may be corrupted.");
+      }
       transferRef.current = null;
       lastSeenRef.current.clear();
       setScanInfo(null);
