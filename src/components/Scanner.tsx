@@ -318,6 +318,7 @@ export function Scanner({
   const doneUrlRef = useRef<string | null>(null);
   const progressPendingRef = useRef({ have: 0, total: 0 });
   const progressCommitRef = useRef(0);
+  const lastSeenCleanupRef = useRef(0);
   const zoomHideRef = useRef<number>(0);
   const pinchRef = useRef<{ distance: number; zoom: number; center: PanPoint } | null>(null);
   const panRef = useRef<{ pointerId: number; point: PanPoint; offset: PanPoint } | null>(null);
@@ -730,9 +731,10 @@ export function Scanner({
     const seenAt = lastSeenRef.current.get(seenKey);
     if (seenAt && now - seenAt < 80) return;
     lastSeenRef.current.set(seenKey, now);
-    if (lastSeenRef.current.size > 1200 && now - progressCommitRef.current > SEEN_CLEANUP_MS) {
+    if (lastSeenRef.current.size > 700 && now - lastSeenCleanupRef.current > SEEN_CLEANUP_MS) {
+      lastSeenCleanupRef.current = now;
       for (const [key, ts] of lastSeenRef.current) {
-        if (now - ts > 25000) lastSeenRef.current.delete(key);
+        if (now - ts > 16000 || lastSeenRef.current.size > 1400) lastSeenRef.current.delete(key);
       }
     }
 
