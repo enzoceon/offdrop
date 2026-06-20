@@ -4,10 +4,11 @@ import {
   Camera,
   CameraOff,
   CheckCircle2,
+  Download,
   Loader2,
   ScanLine,
+  Share2,
   SwitchCamera,
-  Focus,
   Music2,
   FileText,
 } from "lucide-react";
@@ -33,19 +34,20 @@ type DonePreview = {
   name: string;
   mime: string;
   size: number;
+  blob: Blob;
   url?: string;
   aspectRatio: number;
 };
 type ScannerProps = {
   onSaved: () => void;
+  onCompleteAction?: () => void;
   stopRequestKey?: number;
   onStopRequestComplete?: () => void;
   onBusyChange?: (busy: boolean) => void;
 };
 
 const CAMERA_TRANSITION_MS = 320;
-const DECODE_INTERVAL_MS = 16;
-const AUTOFOCUS_INTERVAL_MS = 480;
+const DECODE_INTERVAL_MS = 34;
 
 function waitForVideoMetadata(video: HTMLVideoElement) {
   if (video.readyState >= video.HAVE_METADATA) return Promise.resolve();
