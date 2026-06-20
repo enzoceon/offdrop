@@ -117,7 +117,8 @@ export function Sender() {
     if (!text) return;
     QRCode.toCanvas(canvas, text, {
       errorCorrectionLevel: "M",
-      margin: 1,
+      version: 20,
+      margin: 2,
       width: 720,
       color: { dark: "#000000", light: "#ffffff" },
     })
@@ -377,7 +378,7 @@ export function Sender() {
         </div>
       </div>
 
-      <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-[2rem] p-4">
+      <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl p-4">
         {qrImage && chunks.length > 0 && (
           <img src={qrImage} alt="OFFDROP transfer QR frame" className="h-full w-full object-contain" />
         )}
@@ -437,29 +438,11 @@ export function Sender() {
         </button>
       </div>
 
-      <div className="glass mt-3 mx-auto w-full max-w-md rounded-2xl px-4 pt-3 pb-3.5">
-        <div className="relative h-7">
-          <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 flex items-center">
-            {Array.from({ length: 10 }).map((_, i) => {
-              const step = i + 1;
-              const filled = step <= fps;
-              const tierBoundary = i === 2 || i === 5 || i === 8;
-              return (
-                <div
-                  key={step}
-                  className={cn(
-                    "h-2 flex-1 rounded-full transition-colors",
-                    filled ? "bg-gradient-to-r from-primary to-accent" : "bg-secondary",
-                    i > 0 && (tierBoundary ? "ml-2" : "ml-[3px]"),
-                  )}
-                />
-              );
-            })}
-          </div>
-          <div
-            className="pointer-events-none absolute top-1/2 -translate-y-1/2 h-5 w-5 rounded-full bg-background shadow-md ring-2 ring-primary transition-[left]"
-            style={{ left: `calc(${((fps - 1) / 9) * 100}% - 10px)` }}
-          />
+      <div className="glass mt-3 mx-auto w-full max-w-md rounded-2xl px-4 py-3">
+        <div className="flex items-center gap-3">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+            Speed
+          </span>
           <input
             type="range"
             min={1}
@@ -467,28 +450,12 @@ export function Sender() {
             step={1}
             value={fps}
             onChange={(e) => handleFpsChange(Number(e.target.value))}
-            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            className="ios-range flex-1"
             aria-label="Transfer speed"
           />
-        </div>
-        <div
-          className="mt-2.5 grid text-[10px] font-bold uppercase tracking-wide"
-          style={{ gridTemplateColumns: "2fr 3fr 3fr 2fr" }}
-        >
-          {TIER_RANGES.map((t) => {
-            const active = tierForFps(fps) === t.tier;
-            return (
-              <span
-                key={t.tier}
-                className={cn(
-                  "text-center transition-colors",
-                  active ? "text-primary" : "text-muted-foreground/70",
-                )}
-              >
-                {t.tier}
-              </span>
-            );
-          })}
+          <span className="min-w-[3.2rem] text-right text-[11px] font-bold uppercase tracking-wider text-primary">
+            {tierForFps(fps)}
+          </span>
         </div>
       </div>
 
