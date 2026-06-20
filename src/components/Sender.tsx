@@ -74,9 +74,11 @@ export function Sender() {
     if (!canvasRef.current || chunks.length === 0) return;
     setQrError(null);
     const canvas = canvasRef.current;
-    QRCode.toCanvas(canvas, chunks[idx], {
+    const text = chunks[idx]?.text ?? "";
+    if (!text) return;
+    QRCode.toCanvas(canvas, text, {
       errorCorrectionLevel: "M",
-      margin: 6,
+      margin: 4,
       width: 720,
       color: { dark: "#000000", light: "#ffffff" },
     })
@@ -87,7 +89,7 @@ export function Sender() {
         const verified = jsQR(image.data, canvas.width, canvas.height, {
           inversionAttempts: "attemptBoth",
         });
-        if (verified?.data !== chunks[idx]) throw new Error("Generated QR failed verification.");
+        if (verified?.data !== text) throw new Error("Generated QR failed verification.");
       })
       .catch((err) => {
         console.error("QR generation failed:", err);
@@ -107,7 +109,8 @@ export function Sender() {
 
   function reset() {
     setFile(null);
-    setChunks([]);
+    setSlots([]);
+    setTotalData(0);
     setIdx(0);
     setPlaying(false);
     setPreviewOpen(false);
