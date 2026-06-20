@@ -8,6 +8,7 @@ import {
   type ParsedHeader,
 } from "@/lib/qr-protocol";
 import { saveItem } from "@/lib/history";
+import { sfx } from "@/lib/feedback";
 
 interface Transfer {
   header: ParsedHeader;
@@ -101,7 +102,7 @@ function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResu
     if (seen.has(key)) continue;
     seen.add(key);
     const img = ctx.getImageData(sx, sy, sw, sh);
-    const code = jsQR(img.data, sw, sh, { inversionAttempts: "attemptBoth" });
+    const code = jsQR(img.data, sw, sh, { inversionAttempts: "dontInvert" });
     if (!code?.data) continue;
     const { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner } = code.location;
     const offset = (p: Point): Point => ({ x: p.x + sx, y: p.y + sy });
@@ -259,7 +260,7 @@ export function Scanner({
         video.videoHeight > 0
       ) {
         lastDecodeRef.current = now;
-        const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+        const scale = Math.min(1, 480 / Math.max(video.videoWidth, video.videoHeight));
         const w = Math.max(1, Math.round(video.videoWidth * scale));
         const h = Math.max(1, Math.round(video.videoHeight * scale));
         if (canvas.width !== w) canvas.width = w;
@@ -329,6 +330,7 @@ export function Scanner({
           startedAt: Date.now(),
         };
         transferRef.current = t;
+        sfx.fileFound();
       }
       setScanInfo({ name: t.header.name, mime: t.header.mime, size: t.header.size });
       updateProgress(t);
@@ -346,7 +348,7 @@ export function Scanner({
     if (!t.chunks.has(parsed.index)) {
       t.chunks.set(parsed.index, parsed.payload);
       updateProgress(t);
-      if (navigator.vibrate) navigator.vibrate(8);
+      sfx.scan();
     }
     if (t.chunks.size === t.header.total) void finish();
   }
@@ -374,9 +376,13 @@ export function Scanner({
         mime: t.header.mime,
         size: t.header.size,
         receivedAt: Date.now(),
+        direction: "received",
+        durationMs: Date.now() - t.startedAt,
+        valid,
         blob,
       });
-      if (navigator.vibrate) navigator.vibrate(valid ? [20, 40, 20] : [60, 40, 60]);
+      if (valid) sfx.success();
+      else sfx.error();
       setDone({ name: t.header.name });
       if (!valid) {
         setError("Received with errors — CRC mismatch. The file is saved but may be corrupted.");

@@ -7,6 +7,7 @@ import {
   Pause,
   RotateCcw,
   X,
+  Repeat2,
   Music2,
   FileText,
   HardDrive,
@@ -14,9 +15,20 @@ import {
   Clock,
   Loader2,
   Volume2,
+  VolumeX,
 } from "lucide-react";
-import { planFile, buildSequence, type Slot } from "@/lib/qr-protocol";
+import { type Slot } from "@/lib/qr-protocol";
+import { planTransferInWorker } from "@/lib/transfer-planner.client";
+import { saveItem } from "@/lib/history";
+import { sfx } from "@/lib/feedback";
 import { cn } from "@/lib/utils";
+
+const SPEEDS = [
+  { label: "Gentle", fps: 2 },
+  { label: "Normal", fps: 5 },
+  { label: "Fast", fps: 8 },
+  { label: "Turbo", fps: 10 },
+];
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -39,13 +51,15 @@ export function Sender() {
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(5);
+  const [loop, setLoop] = useState(true);
+  const [muted, setMuted] = useState(() => sfx.muted);
   const [preview, setPreview] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
+  const [qrImage, setQrImage] = useState<string | null>(null);
   const [mediaPlaying, setMediaPlaying] = useState(false);
   const [mediaTime, setMediaTime] = useState(0);
   const [mediaDuration, setMediaDuration] = useState(0);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const videoPreviewRef = useRef<HTMLVideoElement>(null);
   const audioPreviewRef = useRef<HTMLAudioElement>(null);
@@ -54,31 +68,48 @@ export function Sender() {
   const chunks = slots;
 
   async function onPick(f: File) {
-    if (preview) URL.revokeObjectURL(preview);
-    setFile(f);
-    setSlots([]);
-    setTotalData(0);
-    setIdx(0);
-    setPlaying(false);
-    setPreview(URL.createObjectURL(f));
-    setPreviewOpen(false);
-    const buf = new Uint8Array(await f.arrayBuffer());
-    const plan = planFile({ name: f.name, type: f.type, size: f.size, bytes: buf });
-    const seq = buildSequence(plan);
-    setTotalData(plan.total);
-    setSlots(seq);
+    try {
+      if (preview) URL.revokeObjectURL(preview);
+      setFile(f);
+      setSlots([]);
+      setTotalData(0);
+      setIdx(0);
+      setPlaying(false);
+      setQrError(null);
+      setQrImage(null);
+      setPreview(URL.createObjectURL(f));
+      setPreviewOpen(false);
+      const buf = new Uint8Array(await f.arrayBuffer());
+      const planned = await planTransferInWorker(f, buf);
+      setTotalData(planned.totalData);
+      setSlots(planned.slots);
+      sfx.fileFound();
+      void saveItem({
+        id: planned.id + "-sent-" + Date.now(),
+        filename: f.name,
+        mime: f.type || "application/octet-stream",
+        size: f.size,
+        receivedAt: Date.now(),
+        direction: "sent",
+        valid: true,
+      });
+    } catch (error) {
+      setQrError(error instanceof Error ? error.message : "This file could not be prepared.");
+      setPlaying(false);
+      sfx.error();
+    }
   }
 
   // Render current QR
   useEffect(() => {
-    if (!canvasRef.current || chunks.length === 0) return;
+    if (chunks.length === 0) return;
     setQrError(null);
-    const canvas = canvasRef.current;
+    const canvas = document.createElement("canvas");
     const text = chunks[idx]?.text ?? "";
     if (!text) return;
     QRCode.toCanvas(canvas, text, {
       errorCorrectionLevel: "M",
-      margin: 4,
+      margin: 1,
       width: 720,
       color: { dark: "#000000", light: "#ffffff" },
     })
@@ -90,6 +121,7 @@ export function Sender() {
           inversionAttempts: "attemptBoth",
         });
         if (verified?.data !== text) throw new Error("Generated QR failed verification.");
+        setQrImage(canvas.toDataURL("image/png"));
       })
       .catch((err) => {
         console.error("QR generation failed:", err);
@@ -102,12 +134,17 @@ export function Sender() {
   useEffect(() => {
     if (!playing || chunks.length === 0) return;
     const id = setInterval(() => {
-      setIdx((i) => (i + 1) % chunks.length);
+      setIdx((i) => {
+        if (i < chunks.length - 1) return i + 1;
+        if (loop) return 0;
+        setPlaying(false);
+        return i;
+      });
     }, 1000 / fps);
     return () => clearInterval(id);
-  }, [playing, fps, chunks.length]);
+  }, [playing, fps, loop, chunks.length]);
 
-  function reset() {
+  function removeFile() {
     setFile(null);
     setSlots([]);
     setTotalData(0);
@@ -122,12 +159,60 @@ export function Sender() {
     if (inputRef.current) inputRef.current.value = "";
   }
 
+  function resetPlayback() {
+    setIdx(0);
+    setPlaying(false);
+    sfx.reset();
+  }
+
+  function togglePlaying() {
+    setPlaying((p) => {
+      const next = !p;
+      if (next) sfx.start();
+      else sfx.pause();
+      return next;
+    });
+  }
+
+  function toggleLoop() {
+    setLoop((value) => {
+      const next = !value;
+      if (next) sfx.toggleOn();
+      else sfx.toggleOff();
+      return next;
+    });
+  }
+
+  function toggleMute() {
+    setMuted((value) => {
+      const next = !value;
+      sfx.setMuted(next);
+      return next;
+    });
+  }
+
   useEffect(
     () => () => {
       if (preview) URL.revokeObjectURL(preview);
     },
     [preview],
   );
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
+      if (event.code === "Space") {
+        event.preventDefault();
+        if (chunks.length) togglePlaying();
+      }
+      if (event.key.toLowerCase() === "r") resetPlayback();
+      if (event.key.toLowerCase() === "l") toggleLoop();
+      if (event.key.toLowerCase() === "m") toggleMute();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   const cycleSeconds = chunks.length / fps;
   const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
@@ -272,7 +357,7 @@ export function Sender() {
             </div>
           </div>
           <button
-            onClick={reset}
+            onClick={removeFile}
             className="glass grid h-10 w-10 shrink-0 place-items-center rounded-full text-muted-foreground transition-all hover:text-foreground active:scale-90"
             aria-label="Remove file"
           >
@@ -282,11 +367,10 @@ export function Sender() {
       </div>
 
       <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-[2rem] p-4">
-        <canvas
-          ref={canvasRef}
-          className={cn("h-full w-full", chunks.length === 0 && "opacity-0")}
-        />
-        {chunks.length === 0 && (
+        {qrImage && chunks.length > 0 && (
+          <img src={qrImage} alt="OFFDROP transfer QR frame" className="h-full w-full object-contain" />
+        )}
+        {(!qrImage || chunks.length === 0) && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm font-medium text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
             Loading…
@@ -309,7 +393,7 @@ export function Sender() {
 
       <div className="mt-3 mx-auto flex w-full max-w-md items-center justify-center gap-2">
         <button
-          onClick={() => setPlaying((p) => !p)}
+          onClick={togglePlaying}
           disabled={chunks.length === 0}
           className={cn(
             "flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold transition-all active:scale-[0.97] disabled:opacity-60",
@@ -322,10 +406,7 @@ export function Sender() {
           {playing ? "Pause" : "Play"}
         </button>
         <button
-          onClick={() => {
-            setIdx(0);
-            setPlaying(false);
-          }}
+          onClick={resetPlayback}
           className="glass flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold active:scale-95"
         >
           <RotateCcw className="h-4 w-4" />
@@ -333,17 +414,41 @@ export function Sender() {
         </button>
       </div>
 
-      <div className="glass mt-3 mx-auto flex w-full max-w-md items-center gap-3 rounded-2xl px-4 py-3">
-        <span className="text-xs font-bold text-muted-foreground">Speed</span>
-        <input
-          type="range"
-          min={1}
-          max={8}
-          value={fps}
-          onChange={(e) => setFps(+e.target.value)}
-          className="ios-range flex-1"
-        />
-        <span className="w-10 text-right text-xs font-semibold tabular-nums">{fps} fps</span>
+      <div className="glass mt-3 mx-auto grid w-full max-w-md grid-cols-[1fr_auto_auto] items-center gap-2 rounded-2xl px-3 py-3">
+        <div className="grid grid-cols-4 gap-1.5">
+          {SPEEDS.map((speed) => (
+            <button
+              key={speed.label}
+              type="button"
+              onClick={() => setFps(speed.fps)}
+              className={cn(
+                "rounded-xl px-2 py-2 text-[10px] font-bold active:scale-95",
+                fps === speed.fps ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
+              )}
+            >
+              {speed.label}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={toggleLoop}
+          className={cn(
+            "grid h-10 w-10 place-items-center rounded-full active:scale-95",
+            loop ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
+          )}
+          aria-label={loop ? "Loop on" : "Loop off"}
+        >
+          <Repeat2 className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={toggleMute}
+          className="grid h-10 w-10 place-items-center rounded-full bg-secondary active:scale-95"
+          aria-label={muted ? "Unmute feedback" : "Mute feedback"}
+        >
+          {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+        </button>
       </div>
 
       {previewOpen && preview && canOpenPreview && (

@@ -11,6 +11,7 @@ import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
+import { registerAppServiceWorker } from "../lib/pwa.client";
 
 const themeInitScript = `
 (() => {
@@ -91,9 +92,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         content:
           "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover",
       },
-      { name: "theme-color", content: "#fafafa" },
+      { name: "theme-color", content: "#08111f" },
       { name: "apple-mobile-web-app-capable", content: "yes" },
+      { name: "mobile-web-app-capable", content: "yes" },
       { name: "apple-mobile-web-app-status-bar-style", content: "black-translucent" },
+      { name: "msapplication-TileColor", content: "#08111f" },
       { name: "format-detection", content: "telephone=no" },
       { name: "application-name", content: "OFFDROP" },
       { property: "og:site_name", content: "OFFDROP" },
@@ -141,6 +144,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         href: "https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap",
       },
       { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+      { rel: "icon", href: "/icon-32.png", sizes: "32x32", type: "image/png" },
+      { rel: "icon", href: "/icon-16.png", sizes: "16x16", type: "image/png" },
+      { rel: "apple-touch-icon", href: "/icon-180.png", sizes: "180x180" },
+      { rel: "mask-icon", href: "/mask-icon.svg", color: "#64f0b4" },
+      { rel: "manifest", href: "/manifest.webmanifest" },
       {
         rel: "stylesheet",
         href: appCss,
@@ -185,6 +193,9 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  useEffect(() => {
+    void registerAppServiceWorker();
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>

@@ -48,6 +48,14 @@ function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
   return <FileIcon className="h-6 w-6 text-muted-foreground" />;
 }
 
+function formatDuration(ms?: number) {
+  if (!ms || !Number.isFinite(ms)) return "—";
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return mins ? `${mins}m ${secs.toString().padStart(2, "0")}s` : `${secs}s`;
+}
+
 export function History({ refreshKey }: { refreshKey: number }) {
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [urls, setUrls] = useState<Record<string, string>>({});
@@ -56,7 +64,9 @@ export function History({ refreshKey }: { refreshKey: number }) {
     listItems().then((items) => {
       setItems(items);
       const map: Record<string, string> = {};
-      items.forEach((it) => (map[it.id] = URL.createObjectURL(it.blob)));
+      items.forEach((it) => {
+        if (it.blob) map[it.id] = URL.createObjectURL(it.blob);
+      });
       setUrls(map);
     });
     return () => {
@@ -71,6 +81,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
   }
 
   function onDownload(it: HistoryItem) {
+    if (!it.blob || !urls[it.id]) return;
     const a = document.createElement("a");
     a.href = urls[it.id];
     a.download = it.filename || "offdrop-file";
@@ -78,6 +89,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
   }
 
   async function onShare(it: HistoryItem) {
+    if (!it.blob) return;
     try {
       const file = new File([it.blob], it.filename || "file", { type: it.mime });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -124,7 +136,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold">{it.filename}</div>
                   <div className="text-[11px] text-muted-foreground">
-                    {(it.size / 1024).toFixed(1)} KB ·{" "}
+                    {(it.size / 1024).toFixed(1)} KB · {it.direction || "received"} · {formatDuration(it.durationMs)} · {it.valid === false ? "errors" : "valid"} ·{" "}
                     {new Date(it.receivedAt).toLocaleString(undefined, {
                       month: "short",
                       day: "numeric",
@@ -135,12 +147,14 @@ export function History({ refreshKey }: { refreshKey: number }) {
                   <div className="mt-2 flex gap-1.5">
                     <button
                       onClick={() => onDownload(it)}
+                      disabled={!it.blob}
                       className="flex items-center gap-1 rounded-full bg-secondary px-2.5 py-1 text-[11px] font-medium active:scale-95"
                     >
                       <Download className="h-3 w-3" /> Save
                     </button>
                     <button
                       onClick={() => onShare(it)}
+                      disabled={!it.blob}
                       className="flex items-center gap-1 rounded-full bg-secondary px-2.5 py-1 text-[11px] font-medium active:scale-95"
                     >
                       <Share2 className="h-3 w-3" /> Share

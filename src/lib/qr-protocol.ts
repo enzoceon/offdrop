@@ -91,7 +91,17 @@ export interface PlanInput {
   bytes: Uint8Array;
 }
 
-export function planFile(file: PlanInput): ChunkPlan {
+export function planFile(input: PlanInput): ChunkPlan;
+export function planFile(bytes: Uint8Array, name: string, fileType: string, size: number): ChunkPlan;
+export function planFile(inputOrBytes: PlanInput | Uint8Array, name?: string, fileType?: string, size?: number): ChunkPlan {
+  const file: PlanInput = inputOrBytes instanceof Uint8Array
+    ? {
+        bytes: inputOrBytes,
+        name: name || "offdrop-file",
+        type: fileType || "application/octet-stream",
+        size: size ?? inputOrBytes.length,
+      }
+    : inputOrBytes;
   const id = Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
   const total = Math.max(1, Math.ceil(file.bytes.length / RAW_CHUNK_BYTES));
   const crc = crc32(file.bytes);
