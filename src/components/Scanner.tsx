@@ -347,6 +347,41 @@ export function Scanner({
     await start(next, true);
   }
 
+  function clearDonePreview() {
+    if (doneUrlRef.current) {
+      URL.revokeObjectURL(doneUrlRef.current);
+      doneUrlRef.current = null;
+    }
+    setDone(null);
+  }
+
+  function downloadDone() {
+    if (!done?.blob || !done.url) return;
+    const a = document.createElement("a");
+    a.href = done.url;
+    a.download = done.name || "offdrop-file";
+    a.click();
+    clearDonePreview();
+    onCompleteAction?.();
+  }
+
+  async function shareDone() {
+    if (!done?.blob) return;
+    try {
+      const file = new File([done.blob], done.name || "offdrop-file", { type: done.mime });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: done.name });
+      } else {
+        downloadDone();
+        return;
+      }
+      clearDonePreview();
+      onCompleteAction?.();
+    } catch {
+      /* user cancelled */
+    }
+  }
+
   function tick() {
     if (!scanningRef.current) return;
     try {
