@@ -61,7 +61,6 @@ export function Sender() {
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(5);
   const [loop, setLoop] = useState(true);
-  const [muted, setMuted] = useState(() => sfx.muted);
   const [preview, setPreview] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
