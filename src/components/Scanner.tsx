@@ -358,7 +358,10 @@ export function Scanner({
             },
           ) => Promise<void>;
         };
-        const modes = focusTrack.getCapabilities?.().focusMode ?? [];
+        const capabilities = focusTrack.getCapabilities?.() as
+          | (MediaTrackCapabilities & { focusMode?: string[] })
+          | undefined;
+        const modes = capabilities?.focusMode ?? [];
         const mode = modes.includes("single-shot")
           ? "single-shot"
           : modes.includes("continuous")
