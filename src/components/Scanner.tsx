@@ -612,10 +612,11 @@ export function Scanner({
     if (Math.abs(currentFill - targetFill) < 0.08) return;
     const next = zoom * clamp(targetFill / currentFill, 0.86, 1.16);
     lastAutoZoomRef.current = now;
-    setVisualZoom(next, {
-      x: ((minX + maxX) / 2 / box.w) * (videoRef.current?.clientWidth || box.w),
-      y: ((minY + maxY) / 2 / box.h) * (videoRef.current?.clientHeight || box.h),
-    });
+    const rect = videoRef.current?.getBoundingClientRect();
+    setVisualZoom(next, rect ? {
+      x: rect.left + ((minX + maxX) / 2 / box.w) * rect.width,
+      y: rect.top + ((minY + maxY) / 2 / box.h) * rect.height,
+    } : undefined);
   }
 
   function clearDonePreview() {
