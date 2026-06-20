@@ -5,6 +5,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Sender } from "@/components/Sender";
 import { Scanner } from "@/components/Scanner";
 import { History } from "@/components/History";
+import { InstallPrompt } from "@/components/InstallPrompt";
 import { CameraOff, Loader2, QrCode } from "lucide-react";
 
 export const Route = createFileRoute("/")({
@@ -172,6 +173,7 @@ function Index() {
       )}
 
       <GlassTabs value={tab} onChange={requestTab} />
+      <InstallPrompt />
     </div>
   );
 }
