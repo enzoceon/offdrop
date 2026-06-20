@@ -415,6 +415,18 @@ export function Sender() {
           {playing ? "Pause" : "Play"}
         </button>
         <button
+          type="button"
+          onClick={toggleLoop}
+          className={cn(
+            "grid h-12 w-12 shrink-0 place-items-center rounded-2xl transition-all active:scale-95",
+            loop ? "bg-primary text-primary-foreground shadow-lg shadow-primary/30" : "glass text-muted-foreground",
+          )}
+          aria-label={loop ? "Loop on" : "Loop off"}
+          aria-pressed={loop}
+        >
+          <Repeat2 className="h-4 w-4" />
+        </button>
+        <button
           onClick={resetPlayback}
           className="glass flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold active:scale-95"
         >
@@ -423,42 +435,61 @@ export function Sender() {
         </button>
       </div>
 
-      <div className="glass mt-3 mx-auto grid w-full max-w-md grid-cols-[1fr_auto_auto] items-center gap-2 rounded-2xl px-3 py-3">
-        <div className="grid grid-cols-4 gap-1.5">
-          {SPEEDS.map((speed) => (
-            <button
-              key={speed.label}
-              type="button"
-              onClick={() => setFps(speed.fps)}
-              className={cn(
-                "rounded-xl px-2 py-2 text-[10px] font-bold active:scale-95",
-                fps === speed.fps ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
-              )}
-            >
-              {speed.label}
-            </button>
-          ))}
+      <div className="glass mt-3 mx-auto w-full max-w-md rounded-2xl px-4 pt-3 pb-3.5">
+        <div className="relative h-7">
+          <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 flex items-center">
+            {Array.from({ length: 10 }).map((_, i) => {
+              const step = i + 1;
+              const filled = step <= fps;
+              const tierBoundary = i === 2 || i === 5 || i === 8;
+              return (
+                <div
+                  key={step}
+                  className={cn(
+                    "h-2 flex-1 rounded-full transition-colors",
+                    filled ? "bg-gradient-to-r from-primary to-accent" : "bg-secondary",
+                    i > 0 && (tierBoundary ? "ml-2" : "ml-[3px]"),
+                  )}
+                />
+              );
+            })}
+          </div>
+          <div
+            className="pointer-events-none absolute top-1/2 -translate-y-1/2 h-5 w-5 rounded-full bg-background shadow-md ring-2 ring-primary transition-[left]"
+            style={{ left: `calc(${((fps - 1) / 9) * 100}% - 10px)` }}
+          />
+          <input
+            type="range"
+            min={1}
+            max={10}
+            step={1}
+            value={fps}
+            onChange={(e) => handleFpsChange(Number(e.target.value))}
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            aria-label="Transfer speed"
+          />
         </div>
-        <button
-          type="button"
-          onClick={toggleLoop}
-          className={cn(
-            "grid h-10 w-10 place-items-center rounded-full active:scale-95",
-            loop ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
-          )}
-          aria-label={loop ? "Loop on" : "Loop off"}
+        <div
+          className="mt-2.5 grid text-[10px] font-bold uppercase tracking-wide"
+          style={{ gridTemplateColumns: "2fr 3fr 3fr 2fr" }}
         >
-          <Repeat2 className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={toggleMute}
-          className="grid h-10 w-10 place-items-center rounded-full bg-secondary active:scale-95"
-          aria-label={muted ? "Unmute feedback" : "Mute feedback"}
-        >
-          {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-        </button>
+          {TIER_RANGES.map((t) => {
+            const active = tierForFps(fps) === t.tier;
+            return (
+              <span
+                key={t.tier}
+                className={cn(
+                  "text-center transition-colors",
+                  active ? "text-primary" : "text-muted-foreground/70",
+                )}
+              >
+                {t.tier}
+              </span>
+            );
+          })}
+        </div>
       </div>
+
 
       {previewOpen && preview && canOpenPreview && (
         <div
