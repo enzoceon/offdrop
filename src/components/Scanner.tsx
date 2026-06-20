@@ -183,7 +183,7 @@ async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] =
 
 function readZoomRange(stream: MediaStream | null): ZoomRange {
   const track = stream?.getVideoTracks()[0] as CameraControlTrack | undefined;
-  const zoom = track?.getCapabilities?.()?.zoom;
+  const zoom = (track?.getCapabilities?.() as CameraControlCapabilities | undefined)?.zoom;
   if (!track || !zoom || !Number.isFinite(zoom.min) || !Number.isFinite(zoom.max) || zoom.max <= zoom.min) {
     return { min: 1, max: 3, step: 0.05, supported: false };
   }
