@@ -461,10 +461,40 @@ export function Scanner({
   stopRef.current = stop;
 
   async function flipCamera() {
-    if (!active || stopping || starting) return;
+    if (!active || stopping || starting || flipping) return;
     const next = facingRef.current === "environment" ? "user" : "environment";
-    await stop(false);
-    await start(next, true);
+    setFlipping(true);
+    vibrate(12);
+    try {
+      const video = videoRef.current;
+      scanningRef.current = false;
+      cancelAnimationFrame(rafRef.current);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      const stream = await openCameraStream(next);
+      streamRef.current = stream;
+      facingRef.current = next;
+      setFacing(next);
+      const range = readZoomRange(stream);
+      setZoomRange(range);
+      setZoom(range.min);
+      setPan({ x: 0, y: 0 });
+      if (video) {
+        video.srcObject = stream;
+        await waitForVideoMetadata(video);
+        await video.play();
+        await waitForUsableVideo(video);
+      }
+      void applyCameraFocus(stream, ["continuous"]);
+      if (range.supported) void applyCameraZoom(stream, range.min);
+      scanningRef.current = true;
+      lastDecodeRef.current = 0;
+      tick();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Camera could not flip. Try again.");
+    } finally {
+      await sleep(160);
+      setFlipping(false);
+    }
   }
 
   async function restartCameraForFocus() {
@@ -475,11 +505,16 @@ export function Scanner({
     streamRef.current?.getTracks().forEach((track) => track.stop());
     const stream = await openCameraStream(facingRef.current);
     streamRef.current = stream;
+    const range = readZoomRange(stream);
+    setZoomRange(range);
+    setZoom(range.min);
+    setPan({ x: 0, y: 0 });
     video.srcObject = stream;
     await waitForVideoMetadata(video);
     await video.play();
     await waitForUsableVideo(video);
     void applyCameraFocus(stream, ["continuous"]);
+    if (range.supported) void applyCameraZoom(stream, range.min);
     scanningRef.current = true;
     lastDecodeRef.current = 0;
     tick();
