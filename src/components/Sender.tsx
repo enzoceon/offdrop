@@ -12,6 +12,7 @@ import {
   Layers3,
   Clock,
   Loader2,
+  Volume2,
 } from "lucide-react";
 import { fileToChunks } from "@/lib/qr-protocol";
 import { cn } from "@/lib/utils";
@@ -35,12 +36,17 @@ export function Sender() {
   const [chunks, setChunks] = useState<string[]>([]);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(3);
+  const [fps, setFps] = useState(5);
   const [preview, setPreview] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
+  const [mediaPlaying, setMediaPlaying] = useState(false);
+  const [mediaTime, setMediaTime] = useState(0);
+  const [mediaDuration, setMediaDuration] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const videoPreviewRef = useRef<HTMLVideoElement>(null);
+  const audioPreviewRef = useRef<HTMLAudioElement>(null);
 
   async function onPick(f: File) {
     if (preview) URL.revokeObjectURL(preview);
@@ -60,7 +66,7 @@ export function Sender() {
     setQrError(null);
     QRCode.toCanvas(canvasRef.current, chunks[idx], {
       errorCorrectionLevel: "M",
-      margin: 1,
+      margin: 4,
       width: 520,
       color: { dark: "#0a0a14", light: "#ffffff" },
     }).catch((err) => {
@@ -85,6 +91,9 @@ export function Sender() {
     setIdx(0);
     setPlaying(false);
     setPreviewOpen(false);
+    setMediaPlaying(false);
+    setMediaTime(0);
+    setMediaDuration(0);
     if (preview) URL.revokeObjectURL(preview);
     setPreview(null);
     if (inputRef.current) inputRef.current.value = "";
@@ -100,9 +109,35 @@ export function Sender() {
   const cycleSeconds = chunks.length / fps;
   const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
   const progress = chunks.length ? ((idx + 1) / chunks.length) * 100 : 0;
-  const canOpenPreview = Boolean(
-    preview && (file?.type.startsWith("image/") || file?.type.startsWith("video/")),
-  );
+  const canOpenPreview = Boolean(preview && file?.type.match(/^(image|video|audio)\//));
+
+  function activePreviewMedia() {
+    return videoPreviewRef.current ?? audioPreviewRef.current;
+  }
+
+  function syncPreviewMedia(media: HTMLMediaElement) {
+    setMediaTime(media.currentTime || 0);
+    setMediaDuration(Number.isFinite(media.duration) ? media.duration : 0);
+    setMediaPlaying(!media.paused);
+  }
+
+  async function togglePreviewPlayback() {
+    const media = activePreviewMedia();
+    if (!media) return;
+    if (media.paused) {
+      await media.play();
+    } else {
+      media.pause();
+    }
+    syncPreviewMedia(media);
+  }
+
+  function seekPreview(value: number) {
+    const media = activePreviewMedia();
+    if (!media) return;
+    media.currentTime = value;
+    syncPreviewMedia(media);
+  }
 
   if (!file) {
     return (
