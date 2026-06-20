@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
+import jsQR from "jsqr";
 import {
   Upload,
   Play,
@@ -64,16 +65,27 @@ export function Sender() {
   useEffect(() => {
     if (!canvasRef.current || chunks.length === 0) return;
     setQrError(null);
-    QRCode.toCanvas(canvasRef.current, chunks[idx], {
+    const canvas = canvasRef.current;
+    QRCode.toCanvas(canvas, chunks[idx], {
       errorCorrectionLevel: "M",
-      margin: 4,
-      width: 520,
-      color: { dark: "#0a0a14", light: "#ffffff" },
-    }).catch((err) => {
-      console.error("QR generation failed:", err);
-      setQrError("This QR frame could not be generated. Try a smaller file or reset the stream.");
-      setPlaying(false);
-    });
+      margin: 6,
+      width: 720,
+      color: { dark: "#000000", light: "#ffffff" },
+    })
+      .then(() => {
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) throw new Error("QR verification canvas is unavailable.");
+        const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const verified = jsQR(image.data, canvas.width, canvas.height, {
+          inversionAttempts: "attemptBoth",
+        });
+        if (verified?.data !== chunks[idx]) throw new Error("Generated QR failed verification.");
+      })
+      .catch((err) => {
+        console.error("QR generation failed:", err);
+        setQrError("This QR frame could not be generated cleanly. Try a smaller file or reset the stream.");
+        setPlaying(false);
+      });
   }, [idx, chunks]);
 
   // Animate
