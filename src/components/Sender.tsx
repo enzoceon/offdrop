@@ -467,11 +467,10 @@ export function Sender({ active = true }: { active?: boolean }) {
 
       {previewOpen && preview && canOpenPreview && (
         <div
-          className="fixed inset-0 z-[80] bg-background/45 backdrop-blur-[56px] animate-fade-up"
+          className="fixed inset-0 z-[80] bg-background/35 backdrop-blur-sm animate-fade-up"
           role="dialog"
           aria-modal="true"
         >
-          <div className="absolute inset-0 bg-background/20" />
           <div className="absolute inset-0 flex items-center justify-center px-4 py-20 sm:px-8">
             {file.type.startsWith("image/") && (
               <img
