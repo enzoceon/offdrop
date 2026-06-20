@@ -128,8 +128,12 @@ export function History({ refreshKey }: { refreshKey: number }) {
     if (!pendingDelete || deleting) return;
     setDeleting(true);
     try {
-      await deleteItem(pendingDelete.id);
       const id = pendingDelete.id;
+      const [_] = await Promise.all([
+        deleteItem(id),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
+      void _;
       const u = urlsRef.current[id];
       if (u) URL.revokeObjectURL(u);
       delete urlsRef.current[id];
