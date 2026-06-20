@@ -558,7 +558,7 @@ export function Scanner({
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
       <div
-        className="glass-strong relative mx-auto flex w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl"
+        className={`glass-strong relative mx-auto flex w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl ${done ? "order-2 mt-3" : ""}`}
         style={{
           aspectRatio: `${containerAspect} / 1`,
           transition: "aspect-ratio 0.55s cubic-bezier(0.2, 0.8, 0.2, 1)",
@@ -677,7 +677,7 @@ export function Scanner({
         </div>
       )}
 
-      <div className="mt-3 flex items-center justify-center gap-2">
+      <div className={`${done ? "order-1 mt-0" : "mt-3"} flex items-center justify-center gap-2`}>
         {!active && !stopping ? (
           <button
             onClick={() => void start()}
@@ -715,7 +715,7 @@ export function Scanner({
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="mx-auto mt-10 w-full max-w-sm animate-fade-up">
+        <div className="order-3 mx-auto mt-10 w-full max-w-sm animate-fade-up">
           <div className="flex items-center justify-center gap-2 text-center text-xs">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
             <span className="min-w-0 truncate text-center font-semibold">
