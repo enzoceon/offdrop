@@ -180,12 +180,10 @@ export function Scanner({
   const boxVisibleRef = useRef(false);
   const lastBoxUpdateRef = useRef(0);
   const frameErrorCountRef = useRef(0);
-  const lastAutofocusRef = useRef(0);
   const stopRef = useRef<(showStopping?: boolean, reason?: "manual" | "internal") => Promise<void>>(
     async () => {},
   );
   const facingRef = useRef<"environment" | "user">("environment");
-  const autofocusRef = useRef(false);
   const doneUrlRef = useRef<string | null>(null);
 
   const [active, setActive] = useState(false);
@@ -198,11 +196,10 @@ export function Scanner({
   );
   const [qrBox, setQrBox] = useState<QrBox | null>(null);
   const [done, setDone] = useState<DonePreview | null>(null);
-  const [autoFocus, setAutoFocus] = useState(false);
   const [facing, setFacing] = useState<"environment" | "user">("environment");
 
-  async function start(facingMode: "environment" | "user" = facingRef.current) {
-    if (active || starting || stopping) return;
+  async function start(facingMode: "environment" | "user" = facingRef.current, force = false) {
+    if (!force && (active || starting || stopping)) return;
     facingRef.current = facingMode;
     setFacing(facingMode);
     const startedAt = performance.now();
@@ -223,9 +220,9 @@ export function Scanner({
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: facingMode },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            frameRate: { ideal: 30, max: 60 },
             advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
           },
           audio: false,
