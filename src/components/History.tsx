@@ -153,13 +153,18 @@ export function History({ refreshKey }: { refreshKey: number }) {
     setPendingDelete(null);
   }
 
-  async function onDownload(it: HistoryItem) {
-    if (!it.blob || !urls[it.id] || busyAction) return;
-    setBusyAction(`download:${it.id}`);
+  function triggerDownload(it: HistoryItem) {
+    if (!it.blob || !urls[it.id]) return;
     const a = document.createElement("a");
     a.href = urls[it.id];
     a.download = it.filename || "offdrop-file";
     a.click();
+  }
+
+  async function onDownload(it: HistoryItem) {
+    if (!it.blob || !urls[it.id] || busyAction) return;
+    setBusyAction(`download:${it.id}`);
+    triggerDownload(it);
     await new Promise((resolve) => setTimeout(resolve, 350));
     setBusyAction(null);
   }
@@ -172,7 +177,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: it.filename });
       } else {
-        await onDownload(it);
+        triggerDownload(it);
       }
     } catch {
       /* user cancelled */
