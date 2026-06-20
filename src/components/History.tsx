@@ -81,6 +81,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
   const [pendingDelete, setPendingDelete] = useState<HistoryItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [previewItem, setPreviewItem] = useState<HistoryItem | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const urlsRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
@@ -152,25 +153,32 @@ export function History({ refreshKey }: { refreshKey: number }) {
     setPendingDelete(null);
   }
 
-  function onDownload(it: HistoryItem) {
-    if (!it.blob || !urls[it.id]) return;
+  async function onDownload(it: HistoryItem) {
+    if (!it.blob || !urls[it.id] || busyAction) return;
+    setBusyAction(`download:${it.id}`);
     const a = document.createElement("a");
     a.href = urls[it.id];
     a.download = it.filename || "offdrop-file";
     a.click();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    setBusyAction(null);
   }
 
   async function onShare(it: HistoryItem) {
-    if (!it.blob) return;
+    if (!it.blob || busyAction) return;
+    setBusyAction(`share:${it.id}`);
     try {
       const file = new File([it.blob], it.filename || "file", { type: it.mime });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: it.filename });
       } else {
-        onDownload(it);
+        await onDownload(it);
       }
     } catch {
       /* user cancelled */
+    } finally {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      setBusyAction(null);
     }
   }
 
