@@ -81,6 +81,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
   const [pendingDelete, setPendingDelete] = useState<HistoryItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [previewItem, setPreviewItem] = useState<HistoryItem | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const urlsRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
@@ -152,7 +153,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
     setPendingDelete(null);
   }
 
-  function onDownload(it: HistoryItem) {
+  function triggerDownload(it: HistoryItem) {
     if (!it.blob || !urls[it.id]) return;
     const a = document.createElement("a");
     a.href = urls[it.id];
@@ -160,17 +161,29 @@ export function History({ refreshKey }: { refreshKey: number }) {
     a.click();
   }
 
+  async function onDownload(it: HistoryItem) {
+    if (!it.blob || !urls[it.id] || busyAction) return;
+    setBusyAction(`download:${it.id}`);
+    triggerDownload(it);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    setBusyAction(null);
+  }
+
   async function onShare(it: HistoryItem) {
-    if (!it.blob) return;
+    if (!it.blob || busyAction) return;
+    setBusyAction(`share:${it.id}`);
     try {
       const file = new File([it.blob], it.filename || "file", { type: it.mime });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: it.filename });
       } else {
-        onDownload(it);
+        triggerDownload(it);
       }
     } catch {
       /* user cancelled */
+    } finally {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      setBusyAction(null);
     }
   }
 
@@ -308,23 +321,23 @@ export function History({ refreshKey }: { refreshKey: number }) {
                       </div>
                       <div className="mt-2 flex items-center gap-1.5 sm:mt-3 sm:gap-2">
                         <button
-                          onClick={() => onDownload(it)}
+                          onClick={() => void onDownload(it)}
                           disabled={!it.blob}
-                          className="flex items-center gap-1.5 rounded-full bg-gradient-to-br from-primary to-accent px-3 py-1.5 text-[11px] font-semibold text-primary-foreground shadow-md shadow-primary/25 active:scale-95 disabled:opacity-50 sm:px-4 sm:py-2 sm:text-xs"
+                          className="flex min-w-[4.6rem] items-center justify-center gap-1.5 rounded-full bg-gradient-to-br from-primary to-accent px-3 py-1.5 text-[11px] font-semibold text-primary-foreground shadow-md shadow-primary/25 active:scale-95 disabled:opacity-50 sm:px-4 sm:py-2 sm:text-xs"
                         >
-                          <Download className="h-3 w-3 sm:h-3.5 sm:w-3.5" /> Save
+                          {busyAction === `download:${it.id}` ? <Loader2 className="h-3 w-3 animate-spin sm:h-3.5 sm:w-3.5" /> : <Download className="h-3 w-3 sm:h-3.5 sm:w-3.5" />} Save
                         </button>
                         <button
-                          onClick={() => onShare(it)}
+                          onClick={() => void onShare(it)}
                           disabled={!it.blob}
-                          className="flex items-center gap-1.5 rounded-full bg-gradient-to-br from-primary to-accent px-3 py-1.5 text-[11px] font-semibold text-primary-foreground shadow-md shadow-primary/25 active:scale-95 disabled:opacity-50 sm:px-4 sm:py-2 sm:text-xs"
+                          className="flex min-w-[4.9rem] items-center justify-center gap-1.5 rounded-full bg-gradient-to-br from-primary to-accent px-3 py-1.5 text-[11px] font-semibold text-primary-foreground shadow-md shadow-primary/25 active:scale-95 disabled:opacity-50 sm:px-4 sm:py-2 sm:text-xs"
                         >
-                          <Share2 className="h-3 w-3 sm:h-3.5 sm:w-3.5" /> Share
+                          {busyAction === `share:${it.id}` ? <Loader2 className="h-3 w-3 animate-spin sm:h-3.5 sm:w-3.5" /> : <Share2 className="h-3 w-3 sm:h-3.5 sm:w-3.5" />} Share
                         </button>
                         <button
                           onClick={() => requestDelete(it)}
                           aria-label="Delete file"
-                          className="liquid-control ml-auto grid h-8 w-8 place-items-center rounded-full text-destructive active:scale-90 sm:h-9 sm:w-9"
+                          className="history-delete ml-auto grid h-8 w-8 place-items-center rounded-full text-destructive active:scale-90 sm:h-9 sm:w-9"
                         >
                           <Trash2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                         </button>
@@ -361,29 +374,25 @@ export function History({ refreshKey }: { refreshKey: number }) {
             <p className="mx-auto mt-1 max-w-[19rem] text-center text-sm text-muted-foreground">
               This action cannot be undone.
             </p>
-            {deleting ? (
-              <div className="mt-5 flex items-center justify-center gap-2 py-3 text-sm font-semibold text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                Deleting…
-              </div>
-            ) : (
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={confirmDelete}
-                  className="flex items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-accent py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97]"
-                >
-                  Yes
-                </button>
-                <button
-                  type="button"
-                  onClick={cancelDelete}
-                  className="glass flex items-center justify-center rounded-2xl py-3 text-sm font-bold active:scale-[0.97]"
-                >
-                  No
-                </button>
-              </div>
-            )}
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97] disabled:opacity-85"
+              >
+                {deleting && <Loader2 className="h-4 w-4 animate-spin" />}
+                Yes
+              </button>
+              <button
+                type="button"
+                onClick={cancelDelete}
+                disabled={deleting}
+                className="liquid-control flex items-center justify-center rounded-2xl py-3 text-sm font-bold active:scale-[0.97] disabled:opacity-70"
+              >
+                No
+              </button>
+            </div>
           </div>
         </div>
       )}
