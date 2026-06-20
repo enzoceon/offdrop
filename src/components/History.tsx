@@ -260,12 +260,14 @@ export function History({ refreshKey }: { refreshKey: number }) {
               return (
                 <div key={it.id} className="glass overflow-hidden rounded-2xl animate-fade-up sm:rounded-3xl">
                   <div className="flex gap-3 p-3 sm:gap-4 sm:p-4">
-                    <button
-                      type="button"
+                    <div
                       onClick={() => urls[it.id] && it.mime.startsWith("image/") && setPreviewItem(it)}
-                      disabled={!urls[it.id] || !it.mime.startsWith("image/")}
-                      className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary text-left transition-transform active:scale-95 disabled:active:scale-100 sm:h-24 sm:w-24 sm:rounded-2xl"
+                      className={`relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary text-left transition-transform sm:h-24 sm:w-24 sm:rounded-2xl ${
+                        urls[it.id] && it.mime.startsWith("image/") ? "cursor-pointer active:scale-95" : ""
+                      }`}
+                      role={it.mime.startsWith("image/") ? "button" : undefined}
                       aria-label={it.mime.startsWith("image/") ? "Open image preview" : undefined}
+                      tabIndex={it.mime.startsWith("image/") ? 0 : undefined}
                     >
                       <MediaPreview item={it} url={urls[it.id]} />
                       {it.mime.startsWith("video/") && (
@@ -274,7 +276,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
                       {it.mime.startsWith("audio/") && (
                         <Music2 className="pointer-events-none absolute bottom-1 right-1 h-3.5 w-3.5 text-primary-foreground drop-shadow" />
                       )}
-                    </button>
+                    </div>
                     <div className="min-w-0 flex-1">
                       <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-bold leading-tight sm:text-base">
                         <FileText className="h-3.5 w-3.5 shrink-0 text-primary sm:h-4 sm:w-4" />
