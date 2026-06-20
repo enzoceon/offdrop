@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
-import { Camera, CameraOff, CheckCircle2, Loader2, ScanLine } from "lucide-react";
+import {
+  Camera,
+  CameraOff,
+  CheckCircle2,
+  Loader2,
+  ScanLine,
+  RefreshCw,
+  Focus,
+  Music2,
+  FileText,
+} from "lucide-react";
 import {
   parseFrame,
   reconstruct,
@@ -19,6 +29,13 @@ interface Transfer {
 type Point = { x: number; y: number };
 type QrBox = { w: number; h: number; corners: [Point, Point, Point, Point] };
 type ScanResult = { data: string; corners: [Point, Point, Point, Point] };
+type DonePreview = {
+  name: string;
+  mime: string;
+  size: number;
+  url?: string;
+  aspectRatio: number;
+};
 type ScannerProps = {
   onSaved: () => void;
   stopRequestKey?: number;
@@ -26,12 +43,12 @@ type ScannerProps = {
   onBusyChange?: (busy: boolean) => void;
 };
 
-const CAMERA_TRANSITION_MS = 350;
-const DECODE_INTERVAL_MS = 32;
+const CAMERA_TRANSITION_MS = 320;
+const DECODE_INTERVAL_MS = 16;
+const AUTOFOCUS_INTERVAL_MS = 480;
 
 function waitForVideoMetadata(video: HTMLVideoElement) {
   if (video.readyState >= video.HAVE_METADATA) return Promise.resolve();
-
   return new Promise<void>((resolve, reject) => {
     const timer = window.setTimeout(() => {
       cleanup();
@@ -45,16 +62,12 @@ function waitForVideoMetadata(video: HTMLVideoElement) {
       cleanup();
       resolve();
     };
-
     video.addEventListener("loadedmetadata", onMetadata, { once: true });
   });
 }
 
 function waitForUsableVideo(video: HTMLVideoElement) {
-  if (video.videoWidth > 0 && video.videoHeight > 0) {
-    return Promise.resolve();
-  }
-
+  if (video.videoWidth > 0 && video.videoHeight > 0) return Promise.resolve();
   return new Promise<void>((resolve, reject) => {
     const started = performance.now();
     const cleanup = () => {
@@ -75,7 +88,6 @@ function waitForUsableVideo(video: HTMLVideoElement) {
       }
       window.setTimeout(check, 40);
     };
-
     video.addEventListener("loadedmetadata", check);
     video.addEventListener("loadeddata", check);
     video.addEventListener("canplay", check);
@@ -89,19 +101,14 @@ function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number): ScanResu
   if (side !== w || side !== h) {
     attempts.push([Math.round((w - side) / 2), Math.round((h - side) / 2), side, side]);
   }
-  for (const ratio of [0.85, 0.7, 0.55]) {
-    const crop = Math.max(160, Math.round(side * ratio));
-    if (crop < side) {
-      attempts.push([Math.round((w - crop) / 2), Math.round((h - crop) / 2), crop, crop]);
-    }
+  // Single tighter center crop for far-range fallback. Autofocus handles the rest.
+  const tight = Math.max(192, Math.round(side * 0.7));
+  if (tight < side) {
+    attempts.push([Math.round((w - tight) / 2), Math.round((h - tight) / 2), tight, tight]);
   }
 
-  const seen = new Set<string>();
   let firstAttempt = true;
   for (const [sx, sy, sw, sh] of attempts) {
-    const key = `${sx}:${sy}:${sw}:${sh}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
     const img = ctx.getImageData(sx, sy, sw, sh);
     const code = jsQR(img.data, sw, sh, {
       inversionAttempts: firstAttempt ? "dontInvert" : "attemptBoth",
@@ -131,6 +138,28 @@ function mediaLabel(mime?: string) {
   return "file";
 }
 
+async function detectAspectRatio(blob: Blob, mime: string, url: string): Promise<number> {
+  if (mime.startsWith("image/")) {
+    return new Promise<number>((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : 4 / 3);
+      img.onerror = () => resolve(4 / 3);
+      img.src = url;
+    });
+  }
+  if (mime.startsWith("video/")) {
+    return new Promise<number>((resolve) => {
+      const v = document.createElement("video");
+      v.preload = "metadata";
+      v.onloadedmetadata = () => resolve(v.videoWidth && v.videoHeight ? v.videoWidth / v.videoHeight : 16 / 9);
+      v.onerror = () => resolve(16 / 9);
+      v.src = url;
+    });
+  }
+  // Audio / generic
+  return mime.startsWith("audio/") ? 16 / 9 : 4 / 3;
+}
+
 export function Scanner({
   onSaved,
   stopRequestKey = 0,
@@ -149,25 +178,37 @@ export function Scanner({
   const boxVisibleRef = useRef(false);
   const lastBoxUpdateRef = useRef(0);
   const frameErrorCountRef = useRef(0);
-  const stopRef = useRef<(showStopping?: boolean) => Promise<void>>(async () => {});
+  const lastAutofocusRef = useRef(0);
+  const stopRef = useRef<(showStopping?: boolean, reason?: "manual" | "internal") => Promise<void>>(
+    async () => {},
+  );
+  const facingRef = useRef<"environment" | "user">("environment");
+  const autofocusRef = useRef(false);
+  const doneUrlRef = useRef<string | null>(null);
 
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ have: 0, total: 0 });
-  const [scanInfo, setScanInfo] = useState<{
-    name: string;
-    mime: string;
-    size: number;
-  } | null>(null);
+  const [scanInfo, setScanInfo] = useState<{ name: string; mime: string; size: number } | null>(
+    null,
+  );
   const [qrBox, setQrBox] = useState<QrBox | null>(null);
-  const [done, setDone] = useState<{ name: string } | null>(null);
+  const [done, setDone] = useState<DonePreview | null>(null);
+  const [autoFocus, setAutoFocus] = useState(false);
+  const [facing, setFacing] = useState<"environment" | "user">("environment");
 
-  async function start() {
+  async function start(facingMode: "environment" | "user" = facingRef.current) {
     if (active || starting || stopping) return;
+    facingRef.current = facingMode;
+    setFacing(facingMode);
     const startedAt = performance.now();
     setError(null);
+    if (doneUrlRef.current) {
+      URL.revokeObjectURL(doneUrlRef.current);
+      doneUrlRef.current = null;
+    }
     setDone(null);
     setStarting(true);
     finishingRef.current = false;
@@ -179,7 +220,7 @@ export function Scanner({
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            facingMode: { ideal: "environment" },
+            facingMode: { ideal: facingMode },
             width: { ideal: 1280 },
             height: { ideal: 720 },
             frameRate: { ideal: 30 },
@@ -248,11 +289,82 @@ export function Scanner({
     setProgress({ have: 0, total: 0 });
     boxVisibleRef.current = false;
     cancelAnimationFrame(rafRef.current);
-    streamRef.current?.getTracks().forEach((t) => t.stop());
+    // Release camera + decoder fully — fixes mobile lag on repeated start/stop
+    const video = videoRef.current;
+    if (video) {
+      try {
+        video.pause();
+      } catch {
+        /* ignore */
+      }
+      video.srcObject = null;
+    }
+    streamRef.current?.getTracks().forEach((t) => {
+      try {
+        t.stop();
+      } catch {
+        /* ignore */
+      }
+    });
     streamRef.current = null;
     setStopping(false);
   }
   stopRef.current = stop;
+
+  async function flipCamera() {
+    if (!active || stopping || starting) return;
+    const next = facingRef.current === "environment" ? "user" : "environment";
+    await stop();
+    await start(next);
+  }
+
+  function toggleAutoFocus() {
+    setAutoFocus((prev) => {
+      const next = !prev;
+      autofocusRef.current = next;
+      if (!next) {
+        // Reset to base zoom when disabling
+        const track = streamRef.current?.getVideoTracks()[0];
+        const caps = track?.getCapabilities?.() as MediaTrackCapabilities & { zoom?: { min: number } };
+        if (track && caps?.zoom) {
+          track
+            .applyConstraints({ advanced: [{ zoom: caps.zoom.min } as MediaTrackConstraintSet] })
+            .catch(() => {});
+        }
+      }
+      return next;
+    });
+  }
+
+  function maybeAutoFocus(box: QrBox, w: number, h: number) {
+    if (!autofocusRef.current) return;
+    const now = performance.now();
+    if (now - lastAutofocusRef.current < AUTOFOCUS_INTERVAL_MS) return;
+    lastAutofocusRef.current = now;
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+    const caps = track.getCapabilities?.() as MediaTrackCapabilities & {
+      zoom?: { min: number; max: number; step?: number };
+    };
+    if (!caps?.zoom) return;
+    const settings = track.getSettings() as MediaTrackSettings & { zoom?: number };
+    const cur = settings.zoom ?? caps.zoom.min;
+    const xs = box.corners.map((p) => p.x);
+    const ys = box.corners.map((p) => p.y);
+    const qrSize =
+      Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) /
+      Math.min(w, h);
+    if (qrSize <= 0) return;
+    const target = 0.55;
+    const ratio = target / qrSize;
+    const damped = 1 + (ratio - 1) * 0.55;
+    let next = cur * damped;
+    next = Math.min(caps.zoom.max, Math.max(caps.zoom.min, next));
+    if (Math.abs(next - cur) / Math.max(0.0001, cur) < 0.04) return;
+    track
+      .applyConstraints({ advanced: [{ zoom: next } as MediaTrackConstraintSet] })
+      .catch(() => {});
+  }
 
   function tick() {
     if (!scanningRef.current) return;
@@ -269,7 +381,7 @@ export function Scanner({
         video.videoHeight > 0
       ) {
         lastDecodeRef.current = now;
-        const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
+        const scale = Math.min(1, 720 / Math.max(video.videoWidth, video.videoHeight));
         const w = Math.max(1, Math.round(video.videoWidth * scale));
         const h = Math.max(1, Math.round(video.videoHeight * scale));
         if (canvas.width !== w) canvas.width = w;
@@ -281,15 +393,13 @@ export function Scanner({
           frameErrorCountRef.current = 0;
           if (code?.data) {
             handleScan(code.data);
-            if (now - lastBoxUpdateRef.current > 80) {
+            const box: QrBox = { w, h, corners: code.corners };
+            if (now - lastBoxUpdateRef.current > 60) {
               boxVisibleRef.current = true;
               lastBoxUpdateRef.current = now;
-              setQrBox({
-                w,
-                h,
-                corners: code.corners,
-              });
+              setQrBox(box);
             }
+            maybeAutoFocus(box, w, h);
           } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
             boxVisibleRef.current = false;
             lastBoxUpdateRef.current = now;
@@ -318,7 +428,6 @@ export function Scanner({
     if (finishingRef.current) return;
     const parsed = parseFrame(payload);
     if (!parsed) return;
-
     const seenKey = `${parsed.kind}:${parsed.id}:${parsed.kind === "data" ? parsed.index : "h"}`;
     const now = performance.now();
     const seenAt = lastSeenRef.current.get(seenKey);
@@ -333,11 +442,7 @@ export function Scanner({
     if (parsed.kind === "header") {
       let t = transferRef.current;
       if (!t || t.header.id !== parsed.id) {
-        t = {
-          header: parsed,
-          chunks: new Map<number, Uint8Array>(),
-          startedAt: Date.now(),
-        };
+        t = { header: parsed, chunks: new Map<number, Uint8Array>(), startedAt: Date.now() };
         transferRef.current = t;
         sfx.fileFound();
       }
@@ -346,13 +451,8 @@ export function Scanner({
       return;
     }
 
-    // Data frame: latch a placeholder header by id if we don't have one yet so
-    // out-of-order joins still collect data while waiting for the next header.
     let t = transferRef.current;
-    if (!t || t.header.id !== parsed.id) {
-      // Without a header we don't yet know total/size/crc — drop until header arrives.
-      return;
-    }
+    if (!t || t.header.id !== parsed.id) return;
     if (parsed.index >= t.header.total) return;
     if (!t.chunks.has(parsed.index)) {
       t.chunks.set(parsed.index, parsed.payload);
@@ -376,9 +476,8 @@ export function Scanner({
       const bytes = reconstruct(ordered, t.header.size);
       const computed = crc32(bytes);
       const valid = computed === t.header.crc;
-      const blob = new Blob([bytes as BlobPart], {
-        type: t.header.mime || "application/octet-stream",
-      });
+      const mime = t.header.mime || "application/octet-stream";
+      const blob = new Blob([bytes as BlobPart], { type: mime });
       await saveItem({
         id: t.header.id + "-" + Date.now(),
         filename: t.header.name,
@@ -392,7 +491,17 @@ export function Scanner({
       });
       if (valid) sfx.success();
       else sfx.error();
-      setDone({ name: t.header.name });
+
+      const previewUrl = URL.createObjectURL(blob);
+      doneUrlRef.current = previewUrl;
+      const aspectRatio = await detectAspectRatio(blob, mime, previewUrl);
+      setDone({
+        name: t.header.name,
+        mime,
+        size: t.header.size,
+        url: previewUrl,
+        aspectRatio,
+      });
       if (!valid) {
         setError("Received with errors — CRC mismatch. The file is saved but may be corrupted.");
       }
@@ -422,16 +531,24 @@ export function Scanner({
   useEffect(
     () => () => {
       void stopRef.current();
+      if (doneUrlRef.current) URL.revokeObjectURL(doneUrlRef.current);
     },
     [],
   );
 
   const pct = progress.total ? (progress.have / progress.total) * 100 : 0;
   const label = mediaLabel(scanInfo?.mime);
+  const containerAspect = done ? Math.min(2.2, Math.max(0.55, done.aspectRatio)) : 1;
 
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
-      <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl">
+      <div
+        className="glass-strong relative mx-auto flex w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl"
+        style={{
+          aspectRatio: `${containerAspect} / 1`,
+          transition: "aspect-ratio 0.55s cubic-bezier(0.2, 0.8, 0.2, 1)",
+        }}
+      >
         <video
           ref={videoRef}
           playsInline
@@ -464,10 +581,39 @@ export function Scanner({
         )}
 
         {done && (
-          <div className="flex flex-col items-center text-center animate-fade-up">
-            <CheckCircle2 className="h-16 w-16 text-primary" strokeWidth={1.8} />
-            <p className="mt-3 text-display text-xl">Received</p>
-            <p className="mt-1 max-w-[16rem] truncate text-xs text-muted-foreground">{done.name}</p>
+          <div className="absolute inset-0 flex flex-col bg-secondary/40 animate-fade-up">
+            <div className="relative flex-1 overflow-hidden">
+              {done.mime.startsWith("image/") && done.url ? (
+                <img src={done.url} alt={done.name} className="h-full w-full object-contain" />
+              ) : done.mime.startsWith("video/") && done.url ? (
+                <video
+                  src={done.url}
+                  className="h-full w-full object-contain"
+                  controls
+                  playsInline
+                />
+              ) : done.mime.startsWith("audio/") && done.url ? (
+                <div className="audio-tile flex h-full w-full flex-col items-center justify-center gap-3 px-4">
+                  <Music2 className="h-10 w-10 text-primary" strokeWidth={1.8} />
+                  <audio src={done.url} controls className="w-full max-w-xs" />
+                </div>
+              ) : (
+                <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted-foreground">
+                  <FileText className="h-12 w-12" strokeWidth={1.6} />
+                  <span className="text-xs">Preview not available</span>
+                </div>
+              )}
+              <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-background/70 px-2.5 py-1 text-[10px] font-semibold backdrop-blur">
+                <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+                Received
+              </div>
+            </div>
+            <div className="border-t border-glass-border bg-background/50 px-3 py-2 backdrop-blur">
+              <div className="truncate text-xs font-semibold">{done.name}</div>
+              <div className="text-[10px] text-muted-foreground">
+                {(done.size / 1024).toFixed(1)} KB · {mediaLabel(done.mime)}
+              </div>
+            </div>
           </div>
         )}
 
@@ -504,33 +650,52 @@ export function Scanner({
         </div>
       )}
 
-      <div className="mt-3 flex justify-center gap-2">
+      <div className="mt-3 flex items-center justify-center gap-2">
         {!active && !stopping ? (
           <button
-            onClick={start}
+            onClick={() => void start()}
             disabled={starting}
             className="flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/30 active:scale-[0.97] disabled:opacity-80"
           >
-            {starting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Camera className="h-4 w-4" />
-            )}
+            {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
             {starting ? "Starting Camera" : "Start Camera"}
           </button>
         ) : (
-          <button
-            onClick={() => void stop(true)}
-            disabled={stopping}
-            className="glass flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80"
-          >
-            {stopping ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <CameraOff className="h-4 w-4" />
-            )}
-            {stopping ? "Stopping Camera" : "Stop Camera"}
-          </button>
+          <>
+            <button
+              onClick={() => void flipCamera()}
+              disabled={stopping || starting}
+              aria-label={`Flip camera (current: ${facing === "environment" ? "back" : "front"})`}
+              className="glass grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-60"
+            >
+              <RefreshCw className="h-4 w-4" />
+            </button>
+            <button
+              onClick={toggleAutoFocus}
+              disabled={stopping || starting}
+              aria-label={autoFocus ? "Disable auto focus" : "Enable auto focus"}
+              aria-pressed={autoFocus}
+              className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-60 ${
+                autoFocus
+                  ? "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/30"
+                  : "glass"
+              }`}
+            >
+              <Focus className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => void stop(true)}
+              disabled={stopping}
+              className="glass flex flex-1 max-w-[14rem] items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80"
+            >
+              {stopping ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <CameraOff className="h-4 w-4" />
+              )}
+              {stopping ? "Stopping" : "Stop Camera"}
+            </button>
+          </>
         )}
       </div>
 
@@ -542,8 +707,8 @@ export function Scanner({
               {progress.total > 0
                 ? `Assembling ${label}…`
                 : qrBox
-                  ? "OFFDROP stream locked"
-                  : "Searching for OFFDROP stream…"}
+                  ? "OFFDROP qr locked"
+                  : "Searching for OFFDROP qr …"}
             </span>
             {progress.total > 0 && (
               <span className="shrink-0 tabular-nums text-[10px] font-bold text-muted-foreground">
@@ -558,7 +723,7 @@ export function Scanner({
             />
           </div>
           <div className="mt-2 truncate text-center text-[10px] text-muted-foreground">
-            {scanInfo ? scanInfo.name : "Position the camera toward the OFFDROP stream"}
+            {scanInfo ? scanInfo.name : "Position the camera toward the qr code accurately"}
           </div>
         </div>
       )}

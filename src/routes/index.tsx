@@ -31,14 +31,36 @@ export const Route = createFileRoute("/")({
   component: Index,
 });
 
+const TAB_STORAGE_KEY = "offdrop:active-tab";
+
+function readStoredTab(): TabKey {
+  if (typeof window === "undefined") return "send";
+  try {
+    const v = window.localStorage.getItem(TAB_STORAGE_KEY);
+    if (v === "send" || v === "scan" || v === "history") return v;
+  } catch {
+    /* ignore */
+  }
+  return "send";
+}
+
 function Index() {
-  const [tab, setTab] = useState<TabKey>("send");
+  const [tab, setTab] = useState<TabKey>(() => readStoredTab());
   const [historyKey, setHistoryKey] = useState(0);
   const [scannerBusy, setScannerBusy] = useState(false);
   const [pendingTab, setPendingTab] = useState<TabKey | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [stopRequestKey, setStopRequestKey] = useState(0);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TAB_STORAGE_KEY, tab);
+    } catch {
+      /* ignore */
+    }
+  }, [tab]);
+
 
   function requestTab(nextTab: TabKey) {
     if (nextTab === tab) return;
@@ -122,9 +144,9 @@ function Index() {
             onBusyChange={setScannerBusy}
             onSaved={() => {
               setHistoryKey((k) => k + 1);
-              setTab("history");
             }}
           />
+
         </section>
         <section
           className={tab === "history" ? "contents" : "hidden"}
