@@ -367,15 +367,38 @@ export function Scanner({
     await start(next, true);
   }
 
+  async function restartCameraForFocus() {
+    const video = videoRef.current;
+    if (!video) return false;
+    scanningRef.current = false;
+    cancelAnimationFrame(rafRef.current);
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    const stream = await openCameraStream(facingRef.current);
+    streamRef.current = stream;
+    video.srcObject = stream;
+    await waitForVideoMetadata(video);
+    await video.play();
+    await waitForUsableVideo(video);
+    void applyCameraFocus(stream, ["continuous"]);
+    scanningRef.current = true;
+    lastDecodeRef.current = 0;
+    tick();
+    return true;
+  }
+
   async function autofocusCamera() {
     if (!active || stopping || starting || focusing) return;
     setFocusing(true);
     const startedAt = performance.now();
     try {
       const focused = await applyCameraFocus(streamRef.current, ["single-shot", "continuous"]);
-      if (!focused) await applyCameraFocus(streamRef.current, ["continuous"]);
+      if (!focused) await restartCameraForFocus();
     } catch {
-      /* Browser/camera may not expose focus controls; keep native focus running. */
+      try {
+        await restartCameraForFocus();
+      } catch {
+        /* Keep native camera focus running if the browser blocks manual focus control. */
+      }
     } finally {
       const remaining = 1000 - (performance.now() - startedAt);
       if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
