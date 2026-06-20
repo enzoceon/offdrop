@@ -540,6 +540,63 @@ export function Scanner({
     }
   }
 
+  function handleCameraPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (!active) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panRef.current = { pointerId: event.pointerId, point: { x: event.clientX, y: event.clientY }, offset: pan };
+    showZoomHud();
+  }
+
+  function handleCameraPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (!active) return;
+    const touches = Array.from(event.currentTarget.querySelectorAll("video"));
+    void touches;
+    const currentPan = panRef.current;
+    if (!currentPan || currentPan.pointerId !== event.pointerId || zoom <= zoomRange.min + 0.01) return;
+    const next = {
+      x: clamp(currentPan.offset.x + (event.clientX - currentPan.point.x), -60, 60),
+      y: clamp(currentPan.offset.y + (event.clientY - currentPan.point.y), -60, 60),
+    };
+    setPan(next);
+    showZoomHud();
+  }
+
+  function handleCameraPointerUp(event: React.PointerEvent<HTMLDivElement>) {
+    if (panRef.current?.pointerId === event.pointerId) panRef.current = null;
+  }
+
+  function handleCameraTouchStart(event: React.TouchEvent<HTMLDivElement>) {
+    if (!active) return;
+    if (event.touches.length === 2) {
+      const a = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+      const b = { x: event.touches[1].clientX, y: event.touches[1].clientY };
+      pinchRef.current = { distance: distance(a, b), zoom, center: midpoint(a, b) };
+      showZoomHud();
+    }
+  }
+
+  function handleCameraTouchMove(event: React.TouchEvent<HTMLDivElement>) {
+    if (!active || event.touches.length !== 2 || !pinchRef.current) return;
+    event.preventDefault();
+    const a = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+    const b = { x: event.touches[1].clientX, y: event.touches[1].clientY };
+    const ratio = distance(a, b) / Math.max(1, pinchRef.current.distance);
+    setVisualZoom(pinchRef.current.zoom * ratio, midpoint(a, b));
+  }
+
+  function handleCameraTouchEnd() {
+    pinchRef.current = null;
+  }
+
+  function handleWheelZoom(event: React.WheelEvent<HTMLDivElement>) {
+    if (!active || !event.ctrlKey) return;
+    event.preventDefault();
+    setVisualZoom(zoom + (event.deltaY < 0 ? zoomRange.step * 3 : -zoomRange.step * 3), {
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }
+
   function clearDonePreview() {
     if (doneUrlRef.current) {
       URL.revokeObjectURL(doneUrlRef.current);
