@@ -181,6 +181,29 @@ async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] =
   return false;
 }
 
+function readZoomRange(stream: MediaStream | null): ZoomRange {
+  const track = stream?.getVideoTracks()[0] as CameraControlTrack | undefined;
+  const zoom = track?.getCapabilities?.()?.zoom;
+  if (!track || !zoom || !Number.isFinite(zoom.min) || !Number.isFinite(zoom.max) || zoom.max <= zoom.min) {
+    return { min: 1, max: 3, step: 0.05, supported: false };
+  }
+  return { min: zoom.min, max: zoom.max, step: zoom.step || 0.05, supported: true };
+}
+
+async function applyCameraZoom(stream: MediaStream | null, value: number) {
+  const track = stream?.getVideoTracks()[0] as CameraControlTrack | undefined;
+  if (!track || track.readyState !== "live") return false;
+  const range = readZoomRange(stream);
+  if (!range.supported) return false;
+  const zoom = clamp(value, range.min, range.max);
+  try {
+    await track.applyConstraints({ advanced: [{ zoom } as MediaTrackConstraintSet] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number, deep = false): ScanResult | null {
   const side = Math.min(w, h);
   const center: [number, number, number, number] = [Math.round((w - side) / 2), Math.round((h - side) / 2), side, side];
