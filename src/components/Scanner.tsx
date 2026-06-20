@@ -689,6 +689,7 @@ export function Scanner({
               boxVisibleRef.current = true;
               lastBoxUpdateRef.current = now;
               setQrBox(box);
+              autoFrameQr(box, now);
             }
           } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
             boxVisibleRef.current = false;
