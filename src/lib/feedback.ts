@@ -92,28 +92,27 @@ export const sfx = {
     vibrate([70, 40, 70]);
   },
   tick() {
-    playToneSequence([{ type: "triangle", frequency: 600, at: 0, duration: 0.025, gain: 0.018 }]);
-    vibrate(6);
+    playToneSequence([{ type: "triangle", frequency: 600, at: 0, duration: 0.022, gain: 0.014 }]);
+    vibrate(4);
   },
   speedTier(tier: "Gentle" | "Normal" | "Fast" | "Turbo") {
     const tones: Record<typeof tier, Tone[]> = {
-      Gentle: [{ type: "sine", frequency: 440, at: 0, duration: 0.09 }],
-      Normal: [{ type: "sine", frequency: 560, at: 0, duration: 0.09 }],
+      Gentle: [{ type: "sine", frequency: 440, at: 0, duration: 0.07 }],
+      Normal: [{ type: "sine", frequency: 560, at: 0, duration: 0.07 }],
       Fast: [
-        { type: "triangle", frequency: 680, at: 0, duration: 0.06 },
-        { type: "triangle", frequency: 820, at: 0.07, duration: 0.06 },
+        { type: "triangle", frequency: 680, at: 0, duration: 0.05 },
+        { type: "triangle", frequency: 820, at: 0.06, duration: 0.05 },
       ],
       Turbo: [
-        { type: "square", frequency: 760, at: 0, duration: 0.05, gain: 0.025 },
-        { type: "square", frequency: 940, at: 0.06, duration: 0.05, gain: 0.025 },
-        { type: "square", frequency: 1120, at: 0.12, duration: 0.07, gain: 0.025 },
+        { type: "square", frequency: 760, at: 0, duration: 0.04, gain: 0.022 },
+        { type: "square", frequency: 1060, at: 0.05, duration: 0.05, gain: 0.022 },
       ],
     };
     const patterns: Record<typeof tier, VibratePattern> = {
-      Gentle: 12,
-      Normal: [14, 30, 14],
-      Fast: [18, 24, 18, 24, 18],
-      Turbo: [30, 20, 30, 20, 50],
+      Gentle: 8,
+      Normal: 12,
+      Fast: [10, 18, 10],
+      Turbo: [14, 14, 18],
     };
     playToneSequence(tones[tier]);
     vibrate(patterns[tier]);
