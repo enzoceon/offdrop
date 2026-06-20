@@ -297,6 +297,7 @@ export function Scanner({
   stopRequestKey = 0,
   onStopRequestComplete,
   onBusyChange,
+  visible = true,
 }: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -315,6 +316,11 @@ export function Scanner({
   );
   const facingRef = useRef<"environment" | "user">("environment");
   const doneUrlRef = useRef<string | null>(null);
+  const progressPendingRef = useRef({ have: 0, total: 0 });
+  const progressCommitRef = useRef(0);
+  const zoomHideRef = useRef<number>(0);
+  const pinchRef = useRef<{ distance: number; zoom: number; center: PanPoint } | null>(null);
+  const panRef = useRef<{ pointerId: number; point: PanPoint; offset: PanPoint } | null>(null);
 
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -328,6 +334,12 @@ export function Scanner({
   const [done, setDone] = useState<DonePreview | null>(null);
   const [facing, setFacing] = useState<"environment" | "user">("environment");
   const [focusing, setFocusing] = useState(false);
+  const [flipping, setFlipping] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [zoomRange, setZoomRange] = useState<ZoomRange>({ min: 1, max: 3, step: 0.05, supported: false });
+  const [zoomVisible, setZoomVisible] = useState(false);
+  const [pan, setPan] = useState<PanPoint>({ x: 0, y: 0 });
 
   async function start(facingMode: "environment" | "user" = facingRef.current, force = false) {
     if (!force && (active || starting || stopping)) return;
