@@ -862,6 +862,7 @@ export function Scanner({
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
       <div
         className={`glass-strong relative mx-auto flex w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl ${done ? "order-2 mt-3" : ""}`}
+        data-camera-gesture-zone="true"
         onPointerDown={handleCameraPointerDown}
         onPointerMove={handleCameraPointerMove}
         onPointerUp={handleCameraPointerUp}
