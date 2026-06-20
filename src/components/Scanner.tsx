@@ -6,7 +6,7 @@ import {
   CheckCircle2,
   Loader2,
   ScanLine,
-  RefreshCw,
+  SwitchCamera,
   Focus,
   Music2,
   FileText,
