@@ -7,6 +7,7 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
+import { createClientOnlyFn } from "@tanstack/react-start";
 import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
@@ -22,6 +23,11 @@ const themeInitScript = `
     document.documentElement.style.colorScheme = dark ? "dark" : "light";
   } catch (_) {}
 })();`;
+
+const registerPwaOnClient = createClientOnlyFn(async () => {
+  const { registerAppServiceWorker } = await import("../lib/pwa.client");
+  await registerAppServiceWorker();
+});
 
 function NotFoundComponent() {
   return (
@@ -194,7 +200,7 @@ function RootShell({ children }: { children: ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   useEffect(() => {
-    void import("../lib/pwa.client").then((m) => m.registerAppServiceWorker());
+    void registerPwaOnClient();
   }, []);
 
   return (
