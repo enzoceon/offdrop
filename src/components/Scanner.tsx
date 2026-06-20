@@ -740,6 +740,7 @@ export function Scanner({
           <div className="mt-2 truncate text-center text-[10px] text-muted-foreground">
             {scanInfo ? scanInfo.name : "Position the camera toward the qr code accurately"}
           </div>
+          <AnimatedPercent value={pct} />
         </div>
       )}
     </div>
