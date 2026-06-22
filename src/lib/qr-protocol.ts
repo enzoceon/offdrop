@@ -80,9 +80,10 @@ export interface ChunkPlan {
   dataFrames: string[];
 }
 
-// 300 raw bytes -> 400 base64 chars + small text header = ~414 chars per QR,
-// which fits comfortably inside QR @ EC level M and stays decodable on phones.
-const RAW_CHUNK_BYTES = 300;
+// 700 raw bytes -> 936 base64 chars + small text header. With auto-sized
+// square QR modules at EC level M this is still less dense than the previous
+// forced high-version QR, while cutting the number of frames dramatically.
+const RAW_CHUNK_BYTES = 700;
 
 export interface PlanInput {
   name: string;
@@ -189,7 +190,7 @@ export const PRACTICAL_LIMIT_BYTES = 2 * 1024 * 1024; // 2 MB
 
 // How often to interleave a header frame in the playback sequence so a receiver
 // joining mid-stream can latch onto the transfer quickly.
-export const HEADER_EVERY = 6;
+export const HEADER_EVERY = 18;
 
 export interface Slot {
   text: string;

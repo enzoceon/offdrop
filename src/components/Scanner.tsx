@@ -32,6 +32,7 @@ interface Transfer {
 type Point = { x: number; y: number };
 type QrBox = { w: number; h: number; corners: [Point, Point, Point, Point] };
 type ScanResult = { data: string; corners: [Point, Point, Point, Point] };
+type ViewTransform = { scale: number; x: number; y: number };
 type DonePreview = {
   name: string;
   mime: string;
@@ -50,9 +51,9 @@ type ScannerProps = {
 };
 
 const CAMERA_TRANSITION_MS = 180;
-const DECODE_INTERVAL_MS = 64;
-const DECODE_MAX_EDGE = 720;
-const PROGRESS_COMMIT_MS = 120;
+const DECODE_INTERVAL_MS = 42;
+const DECODE_MAX_EDGE = 880;
+const PROGRESS_COMMIT_MS = 180;
 const SEEN_CLEANUP_MS = 1800;
 const ZOOM_HIDE_MS = 1600;
 
@@ -197,7 +198,7 @@ function readZoomRange(stream: MediaStream | null): ZoomRange {
   if (!track || !zoom || !Number.isFinite(zoom.min) || !Number.isFinite(zoom.max) || zoom.max <= zoom.min) {
     return { min: 1, max: 3, step: 0.05, supported: false };
   }
-  return { min: zoom.min, max: zoom.max, step: zoom.step || 0.05, supported: true };
+  return { min: zoom.min, max: Math.min(zoom.max, Math.max(zoom.min + 0.5, 4.5)), step: zoom.step || 0.05, supported: true };
 }
 
 async function applyCameraZoom(stream: MediaStream | null, value: number) {
@@ -242,6 +243,29 @@ function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number, deep = fa
   return null;
 }
 
+function drawVideoFrame(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  w: number,
+  h: number,
+  transform: ViewTransform,
+) {
+  const sourceW = video.videoWidth;
+  const sourceH = video.videoHeight;
+  if (transform.scale <= 1.01) {
+    ctx.drawImage(video, 0, 0, w, h);
+    return;
+  }
+  const cropW = sourceW / transform.scale;
+  const cropH = sourceH / transform.scale;
+  const rect = video.getBoundingClientRect();
+  const panX = rect.width ? (transform.x / rect.width) * cropW : 0;
+  const panY = rect.height ? (transform.y / rect.height) * cropH : 0;
+  const sx = clamp(sourceW / 2 - cropW / 2 - panX, 0, sourceW - cropW);
+  const sy = clamp(sourceH / 2 - cropH / 2 - panY, 0, sourceH - cropH);
+  ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, w, h);
+}
+
 function mediaLabel(mime?: string) {
   if (!mime) return "file";
   if (mime.startsWith("image/")) return "photo";
@@ -273,30 +297,9 @@ async function detectAspectRatio(blob: Blob, mime: string, url: string): Promise
 }
 
 function AnimatedPercent({ value }: { value: number }) {
-  const [display, setDisplay] = useState(value);
-  const fromRef = useRef(value);
-
-  useEffect(() => {
-    const from = fromRef.current;
-    const to = value;
-    const start = performance.now();
-    const duration = 420;
-    let frame = 0;
-    const animate = (now: number) => {
-      const t = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - t, 3);
-      const next = from + (to - from) * eased;
-      setDisplay(next);
-      if (t < 1) frame = requestAnimationFrame(animate);
-      else fromRef.current = to;
-    };
-    frame = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(frame);
-  }, [value]);
-
   return (
     <div className="mt-3 text-center text-5xl font-medium leading-none tabular-nums text-foreground sm:text-6xl">
-      {Math.round(display)}%
+      {Math.round(value)}%
     </div>
   );
 }
@@ -332,7 +335,12 @@ export function Scanner({
   const zoomHideRef = useRef<number>(0);
   const pinchRef = useRef<{ distance: number; zoom: number; center: PanPoint } | null>(null);
   const panRef = useRef<{ pointerId: number; point: PanPoint; offset: PanPoint } | null>(null);
-  const lastAutoZoomRef = useRef(0);
+  const lastAutoFrameRef = useRef(0);
+  const lastVisualZoomRef = useRef(0);
+  const trackingRef = useRef(false);
+  const zoomRef = useRef(1);
+  const zoomRangeRef = useRef<ZoomRange>({ min: 1, max: 3, step: 0.05, supported: false });
+  const panRefState = useRef<PanPoint>({ x: 0, y: 0 });
 
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -345,7 +353,7 @@ export function Scanner({
   const [qrBox, setQrBox] = useState<QrBox | null>(null);
   const [done, setDone] = useState<DonePreview | null>(null);
   const [facing, setFacing] = useState<"environment" | "user">("environment");
-  const [focusing, setFocusing] = useState(false);
+  const [tracking, setTracking] = useState(false);
   const [flipping, setFlipping] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -359,18 +367,24 @@ export function Scanner({
     zoomHideRef.current = window.setTimeout(() => setZoomVisible(false), ZOOM_HIDE_MS);
   }
 
-  function setVisualZoom(next: number, center?: PanPoint) {
-    const value = clamp(next, zoomRange.min, zoomRange.max);
+  function setVisualZoom(next: number, center?: PanPoint, immediate = false) {
+    const range = zoomRangeRef.current;
+    const value = clamp(next, range.min, range.max);
+    zoomRef.current = value;
     setZoom(value);
+    let nextPan = panRefState.current;
     if (center) {
       const box = videoRef.current?.getBoundingClientRect();
       if (box) {
-        const dx = (box.width / 2 - (center.x - box.left)) * (value - 1) * 0.08;
-        const dy = (box.height / 2 - (center.y - box.top)) * (value - 1) * 0.08;
-        setPan((p) => ({ x: clamp(p.x + dx, -42, 42), y: clamp(p.y + dy, -42, 42) }));
+        const maxX = Math.max(0, (box.width * (value - 1)) / 2);
+        const maxY = Math.max(0, (box.height * (value - 1)) / 2);
+        const dx = (box.width / 2 - (center.x - box.left)) * 0.22;
+        const dy = (box.height / 2 - (center.y - box.top)) * 0.22;
+        nextPan = { x: clamp(nextPan.x + dx, -maxX, maxX), y: clamp(nextPan.y + dy, -maxY, maxY) };
+        panRefState.current = nextPan;
+        setPan(nextPan);
       }
     }
-    void applyCameraZoom(streamRef.current, value);
     showZoomHud();
   }
 
@@ -394,8 +408,11 @@ export function Scanner({
       const stream = await openCameraStream(facingMode);
       streamRef.current = stream;
       const range = readZoomRange(stream);
+      zoomRangeRef.current = range;
       setZoomRange(range);
+      zoomRef.current = range.min;
       setZoom(range.min);
+      panRefState.current = { x: 0, y: 0 };
       setPan({ x: 0, y: 0 });
       setZoomVisible(false);
       if (videoRef.current) {
@@ -443,9 +460,12 @@ export function Scanner({
     setQrBox(null);
     setScanInfo(null);
     setProgress({ have: 0, total: 0 });
-    setFocusing(false);
+    trackingRef.current = false;
+    setTracking(false);
     setFlipping(false);
     setZoomVisible(false);
+    zoomRef.current = zoomRangeRef.current.min;
+    panRefState.current = { x: 0, y: 0 };
     setPan({ x: 0, y: 0 });
     window.clearTimeout(zoomHideRef.current);
     boxVisibleRef.current = false;
@@ -487,8 +507,11 @@ export function Scanner({
       facingRef.current = next;
       setFacing(next);
       const range = readZoomRange(stream);
+      zoomRangeRef.current = range;
       setZoomRange(range);
+      zoomRef.current = range.min;
       setZoom(range.min);
+      panRefState.current = { x: 0, y: 0 };
       setPan({ x: 0, y: 0 });
       if (video) {
         video.srcObject = stream;
@@ -509,66 +532,34 @@ export function Scanner({
     }
   }
 
-  async function restartCameraForFocus() {
-    const video = videoRef.current;
-    if (!video) return false;
-    scanningRef.current = false;
-    cancelAnimationFrame(rafRef.current);
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    const stream = await openCameraStream(facingRef.current);
-    streamRef.current = stream;
-    const range = readZoomRange(stream);
-    setZoomRange(range);
-    setZoom(range.min);
-    setPan({ x: 0, y: 0 });
-    video.srcObject = stream;
-    await waitForVideoMetadata(video);
-    await video.play();
-    await waitForUsableVideo(video);
-    void applyCameraFocus(stream, ["continuous"]);
-    if (range.supported) void applyCameraZoom(stream, range.min);
-    scanningRef.current = true;
-    lastDecodeRef.current = 0;
-    tick();
-    return true;
-  }
-
   async function autofocusCamera() {
-    if (!active || stopping || starting || focusing) return;
-    setFocusing(true);
+    if (!active || stopping || starting) return;
+    const next = !trackingRef.current;
+    trackingRef.current = next;
+    setTracking(next);
     vibrate(18);
-    try {
-      const focused = await applyCameraFocus(streamRef.current, ["single-shot", "continuous"]);
-      if (!focused) await restartCameraForFocus();
-      vibrate([10, 30, 10]);
-    } catch {
-      try {
-        await restartCameraForFocus();
-      } catch {
-        /* Keep native camera focus running if the browser blocks manual focus control. */
-      }
-    } finally {
-      setFocusing(false);
+    if (next) {
+      void applyCameraFocus(streamRef.current, ["continuous", "single-shot"]);
+    } else {
+      setVisualZoom(zoomRangeRef.current.min, undefined, true);
+      panRefState.current = { x: 0, y: 0 };
+      setPan({ x: 0, y: 0 });
     }
   }
 
   function handleCameraPointerDown(event: PointerEvent<HTMLDivElement>) {
     if (!active) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    panRef.current = { pointerId: event.pointerId, point: { x: event.clientX, y: event.clientY }, offset: pan };
+    panRef.current = { pointerId: event.pointerId, point: { x: event.clientX, y: event.clientY }, offset: { x: zoomRef.current, y: 0 } };
     showZoomHud();
   }
 
   function handleCameraPointerMove(event: PointerEvent<HTMLDivElement>) {
     if (!active) return;
     const currentPan = panRef.current;
-    if (!currentPan || currentPan.pointerId !== event.pointerId || zoom <= zoomRange.min + 0.01) return;
-    const next = {
-      x: clamp(currentPan.offset.x + (event.clientX - currentPan.point.x), -60, 60),
-      y: clamp(currentPan.offset.y + (event.clientY - currentPan.point.y), -60, 60),
-    };
-    setPan(next);
-    showZoomHud();
+    if (!currentPan || currentPan.pointerId !== event.pointerId) return;
+    const delta = (event.clientX - currentPan.point.x - (event.clientY - currentPan.point.y) * 0.35) / 180;
+    setVisualZoom(currentPan.offset.x + delta, { x: event.clientX, y: event.clientY });
   }
 
   function handleCameraPointerUp(event: PointerEvent<HTMLDivElement>) {
@@ -608,7 +599,7 @@ export function Scanner({
   }
 
   function autoFrameQr(box: QrBox, now: number) {
-    if (now - lastAutoZoomRef.current < 700 || focusing || flipping) return;
+    if (!trackingRef.current || now - lastAutoFrameRef.current < 110 || flipping) return;
     const xs = box.corners.map((p) => p.x);
     const ys = box.corners.map((p) => p.y);
     const minX = Math.min(...xs);
@@ -619,15 +610,26 @@ export function Scanner({
     const qrH = Math.max(1, maxY - minY);
     const frameSide = Math.min(box.w, box.h);
     const currentFill = Math.max(qrW, qrH) / frameSide;
-    const targetFill = 0.78;
-    if (Math.abs(currentFill - targetFill) < 0.08) return;
-    const next = zoom * clamp(targetFill / currentFill, 0.86, 1.16);
-    lastAutoZoomRef.current = now;
+    const targetFill = 0.74;
+    const currentZoom = zoomRef.current;
+    const next = currentZoom * clamp(targetFill / currentFill, 0.9, 1.12);
+    lastAutoFrameRef.current = now;
     const rect = videoRef.current?.getBoundingClientRect();
-    setVisualZoom(next, rect ? {
-      x: rect.left + ((minX + maxX) / 2 / box.w) * rect.width,
-      y: rect.top + ((minY + maxY) / 2 / box.h) * rect.height,
-    } : undefined);
+    if (rect) {
+      const centerX = ((minX + maxX) / 2 / box.w) * rect.width;
+      const centerY = ((minY + maxY) / 2 / box.h) * rect.height;
+      const maxXPan = Math.max(0, (rect.width * (zoomRef.current - 1)) / 2);
+      const maxYPan = Math.max(0, (rect.height * (zoomRef.current - 1)) / 2);
+      const nextPan = {
+        x: clamp(panRefState.current.x + (rect.width / 2 - centerX) * 0.34, -maxXPan, maxXPan),
+        y: clamp(panRefState.current.y + (rect.height / 2 - centerY) * 0.34, -maxYPan, maxYPan),
+      };
+      panRefState.current = nextPan;
+      setPan(nextPan);
+      setVisualZoom(next, undefined);
+    } else {
+      setVisualZoom(next);
+    }
   }
 
   function clearDonePreview() {
@@ -689,7 +691,8 @@ export function Scanner({
         if (canvas.height !== h) canvas.height = h;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (ctx) {
-          ctx.drawImage(video, 0, 0, w, h);
+          const transform = { scale: zoomRef.current, ...panRefState.current };
+          drawVideoFrame(ctx, video, w, h, transform);
           const deepScan = !boxVisibleRef.current && now - lastBoxUpdateRef.current > 420;
           const code = decodeQr(ctx, w, h, deepScan);
           frameErrorCountRef.current = 0;
@@ -884,7 +887,7 @@ export function Scanner({
           className="h-full w-full object-cover"
           style={{
             display: active || starting ? "block" : "none",
-            transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoomRange.supported ? 1 : zoom})`,
+            transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
             transition: flipping ? "opacity 0.16s ease, transform 0.16s ease" : "transform 0.12s ease-out",
           }}
         />
@@ -1052,12 +1055,13 @@ export function Scanner({
             </button>
             <button
               onClick={() => void autofocusCamera()}
-              disabled={stopping || starting || focusing}
+              disabled={stopping || starting}
               aria-label="Focus camera"
               title="Focus camera"
-              className="glass grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-70 sm:h-14 sm:w-14"
+              aria-pressed={tracking}
+              className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-70 sm:h-14 sm:w-14 ${tracking ? "bg-primary text-primary-foreground shadow-lg shadow-primary/30" : "glass"}`}
             >
-              <Focus className={`h-4 w-4 sm:h-5 sm:w-5 ${focusing ? "animate-pulse text-primary" : ""}`} strokeWidth={2.2} />
+              <Focus className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
             </button>
             <button
               onClick={() => void stop(true)}
