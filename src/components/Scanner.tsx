@@ -345,6 +345,7 @@ export function Scanner({
   const panRef = useRef<{ pointerId: number; point: PanPoint; offset: PanPoint } | null>(null);
   const lastAutoFrameRef = useRef(0);
   const lastVisualZoomRef = useRef(0);
+  const lastFocusPointRef = useRef(0);
   const trackingRef = useRef(false);
   const zoomRef = useRef(1);
   const zoomRangeRef = useRef<ZoomRange>({ min: 1, max: 3, step: 0.05, supported: false });
@@ -626,6 +627,13 @@ export function Scanner({
     if (rect) {
       const centerX = ((minX + maxX) / 2 / box.w) * rect.width;
       const centerY = ((minY + maxY) / 2 / box.h) * rect.height;
+      if (now - lastFocusPointRef.current > 650) {
+        lastFocusPointRef.current = now;
+        void applyCameraFocus(streamRef.current, ["continuous", "single-shot"], {
+          x: (minX + maxX) / 2 / box.w,
+          y: (minY + maxY) / 2 / box.h,
+        });
+      }
       const maxXPan = Math.max(0, (rect.width * (zoomRef.current - 1)) / 2);
       const maxYPan = Math.max(0, (rect.height * (zoomRef.current - 1)) / 2);
       const nextPan = {
