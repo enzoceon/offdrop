@@ -332,6 +332,7 @@ export function Scanner({
   const boxVisibleRef = useRef(false);
   const lastBoxUpdateRef = useRef(0);
   const frameErrorCountRef = useRef(0);
+  const decodeFrameRef = useRef(0);
   const stopRef = useRef<(showStopping?: boolean, reason?: "manual" | "internal") => Promise<void>>(
     async () => {},
   );
@@ -707,9 +708,10 @@ export function Scanner({
         if (canvas.height !== h) canvas.height = h;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (ctx) {
+          decodeFrameRef.current += 1;
           const transform = { scale: zoomRef.current, ...panRefState.current };
           drawVideoFrame(ctx, video, w, h, transform);
-          const deepScan = !boxVisibleRef.current && now - lastBoxUpdateRef.current > 420;
+          const deepScan = !boxVisibleRef.current ? decodeFrameRef.current % 3 === 0 : decodeFrameRef.current % 14 === 0;
           const code = decodeQr(ctx, w, h, deepScan);
           frameErrorCountRef.current = 0;
           if (code?.data) {
