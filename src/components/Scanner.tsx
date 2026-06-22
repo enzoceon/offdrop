@@ -33,6 +33,7 @@ type Point = { x: number; y: number };
 type QrBox = { w: number; h: number; corners: [Point, Point, Point, Point] };
 type ScanResult = { data: string; corners: [Point, Point, Point, Point] };
 type ViewTransform = { scale: number; x: number; y: number };
+type FocusPoint = { x: number; y: number };
 type DonePreview = {
   name: string;
   mime: string;
@@ -175,7 +176,7 @@ async function openCameraStream(facingMode: "environment" | "user") {
   throw lastError instanceof Error ? lastError : new Error("Camera permission is unavailable in this browser.");
 }
 
-async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] = ["single-shot", "continuous"]) {
+async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] = ["single-shot", "continuous"], point?: FocusPoint) {
   const track = stream?.getVideoTracks()[0] as CameraControlTrack | undefined;
   if (!track || track.readyState !== "live") return false;
   const capabilities = track.getCapabilities?.() as CameraControlCapabilities | undefined;
@@ -183,7 +184,14 @@ async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] =
   const candidates = availableModes.length ? modes.filter((mode) => availableModes.includes(mode)) : modes;
   for (const mode of candidates) {
     try {
-      await track.applyConstraints({ advanced: [{ focusMode: mode } as MediaTrackConstraintSet] });
+      await track.applyConstraints({
+        advanced: [
+          {
+            focusMode: mode,
+            ...(point ? { pointsOfInterest: [{ x: clamp(point.x, 0, 1), y: clamp(point.y, 0, 1) }] } : {}),
+          } as MediaTrackConstraintSet,
+        ],
+      });
       return true;
     } catch {
       /* Try the next browser-supported focus mode. */
