@@ -65,10 +65,10 @@ function drawRoundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: n
 }
 
 function renderRoundedQr(text: string) {
-  const qr = QRCode.create(text, { errorCorrectionLevel: "Q", version: 20 });
+  const qr = QRCode.create(text, { errorCorrectionLevel: "M" });
   const canvas = document.createElement("canvas");
-  const width = 820;
-  const margin = 2;
+  const width = 960;
+  const margin = 4;
   const count = qr.modules.size;
   const cell = width / (count + margin * 2);
   canvas.width = width;
@@ -78,7 +78,7 @@ function renderRoundedQr(text: string) {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, width, width);
   ctx.fillStyle = "#000000";
-  const radius = Math.max(0.5, cell * 0.12);
+  const radius = Math.max(0.25, cell * 0.04);
   for (let row = 0; row < count; row++) {
     for (let col = 0; col < count; col++) {
       if (!qr.modules.get(row, col)) continue;
