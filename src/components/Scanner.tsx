@@ -1104,7 +1104,7 @@ export function Scanner({
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="order-3 mx-auto mt-10 w-full max-w-sm animate-fade-up">
+        <div className={`order-3 w-full animate-fade-up ${fullscreen ? "fixed inset-x-0 top-[max(0.75rem,env(safe-area-inset-top))] z-50 mx-auto max-w-sm px-5" : "mx-auto mt-10 max-w-sm"}`}>
           <div className="flex items-center justify-center gap-2 text-center text-xs">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
             <span className="min-w-0 truncate text-center font-semibold">
