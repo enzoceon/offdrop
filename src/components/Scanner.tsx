@@ -879,10 +879,16 @@ export function Scanner({
   const label = mediaLabel(scanInfo?.mime);
   const containerAspect = done ? Math.min(2.2, Math.max(0.55, done.aspectRatio)) : 1;
 
+  const fullscreen = active && !done;
+
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
       <div
-        className={`glass-strong relative mx-auto flex w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl ${done ? "order-2 mt-3" : ""}`}
+        className={`glass-strong relative flex items-center justify-center overflow-hidden ${
+          fullscreen
+            ? "fixed inset-0 z-40 h-[100dvh] w-screen max-w-none rounded-none"
+            : "mx-auto w-full max-w-sm rounded-2xl"
+        } ${done ? "order-2 mt-3" : ""}`}
         data-camera-gesture-zone="true"
         onPointerDown={handleCameraPointerDown}
         onPointerMove={handleCameraPointerMove}
@@ -893,7 +899,7 @@ export function Scanner({
         onTouchEnd={handleCameraTouchEnd}
         onWheel={handleWheelZoom}
         style={{
-          aspectRatio: `${containerAspect} / 1`,
+          aspectRatio: fullscreen ? "auto" : `${containerAspect} / 1`,
           touchAction: active ? "none" : "manipulation",
           transition: "aspect-ratio 0.55s cubic-bezier(0.2, 0.8, 0.2, 1)",
         }}
@@ -1050,7 +1056,7 @@ export function Scanner({
         </div>
       )}
 
-      <div className={`${done ? "order-1 mt-0" : "mt-3"} flex items-center justify-center gap-2`}>
+      <div className={`${done ? "order-1 mt-0" : "mt-3"} flex items-center justify-center gap-2 ${fullscreen ? "fixed inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 px-5" : ""}`}>
         {!active && !stopping ? (
           <button
             onClick={() => void start()}
@@ -1098,7 +1104,7 @@ export function Scanner({
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="order-3 mx-auto mt-10 w-full max-w-sm animate-fade-up">
+        <div className={`order-3 w-full animate-fade-up ${fullscreen ? "fixed inset-x-0 top-[max(0.75rem,env(safe-area-inset-top))] z-50 mx-auto max-w-sm rounded-2xl bg-background/55 px-4 py-2.5 backdrop-blur-md" : "mx-auto mt-10 max-w-sm"}`}>
           <div className="flex items-center justify-center gap-2 text-center text-xs">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
             <span className="min-w-0 truncate text-center font-semibold">
