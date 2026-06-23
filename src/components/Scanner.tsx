@@ -1056,7 +1056,7 @@ export function Scanner({
         </div>
       )}
 
-      <div className={`${done ? "order-1 mt-0" : "mt-3"} flex items-center justify-center gap-2`}>
+      <div className={`${done ? "order-1 mt-0" : "mt-3"} flex items-center justify-center gap-2 ${fullscreen ? "fixed inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 px-5" : ""}`}>
         {!active && !stopping ? (
           <button
             onClick={() => void start()}
