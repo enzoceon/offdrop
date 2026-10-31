@@ -161,18 +161,6 @@
     0 16px 34px -18px oklch(0 0 0 / 0.55);
 }
 
-@utility history-delete {
-  background:
-    radial-gradient(circle at 35% 18%, color-mix(in oklab, var(--color-destructive) 16%, transparent), transparent 58%),
-    linear-gradient(145deg, oklch(1 0 0 / 0.44), oklch(1 0 0 / 0.14)),
-    color-mix(in oklab, var(--glass) 88%, transparent);
-  backdrop-filter: blur(26px) saturate(210%);
-  border: 1px solid color-mix(in oklab, var(--color-destructive) 22%, var(--glass-border));
-  box-shadow:
-    0 1px 0 oklch(1 0 0 / 0.5) inset,
-    0 14px 30px -18px color-mix(in oklab, var(--color-destructive) 55%, oklch(0 0 0));
-}
-
 @utility audio-tile {
   background:
     radial-gradient(circle at 35% 20%, color-mix(in oklab, var(--color-accent) 32%, transparent), transparent 56%),

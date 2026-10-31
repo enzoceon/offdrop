@@ -94,12 +94,10 @@ function Index() {
 
   useEffect(() => {
     const preventPinch = (event: TouchEvent) => {
-      if ((event.target as Element | null)?.closest?.("[data-camera-gesture-zone='true']")) return;
       if (event.touches.length > 1) event.preventDefault();
     };
     const preventGesture = (event: Event) => event.preventDefault();
     const preventCtrlWheel = (event: WheelEvent) => {
-      if ((event.target as Element | null)?.closest?.("[data-camera-gesture-zone='true']")) return;
       if (event.ctrlKey) event.preventDefault();
     };
     document.addEventListener("touchmove", preventPinch, { passive: false });
@@ -144,11 +142,10 @@ function Index() {
             stopRequestKey={stopRequestKey}
             onStopRequestComplete={completeScannerStopRequest}
             onBusyChange={setScannerBusy}
-            visible={tab === "scan"}
             onSaved={() => {
               setHistoryKey((k) => k + 1);
             }}
-            onCompleteAction={() => {}}
+            onCompleteAction={() => setTab("history")}
           />
 
         </section>

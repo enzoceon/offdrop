@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClientOnlyFn } from "@tanstack/react-start";
 import QRCode from "qrcode";
 import jsQR from "jsqr";
@@ -53,41 +53,6 @@ function formatDuration(seconds: number) {
   return mins ? `${mins}m ${secs.toString().padStart(2, "0")}s` : `${secs}s`;
 }
 
-function drawRoundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-  ctx.fill();
-}
-
-function renderRoundedQr(text: string) {
-  const qr = QRCode.create(text, { errorCorrectionLevel: "M" });
-  const canvas = document.createElement("canvas");
-  const width = 960;
-  const margin = 4;
-  const count = qr.modules.size;
-  const cell = width / (count + margin * 2);
-  canvas.width = width;
-  canvas.height = width;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) throw new Error("QR canvas is unavailable.");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, width, width);
-  ctx.fillStyle = "#000000";
-  const radius = Math.max(0.25, cell * 0.04);
-  for (let row = 0; row < count; row++) {
-    for (let col = 0; col < count; col++) {
-      if (!qr.modules.get(row, col)) continue;
-      drawRoundRect(ctx, (col + margin) * cell, (row + margin) * cell, cell + 0.03, cell + 0.03, radius);
-    }
-  }
-  return canvas;
-}
-
 export function Sender({ active = true }: { active?: boolean }) {
   const [file, setFile] = useState<File | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]);
@@ -100,7 +65,6 @@ export function Sender({ active = true }: { active?: boolean }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
   const [qrImage, setQrImage] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
   const [mediaPlaying, setMediaPlaying] = useState(false);
   const [mediaTime, setMediaTime] = useState(0);
   const [mediaDuration, setMediaDuration] = useState(0);
@@ -145,32 +109,21 @@ export function Sender({ active = true }: { active?: boolean }) {
     }
   }
 
-  function handleDragOver(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-    setDragging(true);
-  }
-
-  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
-  }
-
-  function handleDrop(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    setDragging(false);
-    const dropped = event.dataTransfer.files?.[0];
-    if (dropped) void onPick(dropped);
-  }
-
   // Render current QR
   useEffect(() => {
     if (chunks.length === 0) return;
     setQrError(null);
+    const canvas = document.createElement("canvas");
     const text = chunks[idx]?.text ?? "";
     if (!text) return;
-    Promise.resolve()
+    QRCode.toCanvas(canvas, text, {
+      errorCorrectionLevel: "Q",
+      version: 20,
+      margin: 2,
+      width: 820,
+      color: { dark: "#000000", light: "#ffffff" },
+    })
       .then(() => {
-        const canvas = renderRoundedQr(text);
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) throw new Error("QR verification canvas is unavailable.");
         const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -328,16 +281,11 @@ export function Sender({ active = true }: { active?: boolean }) {
 
   if (!file) {
     return (
-      <div
-        className={`mx-5 flex flex-1 flex-col items-center justify-center rounded-[2rem] px-5 transition-all ${dragging ? "glass-strong scale-[0.99]" : ""}`}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <div className={`animate-float mb-8 grid h-28 w-28 place-items-center rounded-[2rem] bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40 transition-transform ${dragging ? "scale-110" : ""}`}>
+      <div className="flex flex-1 flex-col items-center justify-center px-5">
+        <div className="animate-float mb-8 grid h-28 w-28 place-items-center rounded-[2rem] bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40">
           <Upload className="h-12 w-12 text-primary-foreground" strokeWidth={2} />
         </div>
-        <h2 className="text-display text-3xl">{dragging ? "Release to add" : "Drop a file"}</h2>
+        <h2 className="text-display text-3xl">Drop a file</h2>
         <p className="mt-2 max-w-xs text-center text-sm text-muted-foreground">
           Photos, videos, audio, documents — OFFDROP turns them into a private QR stream.
         </p>
@@ -519,17 +467,16 @@ export function Sender({ active = true }: { active?: boolean }) {
 
       {previewOpen && preview && canOpenPreview && (
         <div
-          className="fixed inset-0 z-[80] flex items-center justify-center bg-background/35 px-4 py-20 backdrop-blur-sm animate-fade-up"
+          className="fixed inset-0 z-[80] bg-background/35 backdrop-blur-sm animate-fade-up"
           role="dialog"
           aria-modal="true"
-          onClick={closePreview}
         >
-          <div className="contents" onClick={(event) => event.stopPropagation()}>
+          <div className="absolute inset-0 flex items-center justify-center px-4 py-20 sm:px-8">
             {file.type.startsWith("image/") && (
               <img
                 src={preview}
                 alt={file.name}
-                className="max-h-[calc(100dvh-6rem)] max-w-[calc(100vw-2rem)] rounded-xl object-contain shadow-2xl shadow-foreground/20"
+                className="block max-h-[calc(100dvh-6rem)] max-w-[calc(100vw-2rem)] rounded-xl object-contain shadow-2xl shadow-foreground/20"
               />
             )}
 
