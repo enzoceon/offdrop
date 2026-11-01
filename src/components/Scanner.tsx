@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent, type TouchEvent, type WheelEvent } from "react";
 import jsQR from "jsqr";
 import {
   Camera,
@@ -12,6 +12,7 @@ import {
   SwitchCamera,
   Music2,
   FileText,
+  X,
 } from "lucide-react";
 import {
   parseFrame,
@@ -31,6 +32,8 @@ interface Transfer {
 type Point = { x: number; y: number };
 type QrBox = { w: number; h: number; corners: [Point, Point, Point, Point] };
 type ScanResult = { data: string; corners: [Point, Point, Point, Point] };
+type ViewTransform = { scale: number; x: number; y: number };
+type FocusPoint = { x: number; y: number };
 type DonePreview = {
   name: string;
   mime: string;
@@ -45,16 +48,51 @@ type ScannerProps = {
   stopRequestKey?: number;
   onStopRequestComplete?: () => void;
   onBusyChange?: (busy: boolean) => void;
+  visible?: boolean;
 };
 
-const CAMERA_TRANSITION_MS = 320;
-const DECODE_INTERVAL_MS = 58;
-const DECODE_MAX_EDGE = 720;
+const CAMERA_TRANSITION_MS = 180;
+const DECODE_INTERVAL_MS = 42;
+const DECODE_MAX_EDGE = 880;
+const PROGRESS_COMMIT_MS = 180;
+const SEEN_CLEANUP_MS = 1800;
+const ZOOM_HIDE_MS = 1600;
 
 type FocusMode = "single-shot" | "continuous" | "manual";
-type FocusableVideoTrack = MediaStreamTrack & {
-  getCapabilities?: () => MediaTrackCapabilities & { focusMode?: FocusMode[] };
+type CameraSettingRange = { min: number; max: number; step?: number };
+type CameraControlCapabilities = MediaTrackCapabilities & {
+  focusMode?: FocusMode[];
+  zoom?: CameraSettingRange;
 };
+type CameraControlTrack = MediaStreamTrack & {
+  getCapabilities?: () => CameraControlCapabilities;
+};
+type ZoomRange = { min: number; max: number; step: number; supported: boolean };
+type PanPoint = { x: number; y: number };
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function vibrate(pattern: number | number[]) {
+  try {
+    if ("vibrate" in navigator) navigator.vibrate(pattern);
+  } catch {
+    /* ignore unavailable haptics */
+  }
+}
+
+function distance(a: PanPoint, b: PanPoint) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function midpoint(a: PanPoint, b: PanPoint): PanPoint {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
 
 function waitForVideoMetadata(video: HTMLVideoElement) {
   if (video.readyState >= video.HAVE_METADATA) return Promise.resolve();
@@ -105,8 +143,8 @@ function waitForUsableVideo(video: HTMLVideoElement) {
 }
 
 async function openCameraStream(facingMode: "environment" | "user") {
-  try {
-    return await navigator.mediaDevices.getUserMedia({
+  const attempts: MediaStreamConstraints[] = [
+    {
       video: {
         facingMode: { exact: facingMode },
         width: { ideal: 1280 },
@@ -114,9 +152,8 @@ async function openCameraStream(facingMode: "environment" | "user") {
         frameRate: { ideal: 30, max: 30 },
       },
       audio: false,
-    });
-  } catch {
-    return navigator.mediaDevices.getUserMedia({
+    },
+    {
       video: {
         facingMode: { ideal: facingMode },
         width: { ideal: 960 },
@@ -124,27 +161,66 @@ async function openCameraStream(facingMode: "environment" | "user") {
         frameRate: { ideal: 24, max: 30 },
       },
       audio: false,
-    });
+    },
+    { video: true, audio: false },
+  ];
+
+  let lastError: unknown;
+  for (const constraints of attempts) {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (error) {
+      lastError = error;
+    }
   }
+  throw lastError instanceof Error ? lastError : new Error("Camera permission is unavailable in this browser.");
 }
 
-async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] = ["single-shot", "continuous"]) {
-  const track = stream?.getVideoTracks()[0] as FocusableVideoTrack | undefined;
+async function applyCameraFocus(stream: MediaStream | null, modes: FocusMode[] = ["single-shot", "continuous"], point?: FocusPoint) {
+  const track = stream?.getVideoTracks()[0] as CameraControlTrack | undefined;
   if (!track || track.readyState !== "live") return false;
-  const capabilities = track.getCapabilities?.() as
-    | (MediaTrackCapabilities & { focusMode?: FocusMode[] })
-    | undefined;
+  const capabilities = track.getCapabilities?.() as CameraControlCapabilities | undefined;
   const availableModes = capabilities?.focusMode ?? [];
   const candidates = availableModes.length ? modes.filter((mode) => availableModes.includes(mode)) : modes;
   for (const mode of candidates) {
     try {
-      await track.applyConstraints({ advanced: [{ focusMode: mode } as MediaTrackConstraintSet] });
+      await track.applyConstraints({
+        advanced: [
+          {
+            focusMode: mode,
+            ...(point ? { pointsOfInterest: [{ x: clamp(point.x, 0, 1), y: clamp(point.y, 0, 1) }] } : {}),
+          } as MediaTrackConstraintSet,
+        ],
+      });
       return true;
     } catch {
       /* Try the next browser-supported focus mode. */
     }
   }
   return false;
+}
+
+function readZoomRange(stream: MediaStream | null): ZoomRange {
+  const track = stream?.getVideoTracks()[0] as CameraControlTrack | undefined;
+  const zoom = (track?.getCapabilities?.() as CameraControlCapabilities | undefined)?.zoom;
+  if (!track || !zoom || !Number.isFinite(zoom.min) || !Number.isFinite(zoom.max) || zoom.max <= zoom.min) {
+    return { min: 1, max: 3, step: 0.05, supported: false };
+  }
+  return { min: zoom.min, max: Math.min(zoom.max, Math.max(zoom.min + 0.5, 4.5)), step: zoom.step || 0.05, supported: true };
+}
+
+async function applyCameraZoom(stream: MediaStream | null, value: number) {
+  const track = stream?.getVideoTracks()[0] as CameraControlTrack | undefined;
+  if (!track || track.readyState !== "live") return false;
+  const range = readZoomRange(stream);
+  if (!range.supported) return false;
+  const zoom = clamp(value, range.min, range.max);
+  try {
+    await track.applyConstraints({ advanced: [{ zoom } as MediaTrackConstraintSet] });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number, deep = false): ScanResult | null {
@@ -173,6 +249,29 @@ function decodeQr(ctx: CanvasRenderingContext2D, w: number, h: number, deep = fa
     };
   }
   return null;
+}
+
+function drawVideoFrame(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  w: number,
+  h: number,
+  transform: ViewTransform,
+) {
+  const sourceW = video.videoWidth;
+  const sourceH = video.videoHeight;
+  if (transform.scale <= 1.01) {
+    ctx.drawImage(video, 0, 0, w, h);
+    return;
+  }
+  const cropW = sourceW / transform.scale;
+  const cropH = sourceH / transform.scale;
+  const rect = video.getBoundingClientRect();
+  const panX = rect.width ? (transform.x / rect.width) * cropW : 0;
+  const panY = rect.height ? (transform.y / rect.height) * cropH : 0;
+  const sx = clamp(sourceW / 2 - cropW / 2 - panX, 0, sourceW - cropW);
+  const sy = clamp(sourceH / 2 - cropH / 2 - panY, 0, sourceH - cropH);
+  ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, w, h);
 }
 
 function mediaLabel(mime?: string) {
@@ -206,30 +305,9 @@ async function detectAspectRatio(blob: Blob, mime: string, url: string): Promise
 }
 
 function AnimatedPercent({ value }: { value: number }) {
-  const [display, setDisplay] = useState(value);
-  const fromRef = useRef(value);
-
-  useEffect(() => {
-    const from = fromRef.current;
-    const to = value;
-    const start = performance.now();
-    const duration = 420;
-    let frame = 0;
-    const animate = (now: number) => {
-      const t = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - t, 3);
-      const next = from + (to - from) * eased;
-      setDisplay(next);
-      if (t < 1) frame = requestAnimationFrame(animate);
-      else fromRef.current = to;
-    };
-    frame = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(frame);
-  }, [value]);
-
   return (
     <div className="mt-3 text-center text-5xl font-medium leading-none tabular-nums text-foreground sm:text-6xl">
-      {Math.round(display)}%
+      {Math.round(value)}%
     </div>
   );
 }
@@ -240,6 +318,7 @@ export function Scanner({
   stopRequestKey = 0,
   onStopRequestComplete,
   onBusyChange,
+  visible = true,
 }: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -253,11 +332,25 @@ export function Scanner({
   const boxVisibleRef = useRef(false);
   const lastBoxUpdateRef = useRef(0);
   const frameErrorCountRef = useRef(0);
+  const decodeFrameRef = useRef(0);
   const stopRef = useRef<(showStopping?: boolean, reason?: "manual" | "internal") => Promise<void>>(
     async () => {},
   );
   const facingRef = useRef<"environment" | "user">("environment");
   const doneUrlRef = useRef<string | null>(null);
+  const progressPendingRef = useRef({ have: 0, total: 0 });
+  const progressCommitRef = useRef(0);
+  const lastSeenCleanupRef = useRef(0);
+  const zoomHideRef = useRef<number>(0);
+  const pinchRef = useRef<{ distance: number; zoom: number; center: PanPoint } | null>(null);
+  const panRef = useRef<{ pointerId: number; point: PanPoint; offset: PanPoint } | null>(null);
+  const lastAutoFrameRef = useRef(0);
+  const lastVisualZoomRef = useRef(0);
+  const lastFocusPointRef = useRef(0);
+  const trackingRef = useRef(false);
+  const zoomRef = useRef(1);
+  const zoomRangeRef = useRef<ZoomRange>({ min: 1, max: 3, step: 0.05, supported: false });
+  const panRefState = useRef<PanPoint>({ x: 0, y: 0 });
 
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -270,7 +363,40 @@ export function Scanner({
   const [qrBox, setQrBox] = useState<QrBox | null>(null);
   const [done, setDone] = useState<DonePreview | null>(null);
   const [facing, setFacing] = useState<"environment" | "user">("environment");
-  const [focusing, setFocusing] = useState(false);
+  const [tracking, setTracking] = useState(false);
+  const [flipping, setFlipping] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [zoomRange, setZoomRange] = useState<ZoomRange>({ min: 1, max: 3, step: 0.05, supported: false });
+  const [zoomVisible, setZoomVisible] = useState(false);
+  const [pan, setPan] = useState<PanPoint>({ x: 0, y: 0 });
+
+  function showZoomHud() {
+    setZoomVisible(true);
+    window.clearTimeout(zoomHideRef.current);
+    zoomHideRef.current = window.setTimeout(() => setZoomVisible(false), ZOOM_HIDE_MS);
+  }
+
+  function setVisualZoom(next: number, center?: PanPoint, immediate = false) {
+    const range = zoomRangeRef.current;
+    const value = clamp(next, range.min, range.max);
+    zoomRef.current = value;
+    setZoom(value);
+    let nextPan = panRefState.current;
+    if (center) {
+      const box = videoRef.current?.getBoundingClientRect();
+      if (box) {
+        const maxX = Math.max(0, (box.width * (value - 1)) / 2);
+        const maxY = Math.max(0, (box.height * (value - 1)) / 2);
+        const dx = (box.width / 2 - (center.x - box.left)) * 0.22;
+        const dy = (box.height / 2 - (center.y - box.top)) * 0.22;
+        nextPan = { x: clamp(nextPan.x + dx, -maxX, maxX), y: clamp(nextPan.y + dy, -maxY, maxY) };
+        panRefState.current = nextPan;
+        setPan(nextPan);
+      }
+    }
+    showZoomHud();
+  }
 
   async function start(facingMode: "environment" | "user" = facingRef.current, force = false) {
     if (!force && (active || starting || stopping)) return;
@@ -291,6 +417,14 @@ export function Scanner({
       }
       const stream = await openCameraStream(facingMode);
       streamRef.current = stream;
+      const range = readZoomRange(stream);
+      zoomRangeRef.current = range;
+      setZoomRange(range);
+      zoomRef.current = range.min;
+      setZoom(range.min);
+      panRefState.current = { x: 0, y: 0 };
+      setPan({ x: 0, y: 0 });
+      setZoomVisible(false);
       if (videoRef.current) {
         const video = videoRef.current;
         video.muted = true;
@@ -302,8 +436,9 @@ export function Scanner({
         await waitForUsableVideo(video);
       }
       void applyCameraFocus(stream, ["continuous"]);
+      if (range.supported) void applyCameraZoom(stream, range.min);
       const remaining = CAMERA_TRANSITION_MS - (performance.now() - startedAt);
-      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+      if (remaining > 0) await sleep(remaining);
       scanningRef.current = true;
       setActive(true);
       setStarting(false);
@@ -335,7 +470,14 @@ export function Scanner({
     setQrBox(null);
     setScanInfo(null);
     setProgress({ have: 0, total: 0 });
-    setFocusing(false);
+    trackingRef.current = false;
+    setTracking(false);
+    setFlipping(false);
+    setZoomVisible(false);
+    zoomRef.current = zoomRangeRef.current.min;
+    panRefState.current = { x: 0, y: 0 };
+    setPan({ x: 0, y: 0 });
+    window.clearTimeout(zoomHideRef.current);
     boxVisibleRef.current = false;
     cancelAnimationFrame(rafRef.current);
     // Release camera + decoder fully — fixes mobile lag on repeated start/stop
@@ -361,48 +503,149 @@ export function Scanner({
   stopRef.current = stop;
 
   async function flipCamera() {
-    if (!active || stopping || starting) return;
+    if (!active || stopping || starting || flipping) return;
     const next = facingRef.current === "environment" ? "user" : "environment";
-    await stop(false);
-    await start(next, true);
-  }
-
-  async function restartCameraForFocus() {
-    const video = videoRef.current;
-    if (!video) return false;
-    scanningRef.current = false;
-    cancelAnimationFrame(rafRef.current);
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    const stream = await openCameraStream(facingRef.current);
-    streamRef.current = stream;
-    video.srcObject = stream;
-    await waitForVideoMetadata(video);
-    await video.play();
-    await waitForUsableVideo(video);
-    void applyCameraFocus(stream, ["continuous"]);
-    scanningRef.current = true;
-    lastDecodeRef.current = 0;
-    tick();
-    return true;
+    setFlipping(true);
+    vibrate(12);
+    try {
+      const video = videoRef.current;
+      scanningRef.current = false;
+      cancelAnimationFrame(rafRef.current);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      const stream = await openCameraStream(next);
+      streamRef.current = stream;
+      facingRef.current = next;
+      setFacing(next);
+      const range = readZoomRange(stream);
+      zoomRangeRef.current = range;
+      setZoomRange(range);
+      zoomRef.current = range.min;
+      setZoom(range.min);
+      panRefState.current = { x: 0, y: 0 };
+      setPan({ x: 0, y: 0 });
+      if (video) {
+        video.srcObject = stream;
+        await waitForVideoMetadata(video);
+        await video.play();
+        await waitForUsableVideo(video);
+      }
+      void applyCameraFocus(stream, ["continuous"]);
+      if (range.supported) void applyCameraZoom(stream, range.min);
+      scanningRef.current = true;
+      lastDecodeRef.current = 0;
+      tick();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Camera could not flip. Try again.");
+    } finally {
+      await sleep(160);
+      setFlipping(false);
+    }
   }
 
   async function autofocusCamera() {
-    if (!active || stopping || starting || focusing) return;
-    setFocusing(true);
-    const startedAt = performance.now();
-    try {
-      const focused = await applyCameraFocus(streamRef.current, ["single-shot", "continuous"]);
-      if (!focused) await restartCameraForFocus();
-    } catch {
-      try {
-        await restartCameraForFocus();
-      } catch {
-        /* Keep native camera focus running if the browser blocks manual focus control. */
+    if (!active || stopping || starting) return;
+    const next = !trackingRef.current;
+    trackingRef.current = next;
+    setTracking(next);
+    vibrate(18);
+    if (next) {
+      void applyCameraFocus(streamRef.current, ["continuous", "single-shot"]);
+    } else {
+      setVisualZoom(zoomRangeRef.current.min, undefined, true);
+      panRefState.current = { x: 0, y: 0 };
+      setPan({ x: 0, y: 0 });
+    }
+  }
+
+  function handleCameraPointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (!active) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panRef.current = { pointerId: event.pointerId, point: { x: event.clientX, y: event.clientY }, offset: { x: zoomRef.current, y: 0 } };
+    showZoomHud();
+  }
+
+  function handleCameraPointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (!active) return;
+    const currentPan = panRef.current;
+    if (!currentPan || currentPan.pointerId !== event.pointerId) return;
+    const delta = (event.clientX - currentPan.point.x - (event.clientY - currentPan.point.y) * 0.35) / 180;
+    setVisualZoom(currentPan.offset.x + delta, { x: event.clientX, y: event.clientY });
+  }
+
+  function handleCameraPointerUp(event: PointerEvent<HTMLDivElement>) {
+    if (panRef.current?.pointerId === event.pointerId) panRef.current = null;
+  }
+
+  function handleCameraTouchStart(event: TouchEvent<HTMLDivElement>) {
+    if (!active) return;
+    if (event.touches.length === 2) {
+      const a = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+      const b = { x: event.touches[1].clientX, y: event.touches[1].clientY };
+      pinchRef.current = { distance: distance(a, b), zoom, center: midpoint(a, b) };
+      showZoomHud();
+    }
+  }
+
+  function handleCameraTouchMove(event: TouchEvent<HTMLDivElement>) {
+    if (!active || event.touches.length !== 2 || !pinchRef.current) return;
+    event.preventDefault();
+    const a = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+    const b = { x: event.touches[1].clientX, y: event.touches[1].clientY };
+    const ratio = distance(a, b) / Math.max(1, pinchRef.current.distance);
+    setVisualZoom(pinchRef.current.zoom * ratio, midpoint(a, b));
+  }
+
+  function handleCameraTouchEnd() {
+    pinchRef.current = null;
+  }
+
+  function handleWheelZoom(event: WheelEvent<HTMLDivElement>) {
+    if (!active || !event.ctrlKey) return;
+    event.preventDefault();
+    setVisualZoom(zoom + (event.deltaY < 0 ? zoomRange.step * 3 : -zoomRange.step * 3), {
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }
+
+  function autoFrameQr(box: QrBox, now: number) {
+    if (!trackingRef.current || now - lastAutoFrameRef.current < 110 || flipping) return;
+    const xs = box.corners.map((p) => p.x);
+    const ys = box.corners.map((p) => p.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const qrW = Math.max(1, maxX - minX);
+    const qrH = Math.max(1, maxY - minY);
+    const frameSide = Math.min(box.w, box.h);
+    const currentFill = Math.max(qrW, qrH) / frameSide;
+    const targetFill = 0.74;
+    const currentZoom = zoomRef.current;
+    const next = currentZoom * clamp(targetFill / currentFill, 0.9, 1.12);
+    lastAutoFrameRef.current = now;
+    const rect = videoRef.current?.getBoundingClientRect();
+    if (rect) {
+      const centerX = ((minX + maxX) / 2 / box.w) * rect.width;
+      const centerY = ((minY + maxY) / 2 / box.h) * rect.height;
+      if (now - lastFocusPointRef.current > 650) {
+        lastFocusPointRef.current = now;
+        void applyCameraFocus(streamRef.current, ["continuous", "single-shot"], {
+          x: (minX + maxX) / 2 / box.w,
+          y: (minY + maxY) / 2 / box.h,
+        });
       }
-    } finally {
-      const remaining = 1000 - (performance.now() - startedAt);
-      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
-      setFocusing(false);
+      const maxXPan = Math.max(0, (rect.width * (zoomRef.current - 1)) / 2);
+      const maxYPan = Math.max(0, (rect.height * (zoomRef.current - 1)) / 2);
+      const nextPan = {
+        x: clamp(panRefState.current.x + (rect.width / 2 - centerX) * 0.34, -maxXPan, maxXPan),
+        y: clamp(panRefState.current.y + (rect.height / 2 - centerY) * 0.34, -maxYPan, maxYPan),
+      };
+      panRefState.current = nextPan;
+      setPan(nextPan);
+      setVisualZoom(next, undefined);
+    } else {
+      setVisualZoom(next);
     }
   }
 
@@ -414,14 +657,16 @@ export function Scanner({
     setDone(null);
   }
 
-  function downloadDone() {
-    if (!done?.blob || !done.url) return;
+  async function downloadDone() {
+    if (!done?.blob || !done.url || downloading) return;
+    setDownloading(true);
     const a = document.createElement("a");
     a.href = done.url;
     a.download = done.name || "offdrop-file";
     a.click();
+    await sleep(1000);
     clearDonePreview();
-    onCompleteAction?.();
+    setDownloading(false);
   }
 
   async function shareDone() {
@@ -431,7 +676,7 @@ export function Scanner({
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: done.name });
       } else {
-        downloadDone();
+        void downloadDone();
         return;
       }
       clearDonePreview();
@@ -463,8 +708,10 @@ export function Scanner({
         if (canvas.height !== h) canvas.height = h;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (ctx) {
-          ctx.drawImage(video, 0, 0, w, h);
-          const deepScan = !boxVisibleRef.current && now - lastBoxUpdateRef.current > 420;
+          decodeFrameRef.current += 1;
+          const transform = { scale: zoomRef.current, ...panRefState.current };
+          drawVideoFrame(ctx, video, w, h, transform);
+          const deepScan = !boxVisibleRef.current ? decodeFrameRef.current % 3 === 0 : decodeFrameRef.current % 14 === 0;
           const code = decodeQr(ctx, w, h, deepScan);
           frameErrorCountRef.current = 0;
           if (code?.data) {
@@ -474,6 +721,7 @@ export function Scanner({
               boxVisibleRef.current = true;
               lastBoxUpdateRef.current = now;
               setQrBox(box);
+              autoFrameQr(box, now);
             }
           } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
             boxVisibleRef.current = false;
@@ -496,7 +744,13 @@ export function Scanner({
   }
 
   function updateProgress(t: Transfer) {
-    setProgress({ have: t.chunks.size, total: t.header.total });
+    const next = { have: t.chunks.size, total: t.header.total };
+    progressPendingRef.current = next;
+    const now = performance.now();
+    if (next.have === next.total || now - progressCommitRef.current > PROGRESS_COMMIT_MS) {
+      progressCommitRef.current = now;
+      setProgress(next);
+    }
   }
 
   function handleScan(payload: string) {
@@ -508,9 +762,10 @@ export function Scanner({
     const seenAt = lastSeenRef.current.get(seenKey);
     if (seenAt && now - seenAt < 80) return;
     lastSeenRef.current.set(seenKey, now);
-    if (lastSeenRef.current.size > 2000) {
+    if (lastSeenRef.current.size > 700 && now - lastSeenCleanupRef.current > SEEN_CLEANUP_MS) {
+      lastSeenCleanupRef.current = now;
       for (const [key, ts] of lastSeenRef.current) {
-        if (now - ts > 45000) lastSeenRef.current.delete(key);
+        if (now - ts > 16000 || lastSeenRef.current.size > 1400) lastSeenRef.current.delete(key);
       }
     }
 
@@ -607,9 +862,14 @@ export function Scanner({
     }
   }, [stopRequestKey, onStopRequestComplete]);
 
+  useEffect(() => {
+    if (!visible) clearDonePreview();
+  }, [visible]);
+
   useEffect(
     () => () => {
       void stopRef.current();
+      window.clearTimeout(zoomHideRef.current);
       if (doneUrlRef.current) URL.revokeObjectURL(doneUrlRef.current);
     },
     [],
@@ -619,12 +879,28 @@ export function Scanner({
   const label = mediaLabel(scanInfo?.mime);
   const containerAspect = done ? Math.min(2.2, Math.max(0.55, done.aspectRatio)) : 1;
 
+  const fullscreen = active && !done;
+
   return (
     <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
       <div
-        className={`glass-strong relative mx-auto flex w-full max-w-sm items-center justify-center overflow-hidden rounded-2xl ${done ? "order-2 mt-3" : ""}`}
+        className={`glass-strong relative flex items-center justify-center overflow-hidden ${
+          fullscreen
+            ? "fixed inset-0 z-40 h-[100dvh] w-screen max-w-none rounded-none"
+            : "mx-auto w-full max-w-sm rounded-2xl"
+        } ${done ? "order-2 mt-3" : ""}`}
+        data-camera-gesture-zone="true"
+        onPointerDown={handleCameraPointerDown}
+        onPointerMove={handleCameraPointerMove}
+        onPointerUp={handleCameraPointerUp}
+        onPointerCancel={handleCameraPointerUp}
+        onTouchStart={handleCameraTouchStart}
+        onTouchMove={handleCameraTouchMove}
+        onTouchEnd={handleCameraTouchEnd}
+        onWheel={handleWheelZoom}
         style={{
-          aspectRatio: `${containerAspect} / 1`,
+          aspectRatio: fullscreen ? "auto" : `${containerAspect} / 1`,
+          touchAction: active ? "none" : "manipulation",
           transition: "aspect-ratio 0.55s cubic-bezier(0.2, 0.8, 0.2, 1)",
         }}
       >
@@ -633,7 +909,11 @@ export function Scanner({
           playsInline
           muted
           className="h-full w-full object-cover"
-          style={{ display: active || starting ? "block" : "none" }}
+          style={{
+            display: active || starting ? "block" : "none",
+            transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
+            transition: flipping ? "opacity 0.16s ease, transform 0.16s ease" : "transform 0.12s ease-out",
+          }}
         />
         <canvas ref={canvasRef} className="hidden" />
 
@@ -686,22 +966,31 @@ export function Scanner({
                 <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
                 Received
               </div>
+              <button
+                type="button"
+                onClick={clearDonePreview}
+                className="glass absolute right-3 top-3 z-10 grid h-8 w-8 place-items-center rounded-full text-foreground active:scale-90"
+                aria-label="Close received preview"
+              >
+                <X className="h-3.5 w-3.5" strokeWidth={2.5} />
+              </button>
             </div>
             <div className="grid grid-cols-2 gap-2 border-t border-glass-border bg-background/50 p-2 backdrop-blur">
               <button
                 type="button"
                 onClick={() => void shareDone()}
-                className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-primary to-accent py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97]"
+                className="glass flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold active:scale-[0.97]"
               >
                 <Share2 className="h-4 w-4" />
                 Share
               </button>
               <button
                 type="button"
-                onClick={downloadDone}
-                className="glass flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold active:scale-[0.97]"
+                onClick={() => void downloadDone()}
+                disabled={downloading}
+                className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-primary to-accent py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97] disabled:opacity-85"
               >
-                <Download className="h-4 w-4" />
+                {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                 Download
               </button>
             </div>
@@ -731,6 +1020,32 @@ export function Scanner({
                 ))}
               </svg>
             )}
+            {flipping && (
+              <div className="pointer-events-none absolute inset-0 grid place-items-center bg-background/18 backdrop-blur-sm">
+                <div className="glass grid h-16 w-16 place-items-center rounded-2xl">
+                  <SwitchCamera className="h-7 w-7 animate-pulse text-primary" strokeWidth={2.4} />
+                </div>
+              </div>
+            )}
+            {zoomVisible && (
+              <div className="pointer-events-none absolute inset-x-6 bottom-5 flex items-center gap-3 rounded-full bg-background/70 px-4 py-2 backdrop-blur">
+                <span className="h-4 w-1 rounded-full bg-primary" />
+                <div className="flex h-6 flex-1 items-center gap-1.5 overflow-hidden">
+                  {Array.from({ length: 34 }).map((_, i) => {
+                    const activeTick = i / 33 <= (zoom - zoomRange.min) / Math.max(0.01, zoomRange.max - zoomRange.min);
+                    return (
+                      <span
+                        key={i}
+                        className={`h-3 w-0.5 shrink-0 rounded-full ${activeTick ? "bg-primary" : "bg-foreground/70"}`}
+                      />
+                    );
+                  })}
+                </div>
+                <span className="min-w-8 text-right text-[10px] font-bold tabular-nums text-foreground">
+                  {zoom.toFixed(1)}×
+                </span>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -741,7 +1056,7 @@ export function Scanner({
         </div>
       )}
 
-      <div className={`${done ? "order-1 mt-0" : "mt-3"} flex items-center justify-center gap-2`}>
+      <div className={`${done ? "order-1 mt-0" : "mt-3"} flex items-center justify-center gap-2 ${fullscreen ? "fixed inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 px-5" : ""}`}>
         {!active && !stopping ? (
           <button
             onClick={() => void start()}
@@ -755,30 +1070,27 @@ export function Scanner({
           <>
             <button
               onClick={() => void flipCamera()}
-              disabled={stopping || starting}
+              disabled={stopping || starting || flipping}
               aria-label={`Flip camera (current: ${facing === "environment" ? "back" : "front"})`}
-              className="glass flex h-12 shrink-0 items-center justify-center gap-2 rounded-2xl px-3 text-sm font-semibold active:scale-95 disabled:opacity-60 sm:h-14 sm:px-5 sm:text-base"
+              className="glass flex h-12 min-w-[6.8rem] shrink-0 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-semibold active:scale-95 disabled:opacity-60 sm:h-14 sm:min-w-[8.2rem] sm:px-5 sm:text-base"
             >
-              <SwitchCamera className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
+              <SwitchCamera className={`h-4 w-4 sm:h-5 sm:w-5 ${facing === "user" ? "scale-x-[-1]" : ""}`} strokeWidth={2.2} />
               <span className="pr-0.5">Flip</span>
             </button>
             <button
               onClick={() => void autofocusCamera()}
-              disabled={stopping || starting || focusing}
-                aria-label="Focus camera"
-                title="Focus camera"
-                className="glass grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-70 sm:h-14 sm:w-14"
+              disabled={stopping || starting}
+              aria-label="Focus camera"
+              title="Focus camera"
+              aria-pressed={tracking}
+              className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-70 sm:h-14 sm:w-14 ${tracking ? "bg-primary text-primary-foreground shadow-lg shadow-primary/30" : "glass"}`}
             >
-              {focusing ? (
-                <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
-              ) : (
-                  <Focus className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
-              )}
+              <Focus className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
             </button>
             <button
               onClick={() => void stop(true)}
               disabled={stopping}
-              className="glass flex min-w-[8.5rem] max-w-[14rem] flex-1 items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80 sm:py-4 sm:text-base"
+              className="glass flex min-w-[7.7rem] max-w-[12.5rem] flex-1 items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80 sm:py-4 sm:text-base"
             >
               {stopping ? (
                 <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
@@ -792,7 +1104,7 @@ export function Scanner({
       </div>
 
       {(active || progress.total > 0) && (
-        <div className="order-3 mx-auto mt-10 w-full max-w-sm animate-fade-up">
+        <div className={`order-3 w-full animate-fade-up ${fullscreen ? "fixed inset-x-0 top-[max(0.75rem,env(safe-area-inset-top))] z-50 mx-auto max-w-sm rounded-2xl bg-background/55 px-4 py-2.5 backdrop-blur-md" : "mx-auto mt-10 max-w-sm"}`}>
           <div className="flex items-center justify-center gap-2 text-center text-xs">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
             <span className="min-w-0 truncate text-center font-semibold">
