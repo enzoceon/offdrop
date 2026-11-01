@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { GlassTabs, type TabKey } from "@/components/GlassTabs";
+import { useCallback, useEffect, useState } from "react";
+import { GlassTabs, TAB_ORDER, type TabKey } from "@/components/GlassTabs";
+import { Pager } from "@/components/Pager";
+import { sfx } from "@/lib/feedback";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { MuteToggle } from "@/components/MuteToggle";
 import { RefreshButton } from "@/components/RefreshButton";
@@ -69,8 +71,24 @@ function Index() {
       setConfirmOpen(true);
       return;
     }
+    sfx.swipe(TAB_ORDER.indexOf(nextTab) > TAB_ORDER.indexOf(tab) ? 1 : -1);
     setTab(nextTab);
   }
+
+  const onPagerIndex = useCallback(
+    (i: number) => requestTab(TAB_ORDER[i]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tab, scannerBusy],
+  );
+
+  // iOS/Safari only allow audio after a user gesture: prime it on the first touch.
+  useEffect(() => {
+    const unlock = () => sfx.unlock();
+    window.addEventListener("pointerdown", unlock, { once: true, passive: true });
+    return () => window.removeEventListener("pointerdown", unlock);
+  }, []);
+
+  const immersive = tab === "scan" && scannerBusy;
 
   function confirmLeaveScanner() {
     if (!pendingTab || confirming) return;
@@ -116,48 +134,67 @@ function Index() {
     };
   }, []);
 
+  const panelPad = "flex min-h-0 flex-1 flex-col";
+  const bottomPad = "pb-28 md:pb-24";
+
   return (
-    <div className="app-bg fixed inset-0 flex flex-col overflow-hidden">
-      <header className="safe-top flex items-center justify-between px-5 pb-3">
-        <div className="flex items-center gap-2">
-          <div className="grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent shadow-lg shadow-primary/30">
-            <QrCode className="h-4.5 w-4.5 text-primary-foreground" strokeWidth={2.5} />
-          </div>
-          <div>
-            <h1 className="text-display text-lg leading-none">OFFDROP</h1>
-            <p className="text-[10px] text-muted-foreground">Offline file transfer</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <MuteToggle />
-          <ThemeToggle />
-          <RefreshButton />
-        </div>
-      </header>
+    <div
+      className="app-bg group/app fixed inset-0 flex flex-col overflow-hidden"
+      data-immersive={immersive ? "true" : "false"}
+    >
+      <div className="ambient-orbs pointer-events-none absolute inset-0 -z-0" aria-hidden="true">
+        <span className="orb orb-a" />
+        <span className="orb orb-b" />
+        <span className="orb orb-c" />
+      </div>
 
-      <main className="flex flex-1 flex-col overflow-hidden pb-28">
-        <section className={tab === "send" ? "contents" : "hidden"} aria-hidden={tab !== "send"}>
-          <Sender active={tab === "send"} />
-        </section>
-        <section className={tab === "scan" ? "contents" : "hidden"} aria-hidden={tab !== "scan"}>
-          <Scanner
-            stopRequestKey={stopRequestKey}
-            onStopRequestComplete={completeScannerStopRequest}
-            onBusyChange={setScannerBusy}
-            visible={tab === "scan"}
-            onSaved={() => {
-              setHistoryKey((k) => k + 1);
-            }}
-            onCompleteAction={() => {}}
-          />
+      {/* Header collapses on phones while the camera is live; stays on tablet/desktop. */}
+      <div
+        className={`relative z-10 grid transition-[grid-template-rows,opacity] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+          immersive ? "max-md:grid-rows-[0fr] max-md:opacity-0" : "grid-rows-[1fr] opacity-100"
+        }`}
+      >
+        <header className="safe-top mx-auto flex w-full max-w-5xl items-center justify-between overflow-hidden px-5 pb-3 md:px-8">
+          <div className="flex items-center gap-2.5">
+            <div className="logo-mark grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent shadow-lg shadow-primary/30 md:h-10 md:w-10">
+              <QrCode className="h-4.5 w-4.5 text-primary-foreground" strokeWidth={2.5} />
+            </div>
+            <div>
+              <h1 className="text-display text-lg leading-none md:text-xl">OFFDROP</h1>
+              <p className="text-[10px] text-muted-foreground md:text-xs">Offline file transfer</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <MuteToggle />
+            <ThemeToggle />
+            <RefreshButton />
+          </div>
+        </header>
+      </div>
 
-        </section>
-        <section
-          className={tab === "history" ? "contents" : "hidden"}
-          aria-hidden={tab !== "history"}
-        >
-          <History refreshKey={historyKey} />
-        </section>
+      <main className="relative z-10 flex min-h-0 flex-1 flex-col">
+        <Pager index={TAB_ORDER.indexOf(tab)} onIndexChange={onPagerIndex} locked={immersive}>
+          {[
+            <div key="send" className={`${panelPad} ${bottomPad}`}>
+              <Sender active={tab === "send"} />
+            </div>,
+            <div key="scan" className={`${panelPad} ${immersive ? "pb-0 md:pb-24" : bottomPad}`}>
+              <Scanner
+                stopRequestKey={stopRequestKey}
+                onStopRequestComplete={completeScannerStopRequest}
+                onBusyChange={setScannerBusy}
+                visible={tab === "scan"}
+                onSaved={() => {
+                  setHistoryKey((k) => k + 1);
+                }}
+                onCompleteAction={() => {}}
+              />
+            </div>,
+            <div key="history" className={`${panelPad} ${bottomPad}`}>
+              <History refreshKey={historyKey} />
+            </div>,
+          ]}
+        </Pager>
       </main>
 
       {confirmOpen && (
@@ -204,7 +241,7 @@ function Index() {
         </div>
       )}
 
-      <GlassTabs value={tab} onChange={requestTab} />
+      <GlassTabs value={tab} onChange={requestTab} hidden={immersive} />
       <InstallPrompt />
     </div>
   );

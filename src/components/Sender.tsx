@@ -1,7 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
-import { createClientOnlyFn } from "@tanstack/react-start";
-import QRCode from "qrcode";
-import jsQR from "jsqr";
+import { useEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   Upload,
   Play,
@@ -15,134 +12,217 @@ import {
   Layers3,
   Clock,
   Loader2,
+  AlertTriangle,
+  Maximize2,
+  Minimize2,
+  Zap,
+  Gauge,
+  PackageOpen,
+  Film,
 } from "lucide-react";
-import { type Slot } from "@/lib/qr-protocol";
+import {
+  DENSITY_PRESETS,
+  LONG_TRANSFER_BYTES,
+  MAX_FILE_BYTES,
+  cycleLength,
+  formatBytes,
+  presetFor,
+  type DensityKey,
+  type StreamPlan,
+} from "@/lib/qr-protocol";
+import {
+  FramePipeline,
+  PrepareCancelled,
+  paintFrame,
+  prepareFile,
+  type PreparedFile,
+} from "@/lib/sender-engine";
 import { saveItem } from "@/lib/history";
 import { sfx } from "@/lib/feedback";
 import { cn } from "@/lib/utils";
+import { MediaViewer, type ViewerItem } from "@/components/MediaViewer";
+import { Portal } from "@/components/Portal";
 
 type SpeedTier = "Gentle" | "Normal" | "Fast" | "Turbo";
 
-const TIER_RANGES: { tier: SpeedTier; min: number; max: number; span: number }[] = [
-  { tier: "Gentle", min: 1, max: 2, span: 2 },
-  { tier: "Normal", min: 3, max: 5, span: 3 },
-  { tier: "Fast", min: 6, max: 8, span: 3 },
-  { tier: "Turbo", min: 9, max: 10, span: 2 },
+const MIN_FPS = 1;
+const MAX_FPS = 30;
+const DEFAULT_FPS = MAX_FPS;
+const DENSITY_KEY = "offdrop:density";
+/** Largest file we also keep a copy of in local history. */
+const HISTORY_BLOB_LIMIT = 64 * 1024 * 1024;
+
+const TIER_RANGES: { tier: SpeedTier; min: number; max: number }[] = [
+  { tier: "Gentle", min: 1, max: 3 },
+  { tier: "Normal", min: 4, max: 8 },
+  { tier: "Fast", min: 9, max: 15 },
+  { tier: "Turbo", min: 16, max: 30 },
 ];
 
 function tierForFps(fps: number): SpeedTier {
   return TIER_RANGES.find((t) => fps >= t.min && fps <= t.max)?.tier ?? "Normal";
 }
 
-const planTransferOnClient = createClientOnlyFn(async (file: File, bytes: Uint8Array) => {
-  const { planTransferInWorker } = await import("@/lib/transfer-planner.client");
-  return planTransferInWorker(file, bytes);
-});
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
 function formatDuration(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
   const whole = Math.ceil(seconds);
-  const mins = Math.floor(whole / 60);
+  const hours = Math.floor(whole / 3600);
+  const mins = Math.floor((whole % 3600) / 60);
   const secs = whole % 60;
+  if (hours) return `${hours}h ${mins.toString().padStart(2, "0")}m`;
   return mins ? `${mins}m ${secs.toString().padStart(2, "0")}s` : `${secs}s`;
 }
 
-function drawRoundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-  ctx.fill();
-}
-
-function renderRoundedQr(text: string) {
-  const qr = QRCode.create(text, { errorCorrectionLevel: "M" });
-  const canvas = document.createElement("canvas");
-  const width = 960;
-  const margin = 4;
-  const count = qr.modules.size;
-  const cell = width / (count + margin * 2);
-  canvas.width = width;
-  canvas.height = width;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) throw new Error("QR canvas is unavailable.");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, width, width);
-  ctx.fillStyle = "#000000";
-  const radius = Math.max(0.25, cell * 0.04);
-  for (let row = 0; row < count; row++) {
-    for (let col = 0; col < count; col++) {
-      if (!qr.modules.get(row, col)) continue;
-      drawRoundRect(ctx, (col + margin) * cell, (row + margin) * cell, cell + 0.03, cell + 0.03, radius);
-    }
+function readDensity(): DensityKey {
+  try {
+    const v = localStorage.getItem(DENSITY_KEY);
+    if (v === "reliable" || v === "balanced" || v === "dense" || v === "max") return v;
+  } catch {
+    /* ignore */
   }
-  return canvas;
+  return "max";
 }
 
 export function Sender({ active = true }: { active?: boolean }) {
   const [file, setFile] = useState<File | null>(null);
-  const [slots, setSlots] = useState<Slot[]>([]);
-  const [totalData, setTotalData] = useState(0);
-  const [idx, setIdx] = useState(0);
+  const [plan, setPlan] = useState<StreamPlan | null>(null);
+  const [preparing, setPreparing] = useState<{ f: number; phase: "compress" | "hash" } | null>(null);
+  const [savedBytes, setSavedBytes] = useState(0);
+  const [seq, setSeq] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(5);
+  const [fps, setFps] = useState(DEFAULT_FPS);
   const [loop, setLoop] = useState(true);
+  const [density, setDensity] = useState<DensityKey>("max");
   const [preview, setPreview] = useState<string | null>(null);
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const [viewer, setViewer] = useState<ViewerItem | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
-  const [qrImage, setQrImage] = useState<string | null>(null);
+  const [qrReady, setQrReady] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [mediaPlaying, setMediaPlaying] = useState(false);
-  const [mediaTime, setMediaTime] = useState(0);
-  const [mediaDuration, setMediaDuration] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const videoPreviewRef = useRef<HTMLVideoElement>(null);
-  const audioPreviewRef = useRef<HTMLAudioElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fullCanvasRef = useRef<HTMLCanvasElement>(null);
+  const tiltRef = useRef<HTMLDivElement>(null);
+  const pipelineRef = useRef<FramePipeline | null>(null);
+  const preparedRef = useRef<PreparedFile | null>(null);
+  const seqRef = useRef(0);
+  const paintedRef = useRef(-1);
+  const pickTokenRef = useRef(0);
+  const previewUrlRef = useRef<string | null>(null);
 
-  // Back-compat alias for the rest of the component.
-  const chunks = slots;
+  const preset = presetFor(density);
+  const totalData = plan?.total ?? 0;
+  const passLength = plan ? cycleLength(plan.total) : 0;
+
+  useEffect(() => setDensity(readDensity()), []);
+
+  function disposePipeline() {
+    pipelineRef.current?.dispose();
+    pipelineRef.current = null;
+  }
+
+  function setPreviewUrl(url: string | null) {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    previewUrlRef.current = url;
+    setPreview(url);
+  }
+
+  function installPipeline(prepared: { plan: StreamPlan; source: PreparedFile["source"] }, ec: "L" | "M") {
+    disposePipeline();
+    const pipeline = new FramePipeline(prepared.plan, prepared.source, ec);
+    pipeline.onChange = () => {
+      if (pipeline.error) {
+        setQrError("A QR frame could not be generated. Remove the file and try again.");
+        setPlaying(false);
+      }
+    };
+    pipelineRef.current = pipeline;
+    pipeline.reset(0);
+    seqRef.current = 0;
+    paintedRef.current = -1;
+    setSeq(0);
+    setPlan(prepared.plan);
+  }
 
   async function onPick(f: File) {
+    const token = ++pickTokenRef.current;
+    disposePipeline();
+    preparedRef.current = null;
+    setFile(f);
+    setPlan(null);
+    setSeq(0);
+    seqRef.current = 0;
+    paintedRef.current = -1;
+    setPlaying(false);
+    setQrError(null);
+    setQrReady(false);
+    setExpanded(false);
+    setViewer(null);
+    setSavedBytes(0);
+    setPreviewUrl(URL.createObjectURL(f));
+
+    if (f.size === 0) {
+      setQrError("This file is empty, so there is nothing to send.");
+      sfx.error();
+      return;
+    }
+    if (f.size > MAX_FILE_BYTES) {
+      setQrError("Files over 4 GB are not supported.");
+      sfx.error();
+      return;
+    }
+
     try {
-      if (preview) URL.revokeObjectURL(preview);
-      setFile(f);
-      setSlots([]);
-      setTotalData(0);
-      setIdx(0);
-      setPlaying(false);
-      setQrError(null);
-      setQrImage(null);
-      setPreview(URL.createObjectURL(f));
-      setPreviewOpen(false);
-      const buf = new Uint8Array(await f.arrayBuffer());
-      const planned = await planTransferOnClient(f, buf);
-      setTotalData(planned.totalData);
-      setSlots(planned.slots);
+      setPreparing({ f: 0, phase: "hash" });
+      const prepared = await prepareFile(f, {
+        chunk: preset.chunk,
+        isCancelled: () => token !== pickTokenRef.current,
+        onProgress: (fraction, phase) => {
+          if (token === pickTokenRef.current) setPreparing({ f: fraction, phase });
+        },
+      });
+      if (token !== pickTokenRef.current) return;
+      preparedRef.current = prepared;
+      setSavedBytes(prepared.savedBytes);
+      installPipeline(prepared, preset.ec);
+      setPreparing(null);
       sfx.fileFound();
       void saveItem({
-        id: planned.id + "-sent-" + Date.now(),
+        id: prepared.plan.idHex + "-sent-" + Date.now(),
         filename: f.name,
         mime: f.type || "application/octet-stream",
         size: f.size,
         receivedAt: Date.now(),
         direction: "sent",
         valid: true,
-        blob: f,
+        blob: f.size <= HISTORY_BLOB_LIMIT ? f : undefined,
+      }).catch(() => {
+        /* history is best-effort (quota, private mode) */
       });
     } catch (error) {
+      if (error instanceof PrepareCancelled || token !== pickTokenRef.current) return;
+      setPreparing(null);
       setQrError(error instanceof Error ? error.message : "This file could not be prepared.");
       setPlaying(false);
       sfx.error();
     }
+  }
+
+  /** Switch QR density without re-hashing: the payload is the same, only the framing changes. */
+  function changeDensity(next: DensityKey) {
+    if (next === density) return;
+    setDensity(next);
+    try {
+      localStorage.setItem(DENSITY_KEY, next);
+    } catch {
+      /* ignore */
+    }
+    sfx.tick();
+    const prepared = preparedRef.current;
+    if (!prepared) return;
+    const p = presetFor(next);
+    installPipeline(prepared.rechunk(p.chunk), p.ec);
+    setQrReady(false);
   }
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
@@ -162,468 +242,599 @@ export function Sender({ active = true }: { active?: boolean }) {
     if (dropped) void onPick(dropped);
   }
 
-  // Render current QR
+  // Playback clock. Frames are built ahead of time by the pipeline; this loop
+  // only decides *when* to advance and paints the already-prepared frame, so the
+  // frame rate holds steady even for dense codes.
   useEffect(() => {
-    if (chunks.length === 0) return;
-    setQrError(null);
-    const text = chunks[idx]?.text ?? "";
-    if (!text) return;
-    Promise.resolve()
-      .then(() => {
-        const canvas = renderRoundedQr(text);
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        if (!ctx) throw new Error("QR verification canvas is unavailable.");
-        const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const verified = jsQR(image.data, canvas.width, canvas.height, {
-          inversionAttempts: "attemptBoth",
-        });
-        if (verified?.data !== text) throw new Error("Generated QR failed verification.");
-        setQrImage(canvas.toDataURL("image/png"));
-      })
-      .catch((err) => {
-        console.error("QR generation failed:", err);
-        setQrError("This QR frame could not be generated cleanly. Try a smaller file or reset the stream.");
-        setPlaying(false);
-      });
-  }, [idx, chunks]);
+    const pipeline = pipelineRef.current;
+    if (!plan || !pipeline) return;
+    let raf = 0;
+    let stopped = false;
+    let nextAt = performance.now();
+    let lastUi = 0;
+    const interval = 1000 / fps;
+    pipeline.want(seqRef.current);
 
-  // Animate
-  useEffect(() => {
-    if (!playing || chunks.length === 0) return;
-    const id = setInterval(() => {
-      setIdx((i) => {
-        if (i < chunks.length - 1) return i + 1;
-        if (loop) return 0;
+    const paint = (n: number) => {
+      const frame = pipeline.get(n);
+      const canvas = canvasRef.current;
+      if (!frame || !canvas) return false;
+      try {
+        paintFrame(canvas, frame);
+        // Presenter mode mirrors the same frame onto the fullscreen canvas.
+        if (fullCanvasRef.current) paintFrame(fullCanvasRef.current, frame, 1400);
+      } catch (error) {
+        setQrError(error instanceof Error ? error.message : "QR rendering failed.");
         setPlaying(false);
-        return i;
-      });
-    }, 1000 / fps);
-    return () => clearInterval(id);
-  }, [playing, fps, loop, chunks.length]);
+        return false;
+      }
+      paintedRef.current = n;
+      return true;
+    };
+
+    const frameLoop = (now: number) => {
+      if (stopped) return;
+      raf = requestAnimationFrame(frameLoop);
+
+      // The fullscreen canvas mounts after the frame was painted: catch it up.
+      if (fullCanvasRef.current && fullCanvasRef.current.width <= 300) paintedRef.current = -1;
+
+      if (paintedRef.current !== seqRef.current) {
+        if (paint(seqRef.current)) {
+          setQrReady(true);
+          nextAt = Math.max(nextAt, now);
+        } else {
+          pipeline.want(seqRef.current);
+          return;
+        }
+      }
+
+      if (playing && now >= nextAt) {
+        const next = seqRef.current + 1;
+        if (!loop && next >= passLength) {
+          setPlaying(false);
+          setSeq(seqRef.current);
+          sfx.pause();
+          return;
+        }
+        if (!pipeline.get(next)) {
+          pipeline.want(seqRef.current); // not ready yet; hold this frame
+          return;
+        }
+        seqRef.current = next;
+        pipeline.want(next);
+        paint(next);
+        // Keep a steady cadence, but never try to "catch up" with a burst.
+        nextAt = now - nextAt > interval * 2 ? now + interval : nextAt + interval;
+      }
+
+      if (now - lastUi > 120) {
+        lastUi = now;
+        setSeq((prev) => (prev === seqRef.current ? prev : seqRef.current));
+      }
+    };
+    raf = requestAnimationFrame(frameLoop);
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+      setSeq(seqRef.current);
+    };
+  }, [plan, playing, fps, loop, passLength, expanded]);
+
+  // Stop broadcasting when the user leaves the Send tab.
+  useEffect(() => {
+    if (!active) {
+      setPlaying(false);
+      setExpanded(false);
+    }
+  }, [active]);
+
+  // Release everything on unmount.
+  useEffect(
+    () => () => {
+      pickTokenRef.current++;
+      pipelineRef.current?.dispose();
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    },
+    [],
+  );
 
   function removeFile() {
+    pickTokenRef.current++;
+    disposePipeline();
+    preparedRef.current = null;
     setFile(null);
-    setSlots([]);
-    setTotalData(0);
-    setIdx(0);
+    setPlan(null);
+    setPreparing(null);
+    setSeq(0);
+    seqRef.current = 0;
+    paintedRef.current = -1;
     setPlaying(false);
-    setPreviewOpen(false);
-    setMediaPlaying(false);
-    setMediaTime(0);
-    setMediaDuration(0);
-    if (preview) URL.revokeObjectURL(preview);
-    setPreview(null);
+    setExpanded(false);
+    setViewer(null);
+    setQrError(null);
+    setQrReady(false);
+    setSavedBytes(0);
+    setPreviewUrl(null);
     if (inputRef.current) inputRef.current.value = "";
   }
 
   function resetPlayback() {
-    setIdx(0);
+    seqRef.current = 0;
+    paintedRef.current = -1;
+    pipelineRef.current?.reset(0);
+    setSeq(0);
     setPlaying(false);
     sfx.reset();
   }
 
   function togglePlaying() {
-    setPlaying((p) => {
-      const next = !p;
-      if (next) sfx.start();
-      else sfx.pause();
-      return next;
-    });
+    if (!plan) return;
+    const next = !playing;
+    setPlaying(next);
+    if (next) sfx.start();
+    else sfx.pause();
   }
 
   function toggleLoop() {
-    setLoop((value) => {
-      const next = !value;
-      if (next) sfx.toggleOn();
-      else sfx.toggleOff();
-      return next;
-    });
+    const next = !loop;
+    setLoop(next);
+    if (next) sfx.toggleOn();
+    else sfx.toggleOff();
+  }
+
+  function toggleExpanded() {
+    setExpanded((v) => !v);
+    paintedRef.current = -1;
+    sfx.open();
   }
 
   function handleFpsChange(next: number) {
-    setFps((prev) => {
-      if (prev === next) return prev;
-      const prevTier = tierForFps(prev);
-      const nextTier = tierForFps(next);
-      if (prevTier !== nextTier) sfx.speedTier(nextTier);
-      else sfx.tick();
-      return next;
-    });
+    if (next === fps) return;
+    const prevTier = tierForFps(fps);
+    const nextTier = tierForFps(next);
+    if (prevTier !== nextTier) sfx.speedTier(nextTier);
+    else sfx.tick();
+    setFps(next);
   }
-
-
-  useEffect(
-    () => () => {
-      if (preview) URL.revokeObjectURL(preview);
-    },
-    [preview],
-  );
-
-  useEffect(() => {
-    if (!active && previewOpen) closePreview();
-  }, [active, previewOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
+      if (!active) return;
       if (event.code === "Space") {
         event.preventDefault();
-        if (chunks.length) togglePlaying();
+        if (plan) togglePlaying();
       }
-      if (event.key.toLowerCase() === "r") resetPlayback();
+      if (event.key === "Escape" && expanded) setExpanded(false);
+      if (event.key.toLowerCase() === "r" && plan) resetPlayback();
       if (event.key.toLowerCase() === "l") toggleLoop();
+      if (event.key.toLowerCase() === "f" && plan) toggleExpanded();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   });
 
-  const cycleSeconds = chunks.length / fps;
-  const remainingSeconds = chunks.length ? Math.max(0, (chunks.length - idx - 1) / fps) : 0;
-  const currentDataIndex =
-    chunks[idx]?.dataIndex ??
-    (() => {
-      // Hold the most recent data position for header slots.
-      for (let i = idx; i >= 0; i--) {
-        if (chunks[i]?.dataIndex != null) return chunks[i].dataIndex!;
-      }
-      return 0;
-    })();
-  const progress = totalData ? ((currentDataIndex + 1) / totalData) * 100 : 0;
-  const canOpenPreview = Boolean(preview && file?.type.match(/^(image|video|audio)\//));
-
-  function activePreviewMedia() {
-    return videoPreviewRef.current ?? audioPreviewRef.current;
+  /** Gentle 3D tilt that follows the pointer over the QR card (desktop/tablet hover and touch drag). */
+  function onTilt(e: ReactPointerEvent<HTMLDivElement>) {
+    const el = tiltRef.current;
+    if (!el || e.pointerType === "touch") return;
+    const r = el.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width - 0.5;
+    const py = (e.clientY - r.top) / r.height - 0.5;
+    el.style.transform = `perspective(900px) rotateY(${px * 10}deg) rotateX(${-py * 10}deg) scale3d(1.015,1.015,1.015)`;
+  }
+  function onTiltLeave() {
+    if (tiltRef.current) tiltRef.current.style.transform = "perspective(900px) rotateY(0) rotateX(0)";
   }
 
-  function syncPreviewMedia(media: HTMLMediaElement) {
-    setMediaTime(media.currentTime || 0);
-    setMediaDuration(Number.isFinite(media.duration) ? media.duration : 0);
-    setMediaPlaying(!media.paused);
-  }
+  const ready = Boolean(plan);
+  const passSeconds = passLength / fps;
+  const inFirstPass = seq < passLength;
+  const remainingSeconds = Math.max(0, (passLength - seq - 1) / fps);
+  const progress = !plan ? 0 : inFirstPass ? Math.min(100, ((seq + 1) / passLength) * 100) : 100;
+  const shownFrames = plan ? Math.min(totalData, Math.round(((seq + 1) / passLength) * totalData)) : 0;
+  const isLarge = Boolean(file && file.size > LONG_TRANSFER_BYTES);
+  const payloadBytes = plan?.size ?? file?.size ?? 0;
+  const throughput = payloadBytes / Math.max(1, passSeconds);
+  const prepLabel = preparing
+    ? preparing.phase === "compress"
+      ? `Compressing ${Math.round(preparing.f * 100)}%`
+      : `Preparing ${Math.round(preparing.f * 100)}%`
+    : null;
 
-  async function togglePreviewPlayback() {
-    const media = activePreviewMedia();
-    if (!media) return;
-    if (media.paused) {
-      await media.play();
-    } else {
-      media.pause();
-    }
-    syncPreviewMedia(media);
-  }
-
-  function seekPreview(value: number) {
-    const media = activePreviewMedia();
-    if (!media) return;
-    media.currentTime = value;
-    syncPreviewMedia(media);
-  }
-
-  function closePreview() {
-    activePreviewMedia()?.pause();
-    setMediaPlaying(false);
-    setPreviewOpen(false);
-  }
-
+  /* ---------------------------------------------------------------- empty state */
   if (!file) {
     return (
-      <div
-        className={`mx-5 flex flex-1 flex-col items-center justify-center rounded-[2rem] px-5 transition-all ${dragging ? "glass-strong scale-[0.99]" : ""}`}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <div className={`animate-float mb-8 grid h-28 w-28 place-items-center rounded-[2rem] bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40 transition-transform ${dragging ? "scale-110" : ""}`}>
-          <Upload className="h-12 w-12 text-primary-foreground" strokeWidth={2} />
-        </div>
-        <h2 className="text-display text-3xl">{dragging ? "Release to add" : "Drop a file"}</h2>
-        <p className="mt-2 max-w-xs text-center text-sm text-muted-foreground">
-          Photos, videos, audio, documents — OFFDROP turns them into a private QR stream.
-        </p>
-        <button
-          onClick={() => inputRef.current?.click()}
-          className="mt-8 flex items-center gap-2 rounded-full bg-gradient-to-br from-primary to-accent px-7 py-3.5 text-sm font-semibold text-primary-foreground shadow-xl shadow-primary/30 transition-transform active:scale-95"
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-5 animate-fade-up md:px-8">
+        <div
+          className={cn(
+            "relative flex w-full max-w-xl flex-col items-center justify-center rounded-[2.25rem] px-6 py-10 text-center transition-all duration-500",
+            "border border-dashed border-transparent md:border-glass-border md:py-14",
+            dragging ? "glass-strong scale-[1.015] border-primary/60" : "md:glass",
+          )}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
         >
-          <Upload className="h-4 w-4" />
-          Choose file
-        </button>
-        <input
-          ref={inputRef}
-          type="file"
-          accept="image/*,video/*,audio/*,*/*"
-          className="hidden"
-          onChange={(e) => e.target.files?.[0] && onPick(e.target.files[0])}
-        />
-        <p className="mt-6 text-center text-[11px] leading-relaxed text-muted-foreground">
-          <span className="block">Keep the receiving camera steady.</span>
-          <span className="block">Until it reaches 100%.</span>
-        </p>
+          <div className="hero-stage relative mb-7 grid place-items-center">
+            <span className="absolute h-36 w-36 rounded-full bg-primary/25 animate-pulse-ring" />
+            <div
+              className={cn(
+                "hero-cube relative grid h-28 w-28 place-items-center rounded-[2rem] bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40 transition-transform duration-500",
+                dragging && "scale-110 rotate-6",
+              )}
+            >
+              <Upload className="h-12 w-12 text-primary-foreground" strokeWidth={2} />
+              <span className="hero-shine absolute inset-0 rounded-[2rem]" />
+            </div>
+          </div>
+          <h2 className="text-display text-3xl md:text-4xl">{dragging ? "Release to add" : "Send a file"}</h2>
+          <p className="mt-2 max-w-sm text-sm text-muted-foreground md:text-base">
+            Photos, videos, audio, documents — turned into a private, offline QR stream that another phone just
+            watches.
+          </p>
+          <button
+            onClick={() => {
+              sfx.unlock();
+              inputRef.current?.click();
+            }}
+            className="group relative mt-7 flex items-center gap-2 overflow-hidden rounded-full bg-gradient-to-br from-primary to-accent px-8 py-4 text-sm font-bold text-primary-foreground shadow-xl shadow-primary/30 transition-transform duration-200 active:scale-95"
+          >
+            <span className="btn-sheen absolute inset-0" />
+            <Upload className="relative h-4 w-4" />
+            <span className="relative">Choose file</span>
+          </button>
+          <input
+            ref={inputRef}
+            type="file"
+            className="hidden"
+            onChange={(e) => e.target.files?.[0] && onPick(e.target.files[0])}
+          />
+          <div className="mt-7 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold text-muted-foreground">
+            <span className="glass flex items-center gap-1.5 rounded-full px-3 py-1.5">
+              <Zap className="h-3 w-3 text-primary" /> Up to 30 frames/s
+            </span>
+            <span className="glass flex items-center gap-1.5 rounded-full px-3 py-1.5">
+              <PackageOpen className="h-3 w-3 text-primary" /> Auto-compression
+            </span>
+            <span className="glass flex items-center gap-1.5 rounded-full px-3 py-1.5">
+              <Layers3 className="h-3 w-3 text-primary" /> Loss-proof repair frames
+            </span>
+          </div>
+        </div>
       </div>
     );
   }
 
-  return (
-    <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
-      <div className="glass mx-auto mb-3 flex w-full max-w-md items-center gap-3 rounded-2xl p-3">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          {preview && file.type.startsWith("image/") ? (
-            <button
-              type="button"
-              onClick={() => setPreviewOpen(true)}
-              className="h-14 w-14 shrink-0 overflow-hidden rounded-lg shadow-sm transition-transform active:scale-95"
-              aria-label="Open image preview"
-            >
-              <img src={preview} alt={file.name} className="h-full w-full object-cover" />
-            </button>
-          ) : preview && file.type.startsWith("video/") ? (
-            <button
-              type="button"
-              onClick={() => setPreviewOpen(true)}
-              className="h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-secondary shadow-sm transition-transform active:scale-95"
-              aria-label="Open video preview"
-            >
-              <video src={preview} muted playsInline className="h-full w-full object-cover" />
-            </button>
-          ) : preview && file.type.startsWith("audio/") ? (
-            <button
-              type="button"
-              onClick={() => setPreviewOpen(true)}
-              className="audio-tile grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-lg shadow-sm transition-transform active:scale-95"
-              aria-label="Open audio preview"
-            >
-              <Music2 className="h-5 w-5" />
-            </button>
-          ) : (
-            <div className="grid h-14 w-14 shrink-0 place-items-center rounded-lg bg-secondary shadow-sm">
-              {file.type.startsWith("audio/") ? (
-                <Music2 className="h-5 w-5" />
-              ) : (
-                <FileText className="h-5 w-5" />
-              )}
-            </div>
+  const isImage = file.type.startsWith("image/");
+  const isVideo = file.type.startsWith("video/");
+  const isAudio = file.type.startsWith("audio/");
+  const openViewer = () => {
+    if (preview) setViewer({ url: preview, name: file.name, mime: file.type, size: file.size, blob: file });
+  };
+
+  const fileCard = (
+    <div className="glass flex w-full items-center gap-3 rounded-3xl p-3">
+      <button
+        type="button"
+        onClick={openViewer}
+        aria-label="Open preview"
+        className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-2xl bg-secondary shadow-sm transition-transform active:scale-95"
+      >
+        {preview && isImage ? (
+          <img src={preview} alt={file.name} className="h-full w-full object-cover" />
+        ) : preview && isVideo ? (
+          <>
+            <video src={preview} muted playsInline preload="metadata" className="h-full w-full object-cover" />
+            <span className="absolute inset-0 grid place-items-center bg-black/25">
+              <Film className="h-5 w-5 text-white" />
+            </span>
+          </>
+        ) : isAudio ? (
+          <span className="audio-tile grid h-full w-full place-items-center">
+            <Music2 className="h-6 w-6 text-primary" />
+          </span>
+        ) : (
+          <span className="grid h-full w-full place-items-center">
+            <FileText className="h-6 w-6 text-muted-foreground" />
+          </span>
+        )}
+        <span className="absolute inset-0 grid place-items-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+          <Maximize2 className="h-4 w-4 text-white" />
+        </span>
+      </button>
+      <div className="min-w-0 flex-1">
+        <h3 className="truncate text-sm font-bold leading-tight">{file.name}</h3>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-medium text-muted-foreground">
+          <span className="flex items-center gap-1">
+            <HardDrive className="h-3 w-3 text-primary" />
+            {formatBytes(file.size)}
+          </span>
+          <span className="flex items-center gap-1">
+            <Layers3 className="h-3 w-3 text-primary" />
+            {plan ? (playing && inFirstPass ? `${shownFrames}/${totalData}` : totalData) : "…"} frames
+          </span>
+          {savedBytes > 0 && (
+            <span className="flex items-center gap-1 font-bold text-emerald-600 dark:text-emerald-400">
+              <PackageOpen className="h-3 w-3" />
+              −{Math.round((savedBytes / file.size) * 100)}% compressed
+            </span>
           )}
-          <div className="min-w-0 flex-1">
-            <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-bold leading-tight">
-              <FileText className="h-3.5 w-3.5 shrink-0 text-primary" />
-              <span className="truncate">{file.name}</span>
-            </h3>
-            <div className="mt-1 grid grid-cols-[auto_auto] items-center justify-start gap-x-3 gap-y-1 text-[10px] font-medium text-muted-foreground">
-              <span className="flex items-center gap-1">
-                <HardDrive className="h-3 w-3 text-primary" />
-                {formatBytes(file.size)}
-              </span>
-              <span className="flex items-center gap-1">
-                <Layers3 className="h-3 w-3 text-primary" />
-                {playing && totalData ? `${currentDataIndex + 1} / ${totalData}` : totalData} frames
-              </span>
-              <span className="col-span-2 flex items-center gap-1">
-                <Clock className="h-3 w-3 text-primary" />
-                {playing
+        </div>
+        <div className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-foreground/80">
+          <Clock className="h-3 w-3 text-primary" />
+          {prepLabel ??
+            (!plan
+              ? "—"
+              : playing
+                ? inFirstPass
                   ? `${formatDuration(remainingSeconds)} left`
-                  : `${formatDuration(cycleSeconds)} capture`}
-              </span>
-            </div>
-          </div>
-          <button
-            onClick={removeFile}
-            className="glass grid h-10 w-10 shrink-0 place-items-center rounded-full text-muted-foreground transition-all hover:text-foreground active:scale-90"
-            aria-label="Remove file"
-          >
-            <X className="h-4 w-4" />
-          </button>
+                  : "Sending repair frames"
+                : `${formatDuration(passSeconds)} to send`)}
         </div>
       </div>
+      <button
+        onClick={removeFile}
+        className="glass grid h-10 w-10 shrink-0 place-items-center rounded-full text-muted-foreground transition-all hover:text-foreground active:scale-90"
+        aria-label="Remove file"
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
+  );
 
-      <div className="glass-strong relative mx-auto flex aspect-square w-full max-w-sm items-center justify-center overflow-hidden rounded-lg p-4">
-        {qrImage && chunks.length > 0 && (
-          <img src={qrImage} alt="OFFDROP transfer QR frame" className="h-full w-full object-contain" />
+  const stage = (
+    <div className="relative mx-auto flex w-full max-w-[min(100%,calc(100dvh-20rem))] flex-col items-center sm:max-w-[min(100%,34rem,calc(100dvh-12rem))] lg:max-w-[min(100%,calc(100dvh-8rem))] xl:max-w-[min(100%,48rem,calc(100dvh-9rem))]">
+      <div
+        ref={tiltRef}
+        onPointerMove={onTilt}
+        onPointerLeave={onTiltLeave}
+        className={cn(
+          "qr-stage relative aspect-square w-full rounded-[1.75rem] bg-white p-2 shadow-2xl transition-[transform,box-shadow] duration-300 ease-out",
+          playing ? "qr-stage-live shadow-primary/40" : "shadow-black/20",
         )}
-        {(!qrImage || chunks.length === 0) && (
-          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm font-medium text-muted-foreground">
-            <Loader2 className="h-5 w-5 animate-spin text-primary" />
-            Loading…
+      >
+        <canvas
+          ref={canvasRef}
+          aria-label="OFFDROP transfer QR frame"
+          className={cn(
+            "h-full w-full rounded-2xl object-contain [image-rendering:pixelated] transition-opacity duration-300",
+            !qrReady || !ready ? "opacity-0" : "opacity-100",
+          )}
+        />
+        {(!qrReady || !ready) && !qrError && (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm font-semibold text-neutral-500">
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            {prepLabel ?? "Building frames…"}
           </div>
         )}
+        {ready && qrReady && !playing && (
+          <button
+            onClick={togglePlaying}
+            className="absolute inset-0 grid place-items-center rounded-[1.75rem] bg-black/35 opacity-0 backdrop-blur-[2px] transition-opacity duration-300 hover:opacity-100 focus-visible:opacity-100"
+            aria-label="Play"
+          >
+            <span className="grid h-16 w-16 place-items-center rounded-full bg-white/90 shadow-xl">
+              <Play className="ml-1 h-7 w-7 text-neutral-900" fill="currentColor" />
+            </span>
+          </button>
+        )}
+        <button
+          onClick={toggleExpanded}
+          disabled={!ready}
+          className="absolute -right-2 -top-2 grid h-10 w-10 place-items-center rounded-full bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/40 transition-transform active:scale-90 disabled:opacity-50"
+          aria-label="Fullscreen QR"
+          title="Fullscreen QR (F)"
+        >
+          <Maximize2 className="h-4 w-4" />
+        </button>
       </div>
-
-      <div className="mx-auto mt-2 h-2.5 w-full max-w-sm overflow-hidden rounded-full bg-secondary p-[1px]">
+      <div className="mt-3 h-2.5 w-full overflow-hidden rounded-full bg-secondary p-[1px]">
         <div
-          className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-200 ease-out"
+          className="progress-fill h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-200 ease-out"
           style={{ width: `${progress}%` }}
         />
       </div>
+    </div>
+  );
 
-      {qrError && (
-        <div className="glass mx-auto mt-3 w-full max-w-sm rounded-2xl border border-destructive/40 p-3 text-center text-xs text-destructive">
-          {qrError}
-        </div>
-      )}
-
-      <div className="mt-3 mx-auto flex w-full max-w-md items-center justify-center gap-2">
+  const controls = (
+    <div className="flex w-full flex-col gap-3">
+      <div className="flex w-full items-center justify-center gap-2">
         <button
           onClick={togglePlaying}
-          disabled={chunks.length === 0}
+          disabled={!ready}
           className={cn(
-            "flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold transition-all active:scale-[0.97] disabled:opacity-60",
+            "relative flex min-w-0 flex-1 items-center justify-center gap-2 overflow-hidden rounded-2xl py-3.5 text-sm font-bold transition-all duration-200 active:scale-[0.96] disabled:opacity-60",
             playing
               ? "glass text-foreground"
               : "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/30",
           )}
         >
-          {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-          {playing ? "Pause" : "Play"}
+          {!playing && <span className="btn-sheen absolute inset-0" />}
+          {playing ? <Pause className="relative h-4 w-4" /> : <Play className="relative h-4 w-4" />}
+          <span className="relative">{playing ? "Pause" : "Play"}</span>
         </button>
         <button
           type="button"
           onClick={toggleLoop}
           className={cn(
-            "grid h-12 w-12 shrink-0 place-items-center rounded-2xl transition-all active:scale-95",
+            "grid h-[3.1rem] w-[3.1rem] shrink-0 place-items-center rounded-2xl transition-all duration-200 active:scale-90",
             loop ? "bg-primary text-primary-foreground shadow-lg shadow-primary/30" : "glass text-muted-foreground",
           )}
-          aria-label={loop ? "Loop on" : "Loop off"}
+          aria-label={loop ? "Repair frames on" : "Repair frames off"}
           aria-pressed={loop}
+          title="Keep sending repair frames after the first pass (L)"
         >
           <Repeat2 className="h-4 w-4" />
         </button>
         <button
           onClick={resetPlayback}
-          className="glass flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-semibold active:scale-95"
+          className="glass flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-bold transition-transform active:scale-95"
         >
           <RotateCcw className="h-4 w-4" />
           Reset
         </button>
       </div>
 
-      <div className="glass mt-3 mx-auto w-full max-w-md rounded-2xl px-4 py-3">
+      <div className="glass rounded-3xl px-4 py-3">
         <div className="flex items-center gap-3">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-            Speed
-          </span>
+          <Gauge className="h-4 w-4 shrink-0 text-primary" />
           <input
             type="range"
-            min={1}
-            max={10}
+            min={MIN_FPS}
+            max={MAX_FPS}
             step={1}
             value={fps}
             onChange={(e) => handleFpsChange(Number(e.target.value))}
             className="ios-range flex-1"
             aria-label="Transfer speed"
+            data-no-swipe
           />
-          <span className="min-w-[3.2rem] text-right text-[11px] font-bold uppercase tracking-wider text-primary">
+          <span className="min-w-[4.4rem] text-right text-[11px] font-extrabold uppercase tracking-wider text-primary">
             {tierForFps(fps)}
           </span>
         </div>
+        <p className="mt-1 flex items-center justify-between text-[11px] font-medium text-muted-foreground">
+          <span>
+            {fps} frames/s · ≈ {formatBytes(throughput)}/s
+          </span>
+          <span>{formatDuration(payloadBytes / throughput)} total</span>
+        </p>
       </div>
 
-
-      {previewOpen && preview && canOpenPreview && (
-        <div
-          className="fixed inset-0 z-[80] flex items-center justify-center bg-background/35 px-4 py-20 backdrop-blur-sm animate-fade-up"
-          role="dialog"
-          aria-modal="true"
-          onClick={closePreview}
-        >
-          <div className="contents" onClick={(event) => event.stopPropagation()}>
-            {file.type.startsWith("image/") && (
-              <img
-                src={preview}
-                alt={file.name}
-                className="max-h-[calc(100dvh-6rem)] max-w-[calc(100vw-2rem)] rounded-xl object-contain shadow-2xl shadow-foreground/20"
-              />
-            )}
-
-            {file.type.startsWith("video/") && (
-              <div className="glass-strong flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl p-2">
-                <video
-                  ref={videoPreviewRef}
-                  src={preview}
-                  playsInline
-                  className="max-h-[calc(100dvh-15rem)] w-full rounded-lg object-contain"
-                  onLoadedMetadata={(event) => syncPreviewMedia(event.currentTarget)}
-                  onTimeUpdate={(event) => syncPreviewMedia(event.currentTarget)}
-                  onPlay={(event) => syncPreviewMedia(event.currentTarget)}
-                  onPause={(event) => syncPreviewMedia(event.currentTarget)}
-                />
-                <div className="flex items-center gap-3 px-2 py-3">
-                  <button
-                    type="button"
-                    onClick={() => void togglePreviewPlayback()}
-                    className="glass grid h-11 w-11 shrink-0 place-items-center rounded-full active:scale-90"
-                    aria-label={mediaPlaying ? "Pause video" : "Play video"}
-                  >
-                    {mediaPlaying ? (
-                      <Pause className="h-4.5 w-4.5" />
-                    ) : (
-                      <Play className="h-4.5 w-4.5" />
-                    )}
-                  </button>
-                  <input
-                    type="range"
-                    min={0}
-                    max={mediaDuration || 0}
-                    step="0.1"
-                    value={Math.min(mediaTime, mediaDuration || 0)}
-                    onChange={(event) => seekPreview(Number(event.target.value))}
-                    className="ios-range flex-1"
-                  />
-                  <span className="w-20 text-right text-[10px] font-semibold tabular-nums text-muted-foreground">
-                    {formatDuration(mediaTime)} / {formatDuration(mediaDuration)}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {file.type.startsWith("audio/") && (
-              <div className="glass-strong w-full max-w-md rounded-xl p-5">
-                <div className="audio-tile mx-auto grid h-20 w-20 place-items-center rounded-lg shadow-xl">
-                  <Music2 className="h-8 w-8 text-primary" />
-                </div>
-                <p className="mt-4 truncate text-center text-sm font-bold">{file.name}</p>
-                <audio
-                  ref={audioPreviewRef}
-                  src={preview}
-                  onLoadedMetadata={(event) => syncPreviewMedia(event.currentTarget)}
-                  onTimeUpdate={(event) => syncPreviewMedia(event.currentTarget)}
-                  onPlay={(event) => syncPreviewMedia(event.currentTarget)}
-                  onPause={(event) => syncPreviewMedia(event.currentTarget)}
-                />
-                <div className="mt-5 flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => void togglePreviewPlayback()}
-                    className="glass grid h-12 w-12 shrink-0 place-items-center rounded-full active:scale-90"
-                    aria-label={mediaPlaying ? "Pause audio" : "Play audio"}
-                  >
-                    {mediaPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-                  </button>
-                  <input
-                    type="range"
-                    min={0}
-                    max={mediaDuration || 0}
-                    step="0.1"
-                    value={Math.min(mediaTime, mediaDuration || 0)}
-                    onChange={(event) => seekPreview(Number(event.target.value))}
-                    className="ios-range flex-1"
-                  />
-                </div>
-                <div className="mt-1 flex justify-between text-[10px] font-semibold tabular-nums text-muted-foreground">
-                  <span>{formatDuration(mediaTime)}</span>
-                  <span>{formatDuration(mediaDuration)}</span>
-                </div>
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={closePreview}
-            className="glass absolute right-3 z-[81] grid h-9 w-9 place-items-center rounded-full text-foreground active:scale-90 sm:right-4 sm:h-10 sm:w-10"
-            style={{ top: "max(env(safe-area-inset-top), 0.75rem)" }}
-            aria-label="Close preview"
-          >
-            <X className="h-4 w-4" strokeWidth={2.4} />
-          </button>
+      <div className="glass rounded-3xl p-3">
+        <div className="grid grid-cols-4 gap-1 rounded-2xl bg-secondary/60 p-1" role="radiogroup" aria-label="QR density">
+          {DENSITY_PRESETS.map((p) => (
+            <button
+              key={p.key}
+              role="radio"
+              aria-checked={density === p.key}
+              onClick={() => changeDensity(p.key)}
+              className={cn(
+                "rounded-xl px-1 py-2 text-[11px] font-bold transition-all duration-300",
+                density === p.key
+                  ? "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-md shadow-primary/25"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {p.label}
+            </button>
+          ))}
         </div>
+        <p className="mt-2 px-1 text-center text-[11px] font-medium text-muted-foreground">
+          {preset.hint} · {formatBytes(preset.chunk)} per code
+        </p>
+      </div>
+
+      {qrError && (
+        <div role="alert" className="glass animate-pop-in rounded-2xl border border-destructive/40 p-3 text-center text-xs text-destructive">
+          {qrError}
+        </div>
+      )}
+
+      {isLarge && ready && !qrError && (
+        <div className="glass flex items-start gap-2 rounded-2xl p-3 text-left text-xs text-muted-foreground">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+          <span>
+            First-pass estimate: about {formatDuration(passSeconds)} at {fps} FPS. Actual time depends on how quickly
+            the receiver can read each code; missed frames are recovered while repair frames are playing.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden px-4 pb-3 animate-fade-up md:px-8">
+      <MediaViewer item={viewer} onClose={() => setViewer(null)} />
+
+      <div className="mx-auto grid w-full max-w-[100rem] gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(21rem,0.8fr)] lg:items-start lg:gap-8 lg:pt-2 xl:grid-cols-[minmax(0,1.55fr)_minmax(24rem,0.8fr)]">
+        <div className="order-2 lg:order-1 lg:sticky lg:top-0">{stage}</div>
+        <div className="order-1 flex flex-col gap-3 lg:order-2">
+          {fileCard}
+          <div className="hidden lg:block">{controls}</div>
+        </div>
+        <div className="order-3 lg:hidden">{controls}</div>
+      </div>
+
+      {expanded && (
+        <Portal>
+          <div
+            className="presenter fixed inset-0 z-[90] flex flex-col items-center justify-between overflow-y-auto bg-[#07090f] px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] text-white sm:px-8"
+            onClick={toggleExpanded}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Fullscreen QR"
+          >
+            <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 py-4">
+              <div className="flex w-full max-w-5xl items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/50">
+                    OFFDROP · {playing ? "Broadcasting" : "Paused"}
+                  </p>
+                  <p className="mt-1 truncate text-sm font-semibold sm:text-base">{file.name}</p>
+                </div>
+                <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-bold tabular-nums text-white/75">
+                  {tierForFps(fps)} · {fps} FPS
+                </span>
+              </div>
+              <canvas
+                ref={fullCanvasRef}
+                className="max-h-[min(76dvh,calc(100vw-2rem))] max-w-full flex-1 object-contain [image-rendering:pixelated]"
+              />
+            </div>
+            <div
+              className="glass-strong w-full max-w-5xl rounded-3xl p-3 sm:p-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mb-3 flex items-center justify-between gap-3 text-xs">
+                <span className="rounded-md bg-white/5 px-2 py-1 font-semibold text-white/75">
+                  {inFirstPass ? `${formatDuration(remainingSeconds)} left in first pass` : "Repair frames · keep scanning"}
+                </span>
+                <span className="shrink-0 rounded-md bg-white/5 px-2 py-1 tabular-nums text-white/55">
+                  {inFirstPass ? `${shownFrames.toLocaleString()} / ${totalData.toLocaleString()} frames` : "100% sent"}
+                </span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                <div className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-200" style={{ width: `${progress}%` }} />
+              </div>
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  onClick={togglePlaying}
+                  className="flex h-12 min-w-32 items-center justify-center gap-2 rounded-full bg-gradient-to-br from-primary to-accent px-5 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/20 active:scale-95"
+                  aria-label={playing ? "Pause" : "Play"}
+                >
+                  {playing ? <Pause className="h-4 w-4" /> : <Play className="ml-0.5 h-4 w-4" fill="currentColor" />}
+                  {playing ? "Pause" : "Resume"}
+                </button>
+                <button
+                  onClick={resetPlayback}
+                  className="grid h-12 w-12 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-white/80 active:scale-95"
+                  aria-label="Restart transfer"
+                  title="Restart transfer"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                </button>
+                <div className="min-w-0 flex-1 text-right">
+                  <p className="truncate text-[11px] font-semibold text-white/75">{file.name}</p>
+                  <p className="mt-0.5 text-[10px] text-white/45">
+                    {formatBytes(file.size)} · {formatDuration(passSeconds)} estimated
+                  </p>
+                </div>
+                <button
+                  onClick={toggleExpanded}
+                  className="grid h-12 w-12 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-white active:scale-95"
+                  aria-label="Exit fullscreen"
+                >
+                  <Minimize2 className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

@@ -1,38 +1,68 @@
-import { useEffect, useRef, useState, type PointerEvent, type TouchEvent, type WheelEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import jsQR from "jsqr";
 import {
   Camera,
   CameraOff,
   CheckCircle2,
   Download,
-  Focus,
   Loader2,
   ScanLine,
   Share2,
   SwitchCamera,
   Music2,
   FileText,
-  X,
+  Maximize2,
+  Play,
+  ShieldCheck,
 } from "lucide-react";
 import {
-  parseFrame,
-  reconstruct,
+  FountainDecoder,
+  RECEIVE_LIMIT_BYTES,
   crc32,
+  formatBytes,
+  parseFrame,
   type ParsedHeader,
 } from "@/lib/qr-protocol";
 import { saveItem } from "@/lib/history";
+import { MediaViewer, type ViewerItem } from "@/components/MediaViewer";
 import { sfx } from "@/lib/feedback";
 
 interface Transfer {
   header: ParsedHeader;
-  chunks: Map<number, Uint8Array>;
+  decoder: FountainDecoder;
   startedAt: number;
 }
 
+type ProgressState = { have: number; total: number; frac: number; eta: number | null; rate: number };
+const EMPTY_PROGRESS: ProgressState = { have: 0, total: 0, frac: 0, eta: null, rate: 0 };
+
+// Minimal typing for the (Chromium/Safari) native QR detector.
+type NativeDetection = { rawValue: string; cornerPoints?: Array<{ x: number; y: number }> };
+type NativeDetector = { detect: (source: CanvasImageSource) => Promise<NativeDetection[]> };
+
+function formatEta(seconds: number | null) {
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 1) return "";
+  const whole = Math.ceil(seconds);
+  const mins = Math.floor(whole / 60);
+  const secs = whole % 60;
+  return mins ? `${mins}m ${secs.toString().padStart(2, "0")}s left` : `${secs}s left`;
+}
+
 type Point = { x: number; y: number };
-type QrBox = { w: number; h: number; corners: [Point, Point, Point, Point] };
+type QrBox = {
+  w: number;
+  h: number;
+  corners: [Point, Point, Point, Point];
+  sourceCorners: [Point, Point, Point, Point];
+};
 type ScanResult = { data: string; corners: [Point, Point, Point, Point] };
 type ViewTransform = { scale: number; x: number; y: number };
+type SourceRect = { x: number; y: number; width: number; height: number };
 type FocusPoint = { x: number; y: number };
 type DonePreview = {
   name: string;
@@ -52,12 +82,11 @@ type ScannerProps = {
 };
 
 const CAMERA_TRANSITION_MS = 180;
-const DECODE_INTERVAL_MS = 42;
-const DECODE_MAX_EDGE = 880;
-const PROGRESS_COMMIT_MS = 180;
-const SEEN_CLEANUP_MS = 1800;
-const ZOOM_HIDE_MS = 1600;
-
+const DECODE_INTERVAL_MS = 30; // jsQR fallback pacing (native detector runs flat out)
+const DECODE_MAX_EDGE = 880; // jsQR fallback resolution
+const NATIVE_MAX_EDGE = 1280; // native detector copes with more pixels, so dense codes read better
+const PROGRESS_COMMIT_MS = 150;
+const SCAN_SOUND_MS = 220;
 type FocusMode = "single-shot" | "continuous" | "manual";
 type CameraSettingRange = { min: number; max: number; step?: number };
 type CameraControlCapabilities = MediaTrackCapabilities & {
@@ -67,7 +96,7 @@ type CameraControlCapabilities = MediaTrackCapabilities & {
 type CameraControlTrack = MediaStreamTrack & {
   getCapabilities?: () => CameraControlCapabilities;
 };
-type ZoomRange = { min: number; max: number; step: number; supported: boolean };
+type ZoomRange = { min: number; max: number; supported: boolean };
 type PanPoint = { x: number; y: number };
 
 function sleep(ms: number) {
@@ -84,14 +113,6 @@ function vibrate(pattern: number | number[]) {
   } catch {
     /* ignore unavailable haptics */
   }
-}
-
-function distance(a: PanPoint, b: PanPoint) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function midpoint(a: PanPoint, b: PanPoint): PanPoint {
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
 
 function waitForVideoMetadata(video: HTMLVideoElement) {
@@ -149,7 +170,7 @@ async function openCameraStream(facingMode: "environment" | "user") {
         facingMode: { exact: facingMode },
         width: { ideal: 1280 },
         height: { ideal: 720 },
-        frameRate: { ideal: 30, max: 30 },
+        frameRate: { ideal: 30, max: 60 },
       },
       audio: false,
     },
@@ -204,9 +225,13 @@ function readZoomRange(stream: MediaStream | null): ZoomRange {
   const track = stream?.getVideoTracks()[0] as CameraControlTrack | undefined;
   const zoom = (track?.getCapabilities?.() as CameraControlCapabilities | undefined)?.zoom;
   if (!track || !zoom || !Number.isFinite(zoom.min) || !Number.isFinite(zoom.max) || zoom.max <= zoom.min) {
-    return { min: 1, max: 3, step: 0.05, supported: false };
+    return { min: 1, max: 3, supported: false };
   }
-  return { min: zoom.min, max: Math.min(zoom.max, Math.max(zoom.min + 0.5, 4.5)), step: zoom.step || 0.05, supported: true };
+  return {
+    min: zoom.min,
+    max: Math.min(zoom.max, Math.max(zoom.min + 0.5, 4.5)),
+    supported: true,
+  };
 }
 
 async function applyCameraZoom(stream: MediaStream | null, value: number) {
@@ -258,20 +283,35 @@ function drawVideoFrame(
   h: number,
   transform: ViewTransform,
 ) {
+  const source = getVideoSourceRect(video, transform);
+  ctx.drawImage(video, source.x, source.y, source.width, source.height, 0, 0, w, h);
+}
+
+function getVideoSourceRect(video: HTMLVideoElement, transform: ViewTransform): SourceRect {
   const sourceW = video.videoWidth;
   const sourceH = video.videoHeight;
-  if (transform.scale <= 1.01) {
-    ctx.drawImage(video, 0, 0, w, h);
-    return;
-  }
-  const cropW = sourceW / transform.scale;
-  const cropH = sourceH / transform.scale;
   const rect = video.getBoundingClientRect();
-  const panX = rect.width ? (transform.x / rect.width) * cropW : 0;
-  const panY = rect.height ? (transform.y / rect.height) * cropH : 0;
-  const sx = clamp(sourceW / 2 - cropW / 2 - panX, 0, sourceW - cropW);
-  const sy = clamp(sourceH / 2 - cropH / 2 - panY, 0, sourceH - cropH);
-  ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, w, h);
+  const scale = Math.max(rect.width / sourceW, rect.height / sourceH);
+  if (!Number.isFinite(scale) || scale <= 0) return { x: 0, y: 0, width: sourceW, height: sourceH };
+  const cropW = (rect.width / scale) / transform.scale;
+  const cropH = (rect.height / scale) / transform.scale;
+  return {
+    x: clamp(sourceW / 2 - cropW / 2 - transform.x / (scale * transform.scale), 0, sourceW - cropW),
+    y: clamp(sourceH / 2 - cropH / 2 - transform.y / (scale * transform.scale), 0, sourceH - cropH),
+    width: cropW,
+    height: cropH,
+  };
+}
+
+function getDecodeSize(video: HTMLVideoElement, maxEdge: number) {
+  const rect = video.getBoundingClientRect();
+  const aspect =
+    rect.width && rect.height
+      ? rect.width / rect.height
+      : video.videoWidth / Math.max(1, video.videoHeight);
+  return aspect >= 1
+    ? { width: maxEdge, height: Math.max(1, Math.round(maxEdge / aspect)) }
+    : { width: Math.max(1, Math.round(maxEdge * aspect)), height: maxEdge };
 }
 
 function mediaLabel(mime?: string) {
@@ -304,10 +344,17 @@ async function detectAspectRatio(blob: Blob, mime: string, url: string): Promise
   return mime.startsWith("audio/") ? 16 / 9 : 4 / 3;
 }
 
+async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array> {
+  const DS = (globalThis as unknown as { DecompressionStream?: new (f: string) => GenericTransformStream }).DecompressionStream;
+  if (!DS) throw new Error("This browser can't unpack compressed transfers. Update the browser or use Chrome/Safari.");
+  const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DS("deflate-raw") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
 function AnimatedPercent({ value }: { value: number }) {
   return (
     <div className="mt-3 text-center text-5xl font-medium leading-none tabular-nums text-foreground sm:text-6xl">
-      {Math.round(value)}%
+      {value >= 100 ? 100 : Math.floor(value)}%
     </div>
   );
 }
@@ -323,9 +370,20 @@ export function Scanner({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
+  const vfcRef = useRef<number>(0);
+  const workerRef = useRef<Worker | null | undefined>(undefined);
+  const workerPending = useRef(new Map<number, (r: ScanResult | null) => void>());
+  const workerSeq = useRef(0);
+  const [fastDecoder, setFastDecoder] = useState(false);
+  const [celebrate, setCelebrate] = useState(0);
+  const [viewer, setViewer] = useState<ViewerItem | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const cameraOperationRef = useRef(0);
   const transferRef = useRef<Transfer | null>(null);
-  const lastSeenRef = useRef<Map<string, number>>(new Map());
+  const detectorRef = useRef<NativeDetector | null | undefined>(undefined);
+  const decodeBusyRef = useRef(false);
+  const lastPayloadRef = useRef("");
+  const lastScanSoundRef = useRef(0);
   const lastDecodeRef = useRef(0);
   const finishingRef = useRef(false);
   const scanningRef = useRef(false);
@@ -338,68 +396,32 @@ export function Scanner({
   );
   const facingRef = useRef<"environment" | "user">("environment");
   const doneUrlRef = useRef<string | null>(null);
-  const progressPendingRef = useRef({ have: 0, total: 0 });
   const progressCommitRef = useRef(0);
-  const lastSeenCleanupRef = useRef(0);
-  const zoomHideRef = useRef<number>(0);
-  const pinchRef = useRef<{ distance: number; zoom: number; center: PanPoint } | null>(null);
-  const panRef = useRef<{ pointerId: number; point: PanPoint; offset: PanPoint } | null>(null);
   const lastAutoFrameRef = useRef(0);
-  const lastVisualZoomRef = useRef(0);
   const lastFocusPointRef = useRef(0);
-  const trackingRef = useRef(false);
   const zoomRef = useRef(1);
-  const zoomRangeRef = useRef<ZoomRange>({ min: 1, max: 3, step: 0.05, supported: false });
+  const zoomRangeRef = useRef<ZoomRange>({ min: 1, max: 3, supported: false });
   const panRefState = useRef<PanPoint>({ x: 0, y: 0 });
 
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [progress, setProgress] = useState({ have: 0, total: 0 });
+  const [progress, setProgress] = useState<ProgressState>(EMPTY_PROGRESS);
   const [scanInfo, setScanInfo] = useState<{ name: string; mime: string; size: number } | null>(
     null,
   );
   const [qrBox, setQrBox] = useState<QrBox | null>(null);
   const [done, setDone] = useState<DonePreview | null>(null);
   const [facing, setFacing] = useState<"environment" | "user">("environment");
-  const [tracking, setTracking] = useState(false);
   const [flipping, setFlipping] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [zoom, setZoom] = useState(1);
-  const [zoomRange, setZoomRange] = useState<ZoomRange>({ min: 1, max: 3, step: 0.05, supported: false });
-  const [zoomVisible, setZoomVisible] = useState(false);
   const [pan, setPan] = useState<PanPoint>({ x: 0, y: 0 });
-
-  function showZoomHud() {
-    setZoomVisible(true);
-    window.clearTimeout(zoomHideRef.current);
-    zoomHideRef.current = window.setTimeout(() => setZoomVisible(false), ZOOM_HIDE_MS);
-  }
-
-  function setVisualZoom(next: number, center?: PanPoint, immediate = false) {
-    const range = zoomRangeRef.current;
-    const value = clamp(next, range.min, range.max);
-    zoomRef.current = value;
-    setZoom(value);
-    let nextPan = panRefState.current;
-    if (center) {
-      const box = videoRef.current?.getBoundingClientRect();
-      if (box) {
-        const maxX = Math.max(0, (box.width * (value - 1)) / 2);
-        const maxY = Math.max(0, (box.height * (value - 1)) / 2);
-        const dx = (box.width / 2 - (center.x - box.left)) * 0.22;
-        const dy = (box.height / 2 - (center.y - box.top)) * 0.22;
-        nextPan = { x: clamp(nextPan.x + dx, -maxX, maxX), y: clamp(nextPan.y + dy, -maxY, maxY) };
-        panRefState.current = nextPan;
-        setPan(nextPan);
-      }
-    }
-    showZoomHud();
-  }
 
   async function start(facingMode: "environment" | "user" = facingRef.current, force = false) {
     if (!force && (active || starting || stopping)) return;
+    const operation = ++cameraOperationRef.current;
     facingRef.current = facingMode;
     setFacing(facingMode);
     const startedAt = performance.now();
@@ -410,21 +432,26 @@ export function Scanner({
     }
     setDone(null);
     setStarting(true);
+    lastAutoFrameRef.current = 0;
+    lastFocusPointRef.current = 0;
     finishingRef.current = false;
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("Camera permission is unavailable in this browser.");
       }
+      setFastDecoder(Boolean(getDetector()));
       const stream = await openCameraStream(facingMode);
+      if (operation !== cameraOperationRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
       const range = readZoomRange(stream);
       zoomRangeRef.current = range;
-      setZoomRange(range);
       zoomRef.current = range.min;
       setZoom(range.min);
       panRefState.current = { x: 0, y: 0 };
       setPan({ x: 0, y: 0 });
-      setZoomVisible(false);
       if (videoRef.current) {
         const video = videoRef.current;
         video.muted = true;
@@ -432,19 +459,24 @@ export function Scanner({
         video.setAttribute("playsinline", "true");
         video.srcObject = stream;
         await waitForVideoMetadata(video);
+        if (operation !== cameraOperationRef.current) return;
         await video.play();
+        if (operation !== cameraOperationRef.current) return;
         await waitForUsableVideo(video);
+        if (operation !== cameraOperationRef.current) return;
       }
       void applyCameraFocus(stream, ["continuous"]);
       if (range.supported) void applyCameraZoom(stream, range.min);
       const remaining = CAMERA_TRANSITION_MS - (performance.now() - startedAt);
       if (remaining > 0) await sleep(remaining);
+      if (operation !== cameraOperationRef.current) return;
       scanningRef.current = true;
       setActive(true);
       setStarting(false);
-      cancelAnimationFrame(rafRef.current);
+      cancelTick();
       tick();
     } catch (e) {
+      if (operation !== cameraOperationRef.current) return;
       setStarting(false);
       setStopping(false);
       setActive(false);
@@ -455,6 +487,7 @@ export function Scanner({
   }
 
   async function stop(showStopping = false) {
+    cameraOperationRef.current += 1;
     const shouldShowStopping = showStopping && (active || starting || Boolean(streamRef.current));
     if (shouldShowStopping) {
       setStopping(true);
@@ -464,22 +497,18 @@ export function Scanner({
     scanningRef.current = false;
     finishingRef.current = false;
     transferRef.current = null;
-    lastSeenRef.current.clear();
+    lastPayloadRef.current = "";
     setActive(false);
     setStarting(false);
     setQrBox(null);
     setScanInfo(null);
-    setProgress({ have: 0, total: 0 });
-    trackingRef.current = false;
-    setTracking(false);
+    setProgress(EMPTY_PROGRESS);
     setFlipping(false);
-    setZoomVisible(false);
     zoomRef.current = zoomRangeRef.current.min;
     panRefState.current = { x: 0, y: 0 };
     setPan({ x: 0, y: 0 });
-    window.clearTimeout(zoomHideRef.current);
     boxVisibleRef.current = false;
-    cancelAnimationFrame(rafRef.current);
+    cancelTick();
     // Release camera + decoder fully — fixes mobile lag on repeated start/stop
     const video = videoRef.current;
     if (video) {
@@ -504,21 +533,25 @@ export function Scanner({
 
   async function flipCamera() {
     if (!active || stopping || starting || flipping) return;
+    const operation = ++cameraOperationRef.current;
     const next = facingRef.current === "environment" ? "user" : "environment";
     setFlipping(true);
     vibrate(12);
     try {
       const video = videoRef.current;
       scanningRef.current = false;
-      cancelAnimationFrame(rafRef.current);
+      cancelTick();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       const stream = await openCameraStream(next);
+      if (operation !== cameraOperationRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
       facingRef.current = next;
       setFacing(next);
       const range = readZoomRange(stream);
       zoomRangeRef.current = range;
-      setZoomRange(range);
       zoomRef.current = range.min;
       setZoom(range.min);
       panRefState.current = { x: 0, y: 0 };
@@ -526,8 +559,11 @@ export function Scanner({
       if (video) {
         video.srcObject = stream;
         await waitForVideoMetadata(video);
+        if (operation !== cameraOperationRef.current) return;
         await video.play();
+        if (operation !== cameraOperationRef.current) return;
         await waitForUsableVideo(video);
+        if (operation !== cameraOperationRef.current) return;
       }
       void applyCameraFocus(stream, ["continuous"]);
       if (range.supported) void applyCameraZoom(stream, range.min);
@@ -535,118 +571,105 @@ export function Scanner({
       lastDecodeRef.current = 0;
       tick();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Camera could not flip. Try again.");
+      if (operation === cameraOperationRef.current) {
+        setError(e instanceof Error ? e.message : "Camera could not flip. Try again.");
+      }
     } finally {
       await sleep(160);
       setFlipping(false);
     }
   }
 
-  async function autofocusCamera() {
-    if (!active || stopping || starting) return;
-    const next = !trackingRef.current;
-    trackingRef.current = next;
-    setTracking(next);
-    vibrate(18);
-    if (next) {
-      void applyCameraFocus(streamRef.current, ["continuous", "single-shot"]);
-    } else {
-      setVisualZoom(zoomRangeRef.current.min, undefined, true);
-      panRefState.current = { x: 0, y: 0 };
-      setPan({ x: 0, y: 0 });
-    }
-  }
-
-  function handleCameraPointerDown(event: PointerEvent<HTMLDivElement>) {
-    if (!active) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    panRef.current = { pointerId: event.pointerId, point: { x: event.clientX, y: event.clientY }, offset: { x: zoomRef.current, y: 0 } };
-    showZoomHud();
-  }
-
-  function handleCameraPointerMove(event: PointerEvent<HTMLDivElement>) {
-    if (!active) return;
-    const currentPan = panRef.current;
-    if (!currentPan || currentPan.pointerId !== event.pointerId) return;
-    const delta = (event.clientX - currentPan.point.x - (event.clientY - currentPan.point.y) * 0.35) / 180;
-    setVisualZoom(currentPan.offset.x + delta, { x: event.clientX, y: event.clientY });
-  }
-
-  function handleCameraPointerUp(event: PointerEvent<HTMLDivElement>) {
-    if (panRef.current?.pointerId === event.pointerId) panRef.current = null;
-  }
-
-  function handleCameraTouchStart(event: TouchEvent<HTMLDivElement>) {
-    if (!active) return;
-    if (event.touches.length === 2) {
-      const a = { x: event.touches[0].clientX, y: event.touches[0].clientY };
-      const b = { x: event.touches[1].clientX, y: event.touches[1].clientY };
-      pinchRef.current = { distance: distance(a, b), zoom, center: midpoint(a, b) };
-      showZoomHud();
-    }
-  }
-
-  function handleCameraTouchMove(event: TouchEvent<HTMLDivElement>) {
-    if (!active || event.touches.length !== 2 || !pinchRef.current) return;
-    event.preventDefault();
-    const a = { x: event.touches[0].clientX, y: event.touches[0].clientY };
-    const b = { x: event.touches[1].clientX, y: event.touches[1].clientY };
-    const ratio = distance(a, b) / Math.max(1, pinchRef.current.distance);
-    setVisualZoom(pinchRef.current.zoom * ratio, midpoint(a, b));
-  }
-
-  function handleCameraTouchEnd() {
-    pinchRef.current = null;
-  }
-
-  function handleWheelZoom(event: WheelEvent<HTMLDivElement>) {
-    if (!active || !event.ctrlKey) return;
-    event.preventDefault();
-    setVisualZoom(zoom + (event.deltaY < 0 ? zoomRange.step * 3 : -zoomRange.step * 3), {
-      x: event.clientX,
-      y: event.clientY,
-    });
-  }
-
   function autoFrameQr(box: QrBox, now: number) {
-    if (!trackingRef.current || now - lastAutoFrameRef.current < 110 || flipping) return;
-    const xs = box.corners.map((p) => p.x);
-    const ys = box.corners.map((p) => p.y);
+    if (now - lastAutoFrameRef.current < 110 || flipping) return;
+    const video = videoRef.current;
+    const rect = video?.getBoundingClientRect();
+    if (!video || !rect || !video.videoWidth || !video.videoHeight) return;
+    const sourceRect = getVideoSourceRect(video, { scale: zoomRef.current, ...panRefState.current });
+    const scaleX = rect.width / sourceRect.width;
+    const scaleY = rect.height / sourceRect.height;
+    const xs = box.sourceCorners.map(
+      (p) =>
+        rect.left +
+        rect.width / 2 +
+        (p.x - sourceRect.x - sourceRect.width / 2) * scaleX,
+    );
+    const ys = box.sourceCorners.map(
+      (p) =>
+        rect.top +
+        rect.height / 2 +
+        (p.y - sourceRect.y - sourceRect.height / 2) * scaleY,
+    );
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
     const maxY = Math.max(...ys);
     const qrW = Math.max(1, maxX - minX);
     const qrH = Math.max(1, maxY - minY);
-    const frameSide = Math.min(box.w, box.h);
+    const frameSide = Math.min(rect.width, rect.height);
     const currentFill = Math.max(qrW, qrH) / frameSide;
-    const targetFill = 0.74;
+    const targetFill = 0.62;
     const currentZoom = zoomRef.current;
-    const next = currentZoom * clamp(targetFill / currentFill, 0.9, 1.12);
+    const next = clamp(
+      currentZoom * clamp(targetFill / currentFill, 0.9, 1.12),
+      zoomRangeRef.current.min,
+      zoomRangeRef.current.max,
+    );
     lastAutoFrameRef.current = now;
-    const rect = videoRef.current?.getBoundingClientRect();
-    if (rect) {
-      const centerX = ((minX + maxX) / 2 / box.w) * rect.width;
-      const centerY = ((minY + maxY) / 2 / box.h) * rect.height;
-      if (now - lastFocusPointRef.current > 650) {
-        lastFocusPointRef.current = now;
-        void applyCameraFocus(streamRef.current, ["continuous", "single-shot"], {
-          x: (minX + maxX) / 2 / box.w,
-          y: (minY + maxY) / 2 / box.h,
-        });
-      }
-      const maxXPan = Math.max(0, (rect.width * (zoomRef.current - 1)) / 2);
-      const maxYPan = Math.max(0, (rect.height * (zoomRef.current - 1)) / 2);
-      const nextPan = {
-        x: clamp(panRefState.current.x + (rect.width / 2 - centerX) * 0.34, -maxXPan, maxXPan),
-        y: clamp(panRefState.current.y + (rect.height / 2 - centerY) * 0.34, -maxYPan, maxYPan),
-      };
-      panRefState.current = nextPan;
-      setPan(nextPan);
-      setVisualZoom(next, undefined);
-    } else {
-      setVisualZoom(next);
+    if (now - lastFocusPointRef.current > 650) {
+      lastFocusPointRef.current = now;
+      const sourceCenterX =
+        box.sourceCorners.reduce((sum, point) => sum + point.x, 0) / box.sourceCorners.length;
+      const sourceCenterY =
+        box.sourceCorners.reduce((sum, point) => sum + point.y, 0) / box.sourceCorners.length;
+      void applyCameraFocus(streamRef.current, ["continuous", "single-shot"], {
+        x: sourceCenterX / video.videoWidth,
+        y: sourceCenterY / video.videoHeight,
+      });
     }
+    const centerX = (minX + maxX) / 2 - rect.left - rect.width / 2;
+    const centerY = (minY + maxY) / 2 - rect.top - rect.height / 2;
+    const targetPanX = -((centerX - panRefState.current.x) / currentZoom) * next;
+    const targetPanY = -((centerY - panRefState.current.y) / currentZoom) * next;
+    const nextPan = {
+      x: clamp(
+        panRefState.current.x + (targetPanX - panRefState.current.x) * 0.45,
+        -(rect.width * (next - 1)) / 2,
+        (rect.width * (next - 1)) / 2,
+      ),
+      y: clamp(
+        panRefState.current.y + (targetPanY - panRefState.current.y) * 0.45,
+        -(rect.height * (next - 1)) / 2,
+        (rect.height * (next - 1)) / 2,
+      ),
+    };
+    const zoomChanged = Math.abs(next - currentZoom) > 0.001;
+    const panChanged =
+      Math.abs(nextPan.x - panRefState.current.x) > 0.5 ||
+      Math.abs(nextPan.y - panRefState.current.y) > 0.5;
+    zoomRef.current = next;
+    panRefState.current = nextPan;
+    if (zoomChanged) setZoom(next);
+    if (panChanged) setPan(nextPan);
+  }
+
+  function recoverCameraFrame(now: number) {
+    if (now - lastAutoFrameRef.current < 180) return;
+    const minZoom = zoomRangeRef.current.min;
+    const nextZoom = Math.max(minZoom, minZoom + (zoomRef.current - minZoom) * 0.75);
+    const nextPan = { x: panRefState.current.x * 0.75, y: panRefState.current.y * 0.75 };
+    if (
+      Math.abs(nextZoom - zoomRef.current) < 0.01 &&
+      Math.abs(nextPan.x) < 1 &&
+      Math.abs(nextPan.y) < 1
+    ) {
+      return;
+    }
+    lastAutoFrameRef.current = now;
+    zoomRef.current = nextZoom;
+    panRefState.current = nextPan;
+    setZoom(nextZoom);
+    setPan(nextPan);
   }
 
   function clearDonePreview() {
@@ -664,8 +687,7 @@ export function Scanner({
     a.href = done.url;
     a.download = done.name || "offdrop-file";
     a.click();
-    await sleep(1000);
-    clearDonePreview();
+    await sleep(600);
     setDownloading(false);
   }
 
@@ -679,57 +701,201 @@ export function Scanner({
         void downloadDone();
         return;
       }
-      clearDonePreview();
       onCompleteAction?.();
     } catch {
       /* user cancelled */
     }
   }
 
+  function getDetector(): NativeDetector | null {
+    if (detectorRef.current !== undefined) return detectorRef.current;
+    try {
+      const Ctor = (window as unknown as {
+        BarcodeDetector?: new (opts: { formats: string[] }) => NativeDetector;
+      }).BarcodeDetector;
+      detectorRef.current = Ctor ? new Ctor({ formats: ["qr_code"] }) : null;
+    } catch {
+      detectorRef.current = null;
+    }
+    return detectorRef.current;
+  }
+
+  /** jsQR in a Web Worker; falls back to the main thread if workers are unavailable. */
+  function decodeAsync(ctx: CanvasRenderingContext2D, w: number, h: number, deep: boolean): Promise<ScanResult | null> {
+    if (workerRef.current === undefined) {
+      try {
+        const worker = new Worker(new URL("../lib/qr-decode.worker.ts", import.meta.url), { type: "module" });
+        worker.onmessage = (event: MessageEvent<{ id: number; result: ScanResult | null }>) => {
+          const resolve = workerPending.current.get(event.data.id);
+          workerPending.current.delete(event.data.id);
+          resolve?.(event.data.result);
+        };
+        worker.onerror = () => {
+          workerRef.current = null;
+          for (const resolve of workerPending.current.values()) resolve(null);
+          workerPending.current.clear();
+        };
+        workerRef.current = worker;
+      } catch {
+        workerRef.current = null;
+      }
+    }
+    const worker = workerRef.current;
+    if (!worker) return Promise.resolve(decodeQr(ctx, w, h, deep));
+    const img = ctx.getImageData(0, 0, w, h);
+    const id = ++workerSeq.current;
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(() => {
+        workerPending.current.delete(id);
+        resolve(null);
+      }, 1500);
+      workerPending.current.set(id, (r) => {
+        window.clearTimeout(timer);
+        resolve(r);
+      });
+      worker.postMessage({ id, data: img.data.buffer, w, h, deep }, [img.data.buffer]);
+    });
+  }
+
+  /** Run the next decode exactly when the camera delivers a new frame (not on a blind 60 Hz timer). */
+  function scheduleTick() {
+    const video = videoRef.current as (HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: () => void) => number;
+    }) | null;
+    if (video?.requestVideoFrameCallback) {
+      vfcRef.current = video.requestVideoFrameCallback(() => tick());
+    } else {
+      rafRef.current = requestAnimationFrame(tick);
+    }
+  }
+
+  function cancelTick() {
+    cancelAnimationFrame(rafRef.current);
+    const video = videoRef.current as (HTMLVideoElement & { cancelVideoFrameCallback?: (h: number) => void }) | null;
+    if (video?.cancelVideoFrameCallback && vfcRef.current) video.cancelVideoFrameCallback(vfcRef.current);
+    vfcRef.current = 0;
+  }
+
   function tick() {
     if (!scanningRef.current) return;
+    scheduleTick();
+    if (decodeBusyRef.current) return; // never queue decodes; always work on the freshest frame
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const now = performance.now();
+    const detector = getDetector();
+    if (
+      !video ||
+      !canvas ||
+      now - lastDecodeRef.current < (detector ? 0 : DECODE_INTERVAL_MS) ||
+      video.readyState < video.HAVE_CURRENT_DATA ||
+      video.videoWidth <= 0 ||
+      video.videoHeight <= 0
+    ) {
+      return;
+    }
+    lastDecodeRef.current = now;
+    decodeBusyRef.current = true;
+    void processFrame(video, canvas, now).finally(() => {
+      decodeBusyRef.current = false;
+    });
+  }
+
+  async function processFrame(video: HTMLVideoElement, canvas: HTMLCanvasElement, now: number) {
     try {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      const now = performance.now();
-      if (
-        video &&
-        canvas &&
-        now - lastDecodeRef.current >= DECODE_INTERVAL_MS &&
-        video.readyState >= video.HAVE_CURRENT_DATA &&
-        video.videoWidth > 0 &&
-        video.videoHeight > 0
-      ) {
-        lastDecodeRef.current = now;
-        const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(video.videoWidth, video.videoHeight));
-        const w = Math.max(1, Math.round(video.videoWidth * scale));
-        const h = Math.max(1, Math.round(video.videoHeight * scale));
+      const detector = getDetector();
+      decodeFrameRef.current += 1;
+      let corners: ScanResult["corners"] | null = null;
+      let sourceCorners: ScanResult["corners"] | null = null;
+      let w = video.videoWidth;
+      let h = video.videoHeight;
+      const frameTransform = { scale: zoomRef.current, ...panRefState.current };
+      const sourceRect = getVideoSourceRect(video, frameTransform);
+
+      if (detector) {
+        try {
+          // Unzoomed: hand the <video> straight to the hardware detector (no canvas copy at all).
+          let source: CanvasImageSource = video;
+          if (zoomRef.current > 1.01) {
+            const size = getDecodeSize(video, NATIVE_MAX_EDGE);
+            w = size.width;
+            h = size.height;
+            if (canvas.width !== w) canvas.width = w;
+            if (canvas.height !== h) canvas.height = h;
+            const ctx = canvas.getContext("2d", { willReadFrequently: true });
+            if (!ctx) return;
+            drawVideoFrame(ctx, video, w, h, frameTransform);
+            source = canvas;
+          }
+          const found = await detector.detect(source);
+          if (!scanningRef.current) return;
+          let accepted = false;
+          // A screen can show more than one QR; take every one of ours, mark the first.
+          for (const item of found) {
+            if (!item.rawValue || !handleScan(item.rawValue)) continue;
+            if (!accepted) {
+              const pts = item.cornerPoints;
+              if (pts && pts.length >= 4) {
+                corners = [pts[0], pts[1], pts[2], pts[3]].map((p) => ({
+                  x: p.x,
+                  y: p.y,
+                })) as ScanResult["corners"];
+                sourceCorners =
+                  zoomRef.current > 1.01
+                    ? (corners.map((p) => ({
+                        x: sourceRect.x + (p.x / w) * sourceRect.width,
+                        y: sourceRect.y + (p.y / h) * sourceRect.height,
+                      })) as ScanResult["corners"])
+                    : (corners.map((p) => ({
+                        x: (p.x / w) * video.videoWidth,
+                        y: (p.y / h) * video.videoHeight,
+                      })) as ScanResult["corners"]);
+              }
+              accepted = true;
+            }
+          }
+        } catch (err) {
+          // Detector unusable on this device — fall back to jsQR permanently.
+          console.warn("Native QR detector failed, falling back to jsQR:", err);
+          detectorRef.current = null;
+          setFastDecoder(false);
+        }
+      } else {
+        const size = getDecodeSize(video, DECODE_MAX_EDGE);
+        w = size.width;
+        h = size.height;
         if (canvas.width !== w) canvas.width = w;
         if (canvas.height !== h) canvas.height = h;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        if (ctx) {
-          decodeFrameRef.current += 1;
-          const transform = { scale: zoomRef.current, ...panRefState.current };
-          drawVideoFrame(ctx, video, w, h, transform);
-          const deepScan = !boxVisibleRef.current ? decodeFrameRef.current % 3 === 0 : decodeFrameRef.current % 14 === 0;
-          const code = decodeQr(ctx, w, h, deepScan);
-          frameErrorCountRef.current = 0;
-          if (code?.data) {
-            handleScan(code.data);
-            const box: QrBox = { w, h, corners: code.corners };
-            if (now - lastBoxUpdateRef.current > 60) {
-              boxVisibleRef.current = true;
-              lastBoxUpdateRef.current = now;
-              setQrBox(box);
-              autoFrameQr(box, now);
-            }
-          } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
-            boxVisibleRef.current = false;
-            lastBoxUpdateRef.current = now;
-            setQrBox(null);
-          }
+        if (!ctx) return;
+        drawVideoFrame(ctx, video, w, h, frameTransform);
+        const deepScan = !boxVisibleRef.current ? decodeFrameRef.current % 3 === 0 : decodeFrameRef.current % 14 === 0;
+        const code = await decodeAsync(ctx, w, h, deepScan);
+        if (!scanningRef.current) return;
+        if (code?.data && handleScan(code.data)) {
+          corners = code.corners;
+          sourceCorners = corners.map((p) => ({
+            x: sourceRect.x + (p.x / w) * sourceRect.width,
+            y: sourceRect.y + (p.y / h) * sourceRect.height,
+          })) as ScanResult["corners"];
         }
       }
+      frameErrorCountRef.current = 0;
+
+      if (corners) {
+        const box: QrBox = { w, h, corners, sourceCorners: sourceCorners ?? corners };
+        if (now - lastBoxUpdateRef.current > 60) {
+          boxVisibleRef.current = true;
+          lastBoxUpdateRef.current = now;
+          setQrBox(box);
+          autoFrameQr(box, now);
+        }
+      } else if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 180) {
+        boxVisibleRef.current = false;
+        lastBoxUpdateRef.current = now;
+        setQrBox(null);
+      }
+      if (!corners) recoverCameraFrame(now);
     } catch (err) {
       frameErrorCountRef.current += 1;
       console.error("Scan frame error:", err);
@@ -738,58 +904,67 @@ export function Scanner({
           "Camera scanning hit repeated frame errors. Keep the camera steady and retry if it continues.",
         );
       }
-    } finally {
-      if (scanningRef.current) rafRef.current = requestAnimationFrame(tick);
     }
   }
 
-  function updateProgress(t: Transfer) {
-    const next = { have: t.chunks.size, total: t.header.total };
-    progressPendingRef.current = next;
+  function updateProgress(t: Transfer, force = false) {
     const now = performance.now();
-    if (next.have === next.total || now - progressCommitRef.current > PROGRESS_COMMIT_MS) {
-      progressCommitRef.current = now;
-      setProgress(next);
-    }
+    if (!force && now - progressCommitRef.current < PROGRESS_COMMIT_MS) return;
+    progressCommitRef.current = now;
+    const frac = t.decoder.progress;
+    const elapsed = (Date.now() - t.startedAt) / 1000;
+    const eta = frac > 0.03 && elapsed > 3 ? (elapsed * (1 - frac)) / frac : null;
+    const rate = elapsed > 1 ? (frac * t.header.size) / elapsed : 0;
+    setProgress({ have: t.decoder.count, total: t.header.total, frac, eta, rate });
   }
 
-  function handleScan(payload: string) {
-    if (finishingRef.current) return;
+  /** Returns true when the payload was one of ours (used to pick among several QR codes). */
+  function handleScan(payload: string): boolean {
+    if (finishingRef.current) return true;
+    // The same frame stays on screen for several camera frames; ignore repeats cheaply.
+    if (payload === lastPayloadRef.current) return true;
     const parsed = parseFrame(payload);
-    if (!parsed) return;
-    const seenKey = `${parsed.kind}:${parsed.id}:${parsed.kind === "data" ? parsed.index : "h"}`;
-    const now = performance.now();
-    const seenAt = lastSeenRef.current.get(seenKey);
-    if (seenAt && now - seenAt < 80) return;
-    lastSeenRef.current.set(seenKey, now);
-    if (lastSeenRef.current.size > 700 && now - lastSeenCleanupRef.current > SEEN_CLEANUP_MS) {
-      lastSeenCleanupRef.current = now;
-      for (const [key, ts] of lastSeenRef.current) {
-        if (now - ts > 16000 || lastSeenRef.current.size > 1400) lastSeenRef.current.delete(key);
-      }
-    }
+    if (!parsed) return false;
+    lastPayloadRef.current = payload;
 
     if (parsed.kind === "header") {
       let t = transferRef.current;
       if (!t || t.header.id !== parsed.id) {
-        t = { header: parsed, chunks: new Map<number, Uint8Array>(), startedAt: Date.now() };
+        if (parsed.size > RECEIVE_LIMIT_BYTES) {
+          setError(
+            `This file (${formatBytes(parsed.size)}) is too large to receive on this device. The limit is ${formatBytes(RECEIVE_LIMIT_BYTES)}.`,
+          );
+          return true;
+        }
+        let decoder: FountainDecoder;
+        try {
+          decoder = new FountainDecoder(parsed);
+        } catch {
+          setError("Not enough free memory on this device to receive this file.");
+          return true;
+        }
+        t = { header: parsed, decoder, startedAt: Date.now() };
         transferRef.current = t;
+        setError(null);
         sfx.fileFound();
+        setScanInfo({ name: parsed.name, mime: parsed.mime, size: parsed.origSize });
+        updateProgress(t, true);
       }
-      setScanInfo({ name: t.header.name, mime: t.header.mime, size: t.header.size });
-      updateProgress(t);
-      return;
+      return true;
     }
 
-    let t = transferRef.current;
-    if (!t || t.header.id !== parsed.id) return;
-    if (parsed.index >= t.header.total) return;
-    if (!t.chunks.has(parsed.index)) {
-      t.chunks.set(parsed.index, parsed.payload);
+    const t = transferRef.current;
+    if (!t || t.header.id !== parsed.id) return true;
+    if (t.decoder.add(parsed)) {
       updateProgress(t);
-      sfx.scan();
+      const now = performance.now();
+      if (now - lastScanSoundRef.current > SCAN_SOUND_MS) {
+        lastScanSoundRef.current = now;
+        sfx.scan(t.decoder.progress);
+      }
     }
-    if (t.chunks.size === t.header.total) void finish();
+    if (t.decoder.complete) void finish();
+    return true;
   }
 
   async function finish() {
@@ -797,55 +972,69 @@ export function Scanner({
     if (!t || finishingRef.current) return;
     finishingRef.current = true;
     try {
-      const ordered: Uint8Array[] = new Array(t.header.total);
-      for (let i = 0; i < t.header.total; i++) {
-        const c = t.chunks.get(i);
-        if (!c) throw new Error("Transfer is missing QR frames.");
-        ordered[i] = c;
+      updateProgress(t, true);
+      const received = t.decoder.result();
+      let bytes: Uint8Array = received;
+      let valid = crc32(received) === t.header.crc;
+      if (valid && t.header.compressed) {
+        bytes = await inflateRaw(received);
+        valid = bytes.length === t.header.origSize;
       }
-      const bytes = reconstruct(ordered, t.header.size);
-      const computed = crc32(bytes);
-      const valid = computed === t.header.crc;
+      if (!valid) {
+        // Should be vanishingly rare (QR frames carry their own error correction),
+        // but never hand over a corrupt file: drop it and start over cleanly.
+        sfx.error();
+        transferRef.current = null;
+        lastPayloadRef.current = "";
+        setScanInfo(null);
+        setProgress(EMPTY_PROGRESS);
+        setError("Checksum mismatch — the file was discarded. Keep scanning and it will restart automatically.");
+        return;
+      }
       const mime = t.header.mime || "application/octet-stream";
       const blob = new Blob([bytes as BlobPart], { type: mime });
-      if (valid) sfx.success();
-      else sfx.error();
-      if (!valid) throw new Error("Received with errors — scan it again for a clean file.");
+      sfx.success();
 
-      await saveItem({
-        id: t.header.id + "-" + Date.now(),
+      const meta = {
+        id: t.header.id.toString(16).padStart(8, "0") + "-" + Date.now(),
         filename: t.header.name,
         mime: t.header.mime,
-        size: t.header.size,
+        size: t.header.origSize,
         receivedAt: Date.now(),
-        direction: "received",
+        direction: "received" as const,
         durationMs: Date.now() - t.startedAt,
         valid,
-        blob,
-      });
+      };
+      // History is best-effort: a full disk must never cost the user the file they just received.
+      try {
+        await saveItem({ ...meta, blob });
+      } catch (err) {
+        console.warn("Could not save to history:", err);
+      }
 
       const previewUrl = URL.createObjectURL(blob);
       doneUrlRef.current = previewUrl;
       const aspectRatio = await detectAspectRatio(blob, mime, previewUrl);
+      setCelebrate((n) => n + 1);
       setDone({
         name: t.header.name,
         mime,
-        size: t.header.size,
+        size: t.header.origSize,
         blob,
         url: previewUrl,
         aspectRatio,
       });
-      transferRef.current = null;
-      lastSeenRef.current.clear();
+      transferRef.current = null; // lets the (possibly huge) decode buffer be freed
+      lastPayloadRef.current = "";
       setScanInfo(null);
-      setProgress({ have: 0, total: 0 });
+      setProgress(EMPTY_PROGRESS);
       await stop(true);
       onSaved();
     } catch (e) {
       transferRef.current = null;
-      lastSeenRef.current.clear();
+      lastPayloadRef.current = "";
       setScanInfo(null);
-      setProgress({ have: 0, total: 0 });
+      setProgress(EMPTY_PROGRESS);
       setError(e instanceof Error ? e.message : "The scanned file could not be reconstructed yet.");
     } finally {
       finishingRef.current = false;
@@ -869,144 +1058,135 @@ export function Scanner({
   useEffect(
     () => () => {
       void stopRef.current();
-      window.clearTimeout(zoomHideRef.current);
+      workerRef.current?.terminate();
+      workerRef.current = undefined;
       if (doneUrlRef.current) URL.revokeObjectURL(doneUrlRef.current);
     },
     [],
   );
 
-  const pct = progress.total ? (progress.have / progress.total) * 100 : 0;
+  const pct = progress.total ? Math.min(100, progress.frac * 100) : 0;
   const label = mediaLabel(scanInfo?.mime);
-  const containerAspect = done ? Math.min(2.2, Math.max(0.55, done.aspectRatio)) : 1;
+  const live = active || starting;
+  const hasProgress = progress.total > 0;
+  const speedLabel = progress.rate > 0 ? `${formatBytes(Math.round(progress.rate))}/s` : null;
+  const etaLabel = formatEta(progress.eta);
 
-  const fullscreen = active && !done;
+  const errorBanner = error ? (
+    <div
+      role="alert"
+      className="glass animate-pop-in pointer-events-auto rounded-2xl border border-destructive/40 p-3 text-xs font-medium text-destructive"
+    >
+      {error}
+    </div>
+  ) : null;
+
+  const stageClass = done
+    ? "hidden"
+    : live
+      ? // Phones: the camera owns the whole screen. Tablet/desktop: a framed 16:9 stage.
+        "absolute inset-0 z-20 bg-black md:relative md:inset-auto md:z-auto md:aspect-video md:w-full md:max-w-[min(56rem,calc((100dvh-14rem)*16/9))] md:flex-none md:rounded-[2rem] md:shadow-2xl md:shadow-black/30"
+      : "relative mx-3 mt-2 flex-1 rounded-[1.5rem] md:mx-auto md:w-full md:max-w-2xl md:flex-none md:aspect-[5/4]";
 
   return (
-    <div className="flex flex-1 flex-col px-5 pb-2 animate-fade-up">
+    <div className="relative flex min-h-0 flex-1 flex-col md:items-center md:justify-center md:px-8">
+      <MediaViewer item={viewer} onClose={() => setViewer(null)} />
+
+      {/* ===================== STAGE: idle hero + live camera ===================== */}
       <div
-        className={`glass-strong relative flex items-center justify-center overflow-hidden ${
-          fullscreen
-            ? "fixed inset-0 z-40 h-[100dvh] w-screen max-w-none rounded-none"
-            : "mx-auto w-full max-w-sm rounded-2xl"
-        } ${done ? "order-2 mt-3" : ""}`}
-        data-camera-gesture-zone="true"
-        onPointerDown={handleCameraPointerDown}
-        onPointerMove={handleCameraPointerMove}
-        onPointerUp={handleCameraPointerUp}
-        onPointerCancel={handleCameraPointerUp}
-        onTouchStart={handleCameraTouchStart}
-        onTouchMove={handleCameraTouchMove}
-        onTouchEnd={handleCameraTouchEnd}
-        onWheel={handleWheelZoom}
-        style={{
-          aspectRatio: fullscreen ? "auto" : `${containerAspect} / 1`,
-          touchAction: active ? "none" : "manipulation",
-          transition: "aspect-ratio 0.55s cubic-bezier(0.2, 0.8, 0.2, 1)",
-        }}
+        className={`glass-strong ${stageClass} overflow-hidden transition-[border-radius,box-shadow] duration-500`}
+        data-no-swipe
+        style={{ touchAction: "none" }}
       >
         <video
           ref={videoRef}
           playsInline
           muted
-          className="h-full w-full object-cover"
+          className="absolute inset-0 h-full w-full object-cover"
           style={{
-            display: active || starting ? "block" : "none",
+            display: live ? "block" : "none",
             transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
             transition: flipping ? "opacity 0.16s ease, transform 0.16s ease" : "transform 0.12s ease-out",
           }}
         />
         <canvas ref={canvasRef} className="hidden" />
 
-        {!active && !starting && !done && (
-          <div className="absolute inset-0 px-6 text-center">
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="relative">
-                <span className="absolute inset-0 rounded-full bg-primary/40 animate-pulse-ring" />
-                <div className="relative grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40">
-                  <ScanLine className="h-8 w-8 text-primary-foreground" />
-                </div>
+        {/* ---- idle hero ---- */}
+        {!live && (
+          <div className="relative flex h-full min-h-[min(25rem,calc(100dvh-13rem))] flex-col items-center justify-center gap-6 px-5 py-5 text-center sm:min-h-[22rem] sm:gap-8 sm:px-7 sm:py-8">
+            <div className="hero-glow pointer-events-none absolute inset-0" aria-hidden="true" />
+            <div className="hero-stage relative grid place-items-center">
+              <span className="absolute h-28 w-28 rounded-full bg-primary/20 animate-pulse-ring sm:h-36 sm:w-36" />
+              <div className="hero-cube relative grid h-20 w-20 place-items-center rounded-[1.6rem] bg-gradient-to-br from-primary to-accent shadow-xl shadow-primary/30 sm:h-24 sm:w-24">
+                <ScanLine className="h-9 w-9 text-primary-foreground sm:h-10 sm:w-10" strokeWidth={2} />
               </div>
             </div>
-            <p className="absolute inset-x-6 bottom-10 text-sm text-muted-foreground sm:bottom-12">
-              Aim at the OFFDROP qr
-            </p>
+            <div className="relative w-full">
+              <h2 className="text-display text-2xl sm:text-3xl">Receive a file</h2>
+              <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
+                Start your camera, then point it at the animated QR on the sender's screen. OFFDROP keeps the code
+                centered for you.
+              </p>
+              <ul className="mx-auto mt-4 flex max-w-md flex-wrap items-center justify-center gap-2 text-[10px] font-semibold text-muted-foreground sm:text-[11px]">
+                <li className="glass rounded-full px-3 py-1.5">Private · no account</li>
+                <li className="glass rounded-full px-3 py-1.5">Photos · videos · files</li>
+                <li className="glass rounded-full px-3 py-1.5">Verified transfer</li>
+              </ul>
+            </div>
+            <div className="relative flex w-full max-w-md flex-col items-center gap-3">
+              {errorBanner && <div className="w-full max-w-sm">{errorBanner}</div>}
+              <button
+                onClick={() => {
+                  sfx.unlock();
+                  void start();
+                }}
+                disabled={starting || stopping}
+                className="group relative flex min-h-14 w-full items-center justify-center gap-2 overflow-hidden rounded-2xl bg-gradient-to-br from-primary to-accent py-4 text-base font-bold text-primary-foreground shadow-xl shadow-primary/25 transition-transform duration-200 active:scale-[0.98] disabled:opacity-80"
+              >
+                <span className="btn-sheen absolute inset-0" />
+                <Camera className="relative h-5 w-5" />
+                <span className="relative">Open camera</span>
+              </button>
+            </div>
           </div>
         )}
 
+        {/* ---- starting spinner ---- */}
         {starting && !active && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          </div>
-        )}
-
-        {done && (
-          <div className="absolute inset-0 flex flex-col bg-secondary/40 animate-fade-up">
-            <div className="relative flex-1 overflow-hidden">
-              {done.mime.startsWith("image/") && done.url ? (
-                <img src={done.url} alt={done.name} className="h-full w-full object-contain" />
-              ) : done.mime.startsWith("video/") && done.url ? (
-                <video
-                  src={done.url}
-                  className="h-full w-full object-contain"
-                  controls
-                  playsInline
-                />
-              ) : done.mime.startsWith("audio/") && done.url ? (
-                <div className="audio-tile flex h-full w-full flex-col items-center justify-center gap-3 px-4">
-                  <Music2 className="h-10 w-10 text-primary" strokeWidth={1.8} />
-                  <audio src={done.url} controls className="w-full max-w-xs" />
-                </div>
-              ) : (
-                <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted-foreground">
-                  <FileText className="h-12 w-12" strokeWidth={1.6} />
-                  <span className="text-xs">Preview not available</span>
-                </div>
-              )}
-              <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-background/70 px-2.5 py-1 text-[10px] font-semibold backdrop-blur">
-                <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
-                Received
-              </div>
-              <button
-                type="button"
-                onClick={clearDonePreview}
-                className="glass absolute right-3 top-3 z-10 grid h-8 w-8 place-items-center rounded-full text-foreground active:scale-90"
-                aria-label="Close received preview"
-              >
-                <X className="h-3.5 w-3.5" strokeWidth={2.5} />
-              </button>
+          <div
+            className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/55 px-8 text-center text-white backdrop-blur-sm"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="grid h-16 w-16 place-items-center rounded-3xl bg-white/10">
+              <Camera className="h-7 w-7 text-white/90" strokeWidth={2} />
             </div>
-            <div className="grid grid-cols-2 gap-2 border-t border-glass-border bg-background/50 p-2 backdrop-blur">
-              <button
-                type="button"
-                onClick={() => void shareDone()}
-                className="glass flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold active:scale-[0.97]"
-              >
-                <Share2 className="h-4 w-4" />
-                Share
-              </button>
-              <button
-                type="button"
-                onClick={() => void downloadDone()}
-                disabled={downloading}
-                className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-primary to-accent py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97] disabled:opacity-85"
-              >
-                {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                Download
-              </button>
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            <div>
+              <p className="text-base font-bold">Opening camera for Receive…</p>
+              <p className="mt-1 max-w-xs text-xs leading-relaxed text-white/70">
+                Your live view will fill the screen. Point it at the sender's QR code.
+              </p>
             </div>
           </div>
         )}
 
+        {/* ---- live camera overlays ---- */}
         {active && (
           <>
-            <div className="scanner-corners-in pointer-events-none absolute inset-3 rounded-xl">
-              <span className="absolute left-0 top-0 h-10 w-10 rounded-tl-xl border-l-[3px] border-t-[3px] border-white" />
-              <span className="absolute right-0 top-0 h-10 w-10 rounded-tr-xl border-r-[3px] border-t-[3px] border-white" />
-              <span className="absolute bottom-0 left-0 h-10 w-10 rounded-bl-xl border-b-[3px] border-l-[3px] border-white" />
-              <span className="absolute bottom-0 right-0 h-10 w-10 rounded-br-xl border-b-[3px] border-r-[3px] border-white" />
-            </div>
-            <div className="pointer-events-none absolute inset-3 overflow-hidden rounded-xl">
-              <div className="scan-sweep absolute left-0 right-0 top-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent" />
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/45 via-transparent to-black/55" />
+            <div
+              className={`scanner-corners-in pointer-events-none absolute inset-6 rounded-3xl transition-opacity duration-300 sm:inset-10 md:inset-8 ${
+                qrBox ? "opacity-0" : "opacity-100"
+              }`}
+            >
+              <span className="absolute left-0 top-0 h-12 w-12 rounded-tl-3xl border-l-[3px] border-t-[3px] border-white/90" />
+              <span className="absolute right-0 top-0 h-12 w-12 rounded-tr-3xl border-r-[3px] border-t-[3px] border-white/90" />
+              <span className="absolute bottom-0 left-0 h-12 w-12 rounded-bl-3xl border-b-[3px] border-l-[3px] border-white/90" />
+              <span className="absolute bottom-0 right-0 h-12 w-12 rounded-br-3xl border-b-[3px] border-r-[3px] border-white/90" />
+              <div className="absolute inset-0 overflow-hidden rounded-3xl">
+                <div className="scan-sweep absolute left-0 right-0 top-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent" />
+              </div>
             </div>
             {qrBox && (
               <svg
@@ -1020,118 +1200,225 @@ export function Scanner({
                 ))}
               </svg>
             )}
+
+            {/* HUD: status + progress */}
+            <div className="pointer-events-none absolute inset-x-3 top-[max(0.75rem,env(safe-area-inset-top))] z-10 mx-auto flex max-w-xl flex-col gap-2 md:top-4">
+              <div className="hud-card animate-pop-in pointer-events-auto flex items-center gap-3 rounded-3xl px-3.5 py-2.5 text-white">
+                <ProgressRing value={pct} active={hasProgress} locked={Boolean(qrBox)} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-bold leading-tight">
+                    {hasProgress
+                      ? (scanInfo?.name ?? `Receiving ${label}`)
+                      : qrBox
+                        ? "Centering QR code…"
+                        : "Looking for an OFFDROP code…"}
+                  </p>
+                  <p className="mt-0.5 truncate text-[11px] text-white/70">
+                    {hasProgress
+                      ? [scanInfo ? formatBytes(scanInfo.size) : null, speedLabel, etaLabel].filter(Boolean).join(" · ")
+                      : "Fill the frame with the sender's screen"}
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  <span className="rounded-full bg-white/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide">
+                    {fastDecoder ? "Hardware decode" : "Software decode"}
+                  </span>
+                  {hasProgress && (
+                    <span className="text-[10px] font-semibold tabular-nums text-white/70">
+                      {progress.have}/{progress.total}
+                    </span>
+                  )}
+                </div>
+              </div>
+              {hasProgress && (
+                <div className="mx-2 h-1.5 overflow-hidden rounded-full bg-white/20">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-primary to-accent shadow-[0_0_14px_var(--color-primary)] transition-[width] duration-300 ease-out"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              )}
+              {errorBanner}
+            </div>
+
             {flipping && (
-              <div className="pointer-events-none absolute inset-0 grid place-items-center bg-background/18 backdrop-blur-sm">
+              <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-black/25 backdrop-blur-sm">
                 <div className="glass grid h-16 w-16 place-items-center rounded-2xl">
                   <SwitchCamera className="h-7 w-7 animate-pulse text-primary" strokeWidth={2.4} />
                 </div>
               </div>
             )}
-            {zoomVisible && (
-              <div className="pointer-events-none absolute inset-x-6 bottom-5 flex items-center gap-3 rounded-full bg-background/70 px-4 py-2 backdrop-blur">
-                <span className="h-4 w-1 rounded-full bg-primary" />
-                <div className="flex h-6 flex-1 items-center gap-1.5 overflow-hidden">
-                  {Array.from({ length: 34 }).map((_, i) => {
-                    const activeTick = i / 33 <= (zoom - zoomRange.min) / Math.max(0.01, zoomRange.max - zoomRange.min);
-                    return (
-                      <span
-                        key={i}
-                        className={`h-3 w-0.5 shrink-0 rounded-full ${activeTick ? "bg-primary" : "bg-foreground/70"}`}
-                      />
-                    );
-                  })}
-                </div>
-                <span className="min-w-8 text-right text-[10px] font-bold tabular-nums text-foreground">
-                  {zoom.toFixed(1)}×
-                </span>
-              </div>
-            )}
+
+            {/* Controls */}
+            <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-3 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-6 md:pb-5">
+              <button
+                onClick={() => void flipCamera()}
+                disabled={stopping || starting || flipping}
+                aria-label={`Flip camera (current: ${facing === "environment" ? "back" : "front"})`}
+                className="hud-card grid h-14 w-14 place-items-center rounded-full text-white transition-transform active:scale-90 disabled:opacity-60"
+              >
+                <SwitchCamera className={`h-5 w-5 ${facing === "user" ? "scale-x-[-1]" : ""}`} strokeWidth={2.2} />
+              </button>
+              <button
+                onClick={() => void stop(true)}
+                disabled={stopping}
+                className="flex h-14 min-w-[10rem] items-center justify-center gap-2 rounded-full bg-white px-6 text-sm font-bold text-black shadow-xl transition-transform active:scale-95 disabled:opacity-80"
+              >
+                {stopping ? <Loader2 className="h-4 w-4 animate-spin" /> : <CameraOff className="h-4 w-4" />}
+                {stopping ? "Stopping" : "Stop"}
+              </button>
+            </div>
           </>
         )}
       </div>
 
-      {error && (
-        <div className="glass mt-3 rounded-2xl border border-destructive/40 p-3 text-xs text-destructive">
-          {error}
-        </div>
-      )}
-
-      <div className={`${done ? "order-1 mt-0" : "mt-3"} flex items-center justify-center gap-2 ${fullscreen ? "fixed inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 px-5" : ""}`}>
-        {!active && !stopping ? (
+      {/* ===================== RESULT ===================== */}
+      {done && (
+        <div className="animate-pop-in relative mx-auto flex min-h-0 w-full max-w-md flex-1 flex-col gap-3 overflow-y-auto px-4 pb-3 pt-1 md:max-w-3xl">
+          <Confetti key={celebrate} />
           <button
-            onClick={() => void start()}
-            disabled={starting}
-            className="flex w-full max-w-[17rem] items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/30 active:scale-[0.97] disabled:opacity-80"
+            type="button"
+            onClick={() => {
+              if (done.url) setViewer({ url: done.url, name: done.name, mime: done.mime, size: done.size, blob: done.blob });
+            }}
+            aria-label={`Open ${done.name}`}
+            className="group glass-strong relative min-h-[15rem] w-full flex-1 overflow-hidden rounded-[2rem] bg-black/80 text-left transition-transform duration-300 active:scale-[0.985]"
           >
-            {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
-            {starting ? "Starting Camera" : "Start Camera"}
-          </button>
-        ) : (
-          <>
-            <button
-              onClick={() => void flipCamera()}
-              disabled={stopping || starting || flipping}
-              aria-label={`Flip camera (current: ${facing === "environment" ? "back" : "front"})`}
-              className="glass flex h-12 min-w-[6.8rem] shrink-0 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-semibold active:scale-95 disabled:opacity-60 sm:h-14 sm:min-w-[8.2rem] sm:px-5 sm:text-base"
-            >
-              <SwitchCamera className={`h-4 w-4 sm:h-5 sm:w-5 ${facing === "user" ? "scale-x-[-1]" : ""}`} strokeWidth={2.2} />
-              <span className="pr-0.5">Flip</span>
-            </button>
-            <button
-              onClick={() => void autofocusCamera()}
-              disabled={stopping || starting}
-              aria-label="Focus camera"
-              title="Focus camera"
-              aria-pressed={tracking}
-              className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl active:scale-95 disabled:opacity-70 sm:h-14 sm:w-14 ${tracking ? "bg-primary text-primary-foreground shadow-lg shadow-primary/30" : "glass"}`}
-            >
-              <Focus className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.2} />
-            </button>
-            <button
-              onClick={() => void stop(true)}
-              disabled={stopping}
-              className="glass flex min-w-[7.7rem] max-w-[12.5rem] flex-1 items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-80 sm:py-4 sm:text-base"
-            >
-              {stopping ? (
-                <Loader2 className="h-4 w-4 animate-spin sm:h-5 sm:w-5" />
-              ) : (
-                <CameraOff className="h-4 w-4 sm:h-5 sm:w-5" />
-              )}
-              {stopping ? "Stopping" : "Stop Camera"}
-            </button>
-          </>
-        )}
-      </div>
-
-      {(active || progress.total > 0) && (
-        <div className={`order-3 w-full animate-fade-up ${fullscreen ? "fixed inset-x-0 top-[max(0.75rem,env(safe-area-inset-top))] z-50 mx-auto max-w-sm rounded-2xl bg-background/55 px-4 py-2.5 backdrop-blur-md" : "mx-auto mt-10 max-w-sm"}`}>
-          <div className="flex items-center justify-center gap-2 text-center text-xs">
-            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
-            <span className="min-w-0 truncate text-center font-semibold">
-              {progress.total > 0
-                ? `Assembling ${label}…`
-                : qrBox
-                  ? "OFFDROP qr locked"
-                  : "Searching for OFFDROP qr …"}
-            </span>
-            {progress.total > 0 && (
-              <span className="shrink-0 tabular-nums text-[10px] font-bold text-muted-foreground">
-                {progress.have} / {progress.total}
+            {done.mime.startsWith("image/") && done.url ? (
+              <img src={done.url} alt={done.name} className="absolute inset-0 h-full w-full object-contain" />
+            ) : done.mime.startsWith("video/") && done.url ? (
+              <>
+                <video src={done.url} muted playsInline preload="metadata" className="absolute inset-0 h-full w-full object-contain" />
+                <span className="absolute inset-0 grid place-items-center">
+                  <span className="grid h-16 w-16 place-items-center rounded-full bg-white/25 backdrop-blur transition-transform duration-300 group-hover:scale-110">
+                    <Play className="ml-1 h-7 w-7 text-white" fill="currentColor" />
+                  </span>
+                </span>
+              </>
+            ) : done.mime.startsWith("audio/") ? (
+              <span className="audio-tile absolute inset-0 grid place-items-center">
+                <Music2 className="h-16 w-16 text-primary" strokeWidth={1.6} />
+              </span>
+            ) : (
+              <span className="absolute inset-0 grid place-items-center text-muted-foreground">
+                <FileText className="h-16 w-16" strokeWidth={1.4} />
               </span>
             )}
+            <span className="success-badge absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/55 px-3 py-1.5 text-[11px] font-bold text-white backdrop-blur">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" /> Verified
+            </span>
+            <span className="absolute bottom-3 right-3 flex items-center gap-1.5 rounded-full bg-black/55 px-3 py-1.5 text-[11px] font-bold text-white backdrop-blur transition-transform duration-300 group-hover:scale-105">
+              <Maximize2 className="h-3.5 w-3.5" /> Tap to open
+            </span>
+          </button>
+
+          <div className="glass flex items-center gap-3 rounded-2xl px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-bold">{done.name}</p>
+              <p className="text-[11px] text-muted-foreground">
+                {formatBytes(done.size)} · {done.mime || "file"} · saved to History
+              </p>
+            </div>
+            <CheckCircle2 className="h-6 w-6 shrink-0 text-emerald-500" />
           </div>
-          <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-secondary p-[1px]">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-300 ease-out"
-              style={{ width: `${pct}%` }}
-            />
+
+          <div className="grid grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={() => void shareDone()}
+              className="glass flex flex-col items-center justify-center gap-1 rounded-2xl py-3 text-xs font-bold transition-transform active:scale-95"
+            >
+              <Share2 className="h-5 w-5" /> Share
+            </button>
+            <button
+              type="button"
+              onClick={() => void downloadDone()}
+              disabled={downloading}
+              className="glass flex flex-col items-center justify-center gap-1 rounded-2xl py-3 text-xs font-bold transition-transform active:scale-95 disabled:opacity-80"
+            >
+              {downloading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Download className="h-5 w-5" />} Save
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                clearDonePreview();
+                void start();
+              }}
+              className="flex flex-col items-center justify-center gap-1 rounded-2xl bg-gradient-to-br from-primary to-accent py-3 text-xs font-bold text-primary-foreground shadow-lg shadow-primary/30 transition-transform active:scale-95"
+            >
+              <ScanLine className="h-5 w-5" /> Receive more
+            </button>
           </div>
-          <div className="mt-2 truncate text-center text-[10px] text-muted-foreground">
-            {scanInfo ? scanInfo.name : "Position the camera toward the qr code accurately"}
-          </div>
-          <AnimatedPercent value={pct} />
         </div>
       )}
+    </div>
+  );
+}
+
+/** Circular progress with the percentage in the middle. */
+function ProgressRing({ value, active, locked }: { value: number; active: boolean; locked: boolean }) {
+  const r = 19;
+  const c = 2 * Math.PI * r;
+  return (
+    <div className="relative grid h-12 w-12 shrink-0 place-items-center">
+      <svg viewBox="0 0 48 48" className="h-12 w-12 -rotate-90">
+        <circle cx="24" cy="24" r={r} fill="none" stroke="currentColor" strokeOpacity="0.2" strokeWidth="4" />
+        <circle
+          cx="24"
+          cy="24"
+          r={r}
+          fill="none"
+          stroke="url(#ring-grad)"
+          strokeWidth="4"
+          strokeLinecap="round"
+          strokeDasharray={c}
+          strokeDashoffset={c * (1 - (active ? value : 0) / 100)}
+          style={{ transition: "stroke-dashoffset 0.35s cubic-bezier(0.22,1,0.36,1)" }}
+        />
+        <defs>
+          <linearGradient id="ring-grad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="var(--color-primary)" />
+            <stop offset="100%" stopColor="var(--color-accent)" />
+          </linearGradient>
+        </defs>
+      </svg>
+      <span className="absolute text-[11px] font-extrabold tabular-nums">
+        {active ? (value >= 100 ? 100 : Math.floor(value)) : locked ? "✓" : "…"}
+      </span>
+    </div>
+  );
+}
+
+/** One-shot celebration burst; pure CSS, no dependencies. */
+function Confetti() {
+  const pieces = Array.from({ length: 26 }, (_, i) => {
+    const angle = (i / 26) * Math.PI * 2;
+    const dist = 90 + ((i * 37) % 70);
+    return {
+      x: Math.cos(angle) * dist,
+      y: Math.sin(angle) * dist - 40,
+      rot: (i * 53) % 360,
+      delay: (i % 5) * 20,
+      hue: [280, 200, 320, 170, 50][i % 5],
+    };
+  });
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-24 z-30 flex justify-center" aria-hidden="true">
+      {pieces.map((p, i) => (
+        <span
+          key={i}
+          className="confetti-piece"
+          style={
+            {
+              "--x": `${p.x}px`,
+              "--y": `${p.y}px`,
+              "--r": `${p.rot}deg`,
+              animationDelay: `${p.delay}ms`,
+              background: `oklch(0.75 0.19 ${p.hue})`,
+            } as CSSProperties
+          }
+        />
+      ))}
     </div>
   );
 }

@@ -9,7 +9,9 @@
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test:protocol": "node --experimental-strip-types scripts/protocol-test.ts",
+    "test:large-transfer": "node --experimental-strip-types scripts/large-transfer-test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

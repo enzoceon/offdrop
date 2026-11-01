@@ -20,11 +20,13 @@ import {
   Loader2,
 } from "lucide-react";
 import { listItems, deleteItem, type HistoryItem } from "@/lib/history";
+import { MediaViewer } from "@/components/MediaViewer";
+import { Portal } from "@/components/Portal";
+import { sfx } from "@/lib/feedback";
 
 type FilterKey = "all" | "sent" | "received";
 
 function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
-  const [playing, setPlaying] = useState(false);
   const isImg = item.mime.startsWith("image/");
   const isVid = item.mime.startsWith("video/");
   const isAudio = item.mime.startsWith("audio/");
@@ -35,25 +37,11 @@ function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
     return <video src={url} className="h-full w-full object-cover" muted playsInline />;
   if (isAudio && url) {
     return (
-      <button
-        onClick={(event) => {
-          const audio = event.currentTarget.querySelector("audio");
-          if (!audio) return;
-          if (audio.paused) audio.play();
-          else audio.pause();
-        }}
-        className="audio-tile grid h-full w-full place-items-center"
-      >
-        <audio
-          src={url}
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onEnded={() => setPlaying(false)}
-        />
+      <span className="audio-tile grid h-full w-full place-items-center">
         <span className="grid h-9 w-9 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/25">
-          {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+          <Play className="ml-0.5 h-4 w-4" fill="currentColor" />
         </span>
-      </button>
+      </span>
     );
   }
   return <FileIcon className="h-6 w-6 text-muted-foreground" />;
@@ -198,7 +186,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
   ];
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Search + filter */}
       <div className="px-5 pb-3 sm:px-8">
         <div className="mx-auto flex w-full max-w-3xl items-center gap-2">
@@ -267,20 +255,29 @@ export function History({ refreshKey }: { refreshKey: number }) {
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto px-5 pb-2 sm:px-8">
-          <div className="mx-auto max-w-3xl space-y-3 sm:space-y-4">
-            {filtered.map((it) => {
+          <div className="mx-auto grid max-w-3xl gap-3 sm:gap-4 lg:max-w-6xl lg:grid-cols-2">
+            {filtered.map((it, idx) => {
               const dir = it.direction || "received";
               return (
-                <div key={it.id} className="glass overflow-hidden rounded-2xl animate-fade-up sm:rounded-3xl">
+                <div
+                  key={it.id}
+                  className="glass overflow-hidden rounded-2xl animate-fade-up sm:rounded-3xl"
+                  style={{ animationDelay: `${Math.min(idx, 10) * 45}ms` }}
+                >
                   <div className="flex gap-3 p-3 sm:gap-4 sm:p-4">
                     <div
-                      onClick={() => urls[it.id] && it.mime.startsWith("image/") && setPreviewItem(it)}
+                      onClick={() => {
+                        if (urls[it.id]) setPreviewItem(it);
+                      }}
+                      onKeyDown={(e) => {
+                        if ((e.key === "Enter" || e.key === " ") && urls[it.id]) setPreviewItem(it);
+                      }}
                       className={`relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl bg-secondary text-left transition-transform sm:h-24 sm:w-24 sm:rounded-2xl ${
-                        urls[it.id] && it.mime.startsWith("image/") ? "cursor-pointer active:scale-95" : ""
+                        urls[it.id] ? "cursor-pointer active:scale-95" : ""
                       }`}
-                      role={it.mime.startsWith("image/") ? "button" : undefined}
-                      aria-label={it.mime.startsWith("image/") ? "Open image preview" : undefined}
-                      tabIndex={it.mime.startsWith("image/") ? 0 : undefined}
+                      role={urls[it.id] ? "button" : undefined}
+                      aria-label={urls[it.id] ? `Open ${it.filename}` : undefined}
+                      tabIndex={urls[it.id] ? 0 : undefined}
                     >
                       <MediaPreview item={it} url={urls[it.id]} />
                       {it.mime.startsWith("video/") && (
@@ -352,6 +349,7 @@ export function History({ refreshKey }: { refreshKey: number }) {
       )}
 
       {pendingDelete && (
+        <Portal>
         <div
           className="fixed inset-0 z-[70] flex items-end justify-center bg-background/35 px-4 pb-4 backdrop-blur-sm"
           role="dialog"
@@ -395,32 +393,23 @@ export function History({ refreshKey }: { refreshKey: number }) {
             </div>
           </div>
         </div>
+        </Portal>
       )}
 
-      {previewItem && urls[previewItem.id] && previewItem.mime.startsWith("image/") && (
-        <div
-          className="fixed inset-0 z-[80] flex items-center justify-center bg-background/35 px-4 py-20 backdrop-blur-sm animate-fade-up"
-          role="dialog"
-          aria-modal="true"
-          onClick={closePreview}
-        >
-          <img
-            src={urls[previewItem.id]}
-            alt={previewItem.filename}
-            className="max-h-[calc(100dvh-6rem)] max-w-[calc(100vw-2rem)] rounded-xl object-contain shadow-2xl shadow-foreground/20"
-            onClick={(event) => event.stopPropagation()}
-          />
-          <button
-            type="button"
-            onClick={closePreview}
-            className="glass absolute right-3 z-[81] grid h-9 w-9 place-items-center rounded-full text-foreground active:scale-90 sm:right-4 sm:h-10 sm:w-10"
-            style={{ top: "max(env(safe-area-inset-top), 0.75rem)" }}
-            aria-label="Close preview"
-          >
-            <X className="h-4 w-4" strokeWidth={2.4} />
-          </button>
-        </div>
-      )}
+      <MediaViewer
+        item={
+          previewItem && urls[previewItem.id]
+            ? {
+                url: urls[previewItem.id],
+                name: previewItem.filename,
+                mime: previewItem.mime,
+                size: previewItem.size,
+                blob: previewItem.blob,
+              }
+            : null
+        }
+        onClose={closePreview}
+      />
     </div>
   );
 }
