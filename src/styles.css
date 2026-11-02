@@ -519,3 +519,36 @@ html[data-pager-drag] .tab-pill {
 @media (max-height: 520px) and (orientation: landscape) {
   .hero-cube { animation: none; }
 }
+
+/* Scan line that sweeps top→bottom of whatever box it lives in (independent of container size). */
+@keyframes sweep-y {
+  0% { top: 0%; opacity: 0; }
+  10% { opacity: 1; }
+  50% { top: calc(100% - 2px); opacity: 1; }
+  90% { opacity: 1; }
+  100% { top: 0%; opacity: 0; }
+}
+.scan-sweep-y { animation: sweep-y 2s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+
+/* ---- scrollbars never show on the app shell ---- */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* ---- fullscreen QR: 1 or 2 tiles that always fit their container, in either orientation ---- */
+.lane-area { container-type: size; display: flex; align-items: center; justify-content: center; }
+.lane-inner { display: flex; gap: 0.75rem; align-items: center; justify-content: center; width: 100%; height: 100%; }
+.lane-tile { aspect-ratio: 1; flex: none; }
+@container (min-aspect-ratio: 1/1) {
+  .lane-inner { flex-direction: row; }
+  .lane-tile { width: min(calc((100cqw - (var(--n, 1) - 1) * 0.75rem) / var(--n, 1)), 100cqh); }
+}
+@container (max-aspect-ratio: 1/1) {
+  .lane-inner { flex-direction: column; }
+  .lane-tile { width: min(100cqw, calc((100cqh - (var(--n, 1) - 1) * 0.75rem) / var(--n, 1))); }
+}
+
+/* Phones: drop the continuously animating blurred orbs (GPU heavy); keep them static and cheaper. */
+@media (pointer: coarse), (prefers-reduced-motion: reduce) {
+  .ambient-orbs .orb { animation: none; filter: blur(44px); opacity: 0.4; }
+  .hero-cube { animation-duration: 12s; }
+}

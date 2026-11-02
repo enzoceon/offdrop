@@ -39,13 +39,37 @@ function decode(buf: Uint8ClampedArray, w: number, h: number, deep: boolean) {
   return null;
 }
 
+type Found = NonNullable<ReturnType<typeof decode>>;
+
+/** Find up to two codes: decode one, white-out its footprint, then look again (dual-QR streams). */
+function decodeAll(buf: Uint8ClampedArray, w: number, h: number, deep: boolean): Found[] {
+  const first = decode(buf, w, h, deep);
+  if (!first) return [];
+  const results: Found[] = [first];
+  const xs = first.corners.map((p) => p.x);
+  const ys = first.corners.map((p) => p.y);
+  const pad = 6;
+  const x0 = Math.max(0, Math.floor(Math.min(...xs)) - pad);
+  const x1 = Math.min(w, Math.ceil(Math.max(...xs)) + pad);
+  const y0 = Math.max(0, Math.floor(Math.min(...ys)) - pad);
+  const y1 = Math.min(h, Math.ceil(Math.max(...ys)) + pad);
+  // Only worth a second pass if there is meaningful room left beside/below the first code.
+  if ((x1 - x0) * (y1 - y0) < w * h * 0.7) {
+    const copy = new Uint8ClampedArray(buf); // keep the caller's buffer untouched
+    for (let y = y0; y < y1; y++) copy.fill(255, (y * w + x0) * 4, (y * w + x1) * 4);
+    const second = decode(copy, w, h, false);
+    if (second && second.data !== first.data) results.push(second);
+  }
+  return results;
+}
+
 self.onmessage = (event: MessageEvent<In>) => {
   const { id, data, w, h, deep } = event.data;
-  let result: ReturnType<typeof decode> = null;
+  let results: Found[] = [];
   try {
-    result = decode(new Uint8ClampedArray(data), w, h, deep);
+    results = decodeAll(new Uint8ClampedArray(data), w, h, deep);
   } catch {
-    result = null;
+    results = [];
   }
-  (self as unknown as Worker).postMessage({ id, result });
+  (self as unknown as Worker).postMessage({ id, results });
 };

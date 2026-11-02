@@ -47,21 +47,36 @@ export function Pager({
 
   lockedRef.current = locked;
 
+  const hideTimer = useRef<number>(0);
+
   function paint(pos: number, dragging: boolean) {
     const track = trackRef.current;
     if (!track) return;
+    window.clearTimeout(hideTimer.current);
     track.style.transition = dragging ? "none" : `transform ${SETTLE_MS}ms ${EASE}`;
     track.style.transform = `translate3d(${(-pos * 100) / count}%,0,0)`;
+    const settled = !dragging;
     panelRefs.current.forEach((panel, i) => {
       if (!panel) return;
       const delta = i - pos;
       const d = Math.min(1, Math.abs(delta));
+      panel.style.visibility = "visible"; // everything is drawn while moving
       panel.style.transition = dragging
         ? "none"
         : `transform ${SETTLE_MS}ms ${EASE}, opacity ${SETTLE_MS}ms ${EASE}`;
       panel.style.opacity = String(1 - d * 0.6);
-      panel.style.transform = `perspective(1100px) translate3d(${delta * -6}%,0,0) rotateY(${delta * -9}deg) scale(${1 - d * 0.07})`;
+      // Depth only (tilt + scale). No sideways offset: that used to push the next panel into view at rest.
+      panel.style.transform =
+        d < 0.001 ? "none" : `perspective(1100px) rotateY(${delta * -9}deg) scale(${1 - d * 0.07})`;
     });
+    if (settled) {
+      // After the slide settles, fully hide off-screen panels so nothing can peek in at an edge.
+      hideTimer.current = window.setTimeout(() => {
+        panelRefs.current.forEach((panel, i) => {
+          if (panel && i !== Math.round(pos)) panel.style.visibility = "hidden";
+        });
+      }, SETTLE_MS + 40);
+    }
     const root = document.documentElement;
     root.style.setProperty("--pager-pos", pos.toFixed(4));
     if (dragging) root.setAttribute("data-pager-drag", "");

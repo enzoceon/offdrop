@@ -11,12 +11,16 @@
 // (~97% efficient) instead of the 75% efficiency of base64-in-byte-mode.
 // It is also pure text, so native BarcodeDetector and jsQR both read it safely.
 //
+// Every frame type is padded to exactly 9 + chunk bytes, so every QR in the
+// stream has the same version and module grid (the header and the final short
+// chunk used to render as visibly smaller codes).
+//
 //   Header  : [0xD1][ver|0x80 if compressed][id u32][size u32][chunk u16][total u32]
 //             [crc u32][nameLen u8][mimeLen u8][name utf8][mime utf8]
 //             [origSize u32 — only when compressed]
 //             `size`/`crc` always describe the bytes actually transmitted. When the
 //             compressed flag is set those bytes are a raw-deflate stream of the file.
-//   Data    : [0xD2][id u32][index u32][payload <= chunk bytes]
+//   Data    : [0xD2][id u32][index u32][payload == chunk bytes, zero-padded]
 //   Repair  : [0xD3][id u32][seed u32][payload == chunk bytes]
 //
 // The file is split into blocks of BLOCK_CHUNKS chunks. A repair frame is the
@@ -247,6 +251,11 @@ export function createPlan(input: {
   buf.set(nameBytes, 22);
   buf.set(mimeBytes, 22 + nameBytes.length);
   if (compressed) putU32(buf, 22 + nameBytes.length + mimeBytes.length, origSize);
+  // Pad with noise-like bytes up to a full frame so the header QR matches the data QRs.
+  const framed = new Uint8Array(Math.max(buf.length, 9 + chunk));
+  framed.set(buf);
+  const padRng = mulberry32(id ^ 0x5bd1e995);
+  for (let i = buf.length; i < framed.length; i++) framed[i] = (padRng() * 256) | 0;
   return {
     compressed,
     origSize,
@@ -258,7 +267,7 @@ export function createPlan(input: {
     chunk,
     total,
     crc: input.crc >>> 0,
-    headerFrame: bytesToB45(buf),
+    headerFrame: bytesToB45(framed),
   };
 }
 
@@ -323,7 +332,7 @@ export interface ChunkSource {
 }
 
 export function dataFrame(plan: StreamPlan, index: number, payload: Uint8Array): string {
-  const buf = new Uint8Array(9 + payload.length);
+  const buf = new Uint8Array(9 + plan.chunk); // short final chunk stays zero-padded
   buf[0] = MAGIC_DATA;
   putU32(buf, 1, plan.id);
   putU32(buf, 5, index);
@@ -532,9 +541,7 @@ export class FountainDecoder {
     if (frame.id !== this.id || this.complete) return false;
     if (frame.kind === "data") {
       if (frame.index >= this.total || this.have[frame.index]) return false;
-      const expected =
-        frame.index === this.total - 1 ? this.size - frame.index * this.chunk : this.chunk;
-      if (frame.payload.length !== expected) return false;
+      if (frame.payload.length !== this.chunk) return false;
       this.setChunk(frame.index, frame.payload);
       return true;
     }
@@ -552,7 +559,6 @@ export class FountainDecoder {
   private setChunk(index: number, payload: Uint8Array) {
     const at = index * this.chunk;
     this.buffer.set(payload, at);
-    if (payload.length < this.chunk) this.buffer.fill(0, at + payload.length, at + this.chunk);
     this.have[index] = 1;
     this.count++;
     this.unknownInBlock[Math.floor(index / BLOCK_CHUNKS)]--;
@@ -611,9 +617,7 @@ export class FountainDecoder {
     }
     for (const col of unknownCols) {
       const row = rows[pivotRowForCol.get(col)!];
-      const index = start + col;
-      const len = index === this.total - 1 ? this.size - index * this.chunk : this.chunk;
-      this.setChunk(index, row.payload.subarray(0, len));
+      this.setChunk(start + col, row.payload);
     }
     this.eqs[block] = [];
   }
@@ -647,7 +651,7 @@ export const DENSITY_PRESETS: DensityPreset[] = [
   { key: "reliable", label: "Reliable", chunk: 600, ec: "M", hint: "Any camera, any distance" },
   { key: "balanced", label: "Balanced", chunk: 900, ec: "M", hint: "Good on most phones" },
   { key: "dense", label: "Dense", chunk: 1400, ec: "L", hint: "~1.5× faster, needs a sharp camera" },
-  { key: "max", label: "Max", chunk: 2600, ec: "L", hint: "Fastest, needs a sharp display and steady camera" },
+  { key: "max", label: "Max", chunk: 2000, ec: "L", hint: "~2.2× faster, best phones + steady hands" },
 ];
 
 export function presetFor(key: DensityKey): DensityPreset {

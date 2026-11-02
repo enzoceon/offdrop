@@ -210,20 +210,30 @@ export function History({ refreshKey }: { refreshKey: number }) {
               </button>
             )}
           </div>
-          <div className="glass grid h-12 shrink-0 grid-cols-3 items-center gap-1 rounded-2xl p-1">
+          <div className="glass relative grid h-12 shrink-0 grid-cols-3 items-center gap-1 rounded-2xl p-1">
+            {/* One pill that glides between the options instead of each button flipping on/off. */}
+            <span
+              aria-hidden="true"
+              className="absolute bottom-1 left-1 top-1 rounded-xl bg-gradient-to-br from-primary to-accent shadow-md shadow-primary/30 transition-transform duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
+              style={{
+                width: "calc((100% - 0.5rem - 0.5rem) / 3)",
+                transform: `translateX(calc(${Math.max(0, filterButtons.findIndex((f) => f.key === filter))} * (100% + 0.25rem)))`,
+              }}
+            />
             {filterButtons.map((f) => {
               const active = filter === f.key;
               return (
                 <button
                   key={f.key}
                   type="button"
-                  onClick={() => setFilter(f.key)}
+                  onClick={() => {
+                    if (f.key !== filter) sfx.tick();
+                    setFilter(f.key);
+                  }}
                   aria-label={f.label}
                   aria-pressed={active}
-                  className={`grid h-10 w-10 place-items-center rounded-xl transition-all ${
-                    active
-                      ? "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-md shadow-primary/30"
-                      : "text-muted-foreground active:scale-90"
+                  className={`relative z-10 grid h-10 w-10 place-items-center rounded-xl transition-[color,transform] duration-300 ${
+                    active ? "text-primary-foreground" : "text-muted-foreground active:scale-90"
                   }`}
                 >
                   {f.icon}

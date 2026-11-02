@@ -1,15 +1,13 @@
-import QRCode from "qrcode";
 import {
   CRC_INIT,
   MAX_FILE_BYTES,
   crc32Final,
   crc32Update,
   createPlan,
-  frameAt,
-  type ChunkSource,
-  type SlotInfo,
   type StreamPlan,
 } from "./qr-protocol";
+import { BlobSource } from "./blob-source";
+import { buildFrame, QUIET, type BuiltFrame } from "./frame-core";
 
 /** Files up to this size are held in memory for instant random access. */
 const IN_MEMORY_LIMIT = 96 * 1024 * 1024;
@@ -18,11 +16,12 @@ const CRC_BLOCK = 4 * 1024 * 1024;
 
 export interface PreparedFile {
   plan: StreamPlan;
-  source: ChunkSource;
+  /** The exact bytes that get framed (the file itself, or its deflated form). */
+  blob: Blob;
   /** Bytes saved by compression (0 when sent as-is). */
   savedBytes: number;
   /** Re-plan the same payload at a different chunk size (instant; no re-hash). */
-  rechunk(chunk: number): { plan: StreamPlan; source: ChunkSource };
+  rechunk(chunk: number): { plan: StreamPlan; blob: Blob };
 }
 
 export class PrepareCancelled extends Error {
@@ -33,60 +32,6 @@ export class PrepareCancelled extends Error {
 
 function nextTick() {
   return new Promise<void>((resolve) => setTimeout(resolve, 0));
-}
-
-class MemorySource implements ChunkSource {
-  constructor(
-    private bytes: Uint8Array,
-    private chunk: number,
-  ) {}
-  read(index: number) {
-    return this.bytes.subarray(index * this.chunk, Math.min(this.bytes.length, (index + 1) * this.chunk));
-  }
-  readRange(start: number, count: number) {
-    return this.bytes.subarray(
-      start * this.chunk,
-      Math.min(this.bytes.length, (start + count) * this.chunk),
-    );
-  }
-}
-
-/** Reads straight from the File so huge files never have to fit in memory. */
-class BlobSource implements ChunkSource {
-  private cache = new Map<string, Uint8Array>();
-  constructor(
-    private file: Blob,
-    private chunk: number,
-  ) {}
-  private async slice(start: number, count: number): Promise<Uint8Array> {
-    const key = `${start}:${count}`;
-    const hit = this.cache.get(key);
-    if (hit) {
-      // Refresh LRU position.
-      this.cache.delete(key);
-      this.cache.set(key, hit);
-      return hit;
-    }
-    const from = start * this.chunk;
-    const to = Math.min(this.file.size, (start + count) * this.chunk);
-    const bytes = new Uint8Array(await this.file.slice(from, to).arrayBuffer());
-    this.cache.set(key, bytes);
-    // Keep roughly <= 24 MB cached.
-    let budget = 24 * 1024 * 1024;
-    for (const v of this.cache.values()) budget -= v.length;
-    while (budget < 0 && this.cache.size > 1) {
-      const oldest = this.cache.keys().next().value as string;
-      budget += this.cache.get(oldest)!.length;
-      this.cache.delete(oldest);
-    }
-    return bytes;
-  }
-  read(index: number) {
-    return this.slice(index, 1);
-  }
-  readRange(start: number, count: number) {
-    return this.slice(start, count);
-  }
 }
 
 /** Formats that are already compressed: deflating them again only wastes time. */
@@ -173,7 +118,7 @@ export async function prepareFile(
 
   let crcState = CRC_INIT;
   let sendSize = file.size;
-  let makeSource: (chunk: number) => ChunkSource;
+  let payloadBlob: Blob = file;
 
   if (payload) {
     sendSize = payload.length;
@@ -184,7 +129,7 @@ export async function prepareFile(
       await nextTick();
       check();
     }
-    makeSource = (chunk) => new MemorySource(bytes, chunk);
+    payloadBlob = new Blob([bytes as BlobPart]);
   } else if (file.size <= IN_MEMORY_LIMIT) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     check();
@@ -194,7 +139,7 @@ export async function prepareFile(
       await nextTick();
       check();
     }
-    makeSource = (chunk) => new MemorySource(bytes, chunk);
+    payloadBlob = file;
   } else {
     for (let off = 0; off < file.size; off += CRC_BLOCK) {
       const block = new Uint8Array(await file.slice(off, Math.min(file.size, off + CRC_BLOCK)).arrayBuffer());
@@ -203,7 +148,7 @@ export async function prepareFile(
       await nextTick();
       check();
     }
-    makeSource = (chunk) => new BlobSource(file, chunk);
+    payloadBlob = file;
   }
 
   const crc = crc32Final(crcState);
@@ -216,65 +161,98 @@ export async function prepareFile(
       chunk,
       origSize: payload ? file.size : undefined,
     }),
-    source: makeSource(chunk),
+    blob: payloadBlob,
   });
   const first = build(opts.chunk);
   return { ...first, savedBytes: payload ? file.size - payload.length : 0, rechunk: build };
 }
 
 // ---------------------------------------------------------------------------
-// Frame pipeline: builds QR matrices a little ahead of the display clock so the
-// render loop only has to paint pixels. QR encoding is the expensive part of
-// sending, and doing it ahead is what lets playback hold a steady frame rate.
+// Frame pipeline
+//
+// QR encoding is the expensive part of sending. It runs in a small pool of Web
+// Workers that build frames a little ahead of the display clock, so the UI thread
+// only ever blits a finished bitmap. If workers are unavailable it transparently
+// falls back to building on the main thread.
 // ---------------------------------------------------------------------------
 
-export interface PreparedFrame {
-  seq: number;
-  slot: SlotInfo;
-  /** QR modules per side. */
-  size: number;
-  /** size*size bytes, 1 = dark module. */
-  modules: Uint8Array;
-}
+export type PreparedFrame = BuiltFrame;
 
 export class FramePipeline {
   private ready = new Map<number, PreparedFrame>();
-  private worker: Worker | null | undefined;
-  private workerSeq = 0;
-  private workerPending = new Map<
-    number,
-    { resolve: (frame: PreparedFrame) => void; reject: (error: Error) => void }
-  >();
+  private inflight = new Set<number>();
+  private workers: Worker[] = [];
+  private load: number[] = [];
+  private inline: BlobSource | null = null;
   private wanted = 0;
-  private pumping = false;
   private disposed = false;
-  private readonly qrVersion: number;
+  private pumpingInline = false;
   /** Set when a frame could not be built; the UI shows it and stops playback. */
   error: Error | null = null;
   onChange: (() => void) | null = null;
 
   constructor(
     private plan: StreamPlan,
-    private source: ChunkSource,
+    private blob: Blob,
     private ec: "L" | "M" = "M",
-    private lookahead = 24,
+    private lookahead = 48,
   ) {
-    const maxFrameChars = Math.ceil(((plan.chunk + 9) * 3) / 2);
-    this.qrVersion = QRCode.create("A".repeat(maxFrameChars), {
-      errorCorrectionLevel: ec,
-    }).version;
+    this.startWorkers();
+  }
+
+  private startWorkers() {
+    try {
+      const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
+      const count = cores <= 2 ? 1 : 2;
+      for (let i = 0; i < count; i++) {
+        const worker = new Worker(new URL("./frame-builder.worker.ts", import.meta.url), { type: "module" });
+        worker.onmessage = (event: MessageEvent) => this.onWorkerMessage(i, event.data);
+        worker.onerror = () => this.fallBackToInline();
+        worker.postMessage({ type: "init", plan: this.plan, blob: this.blob, ec: this.ec });
+        this.workers.push(worker);
+        this.load.push(0);
+      }
+    } catch {
+      this.fallBackToInline();
+    }
+  }
+
+  private fallBackToInline() {
+    if (this.inline || this.disposed) return;
+    for (const w of this.workers) w.terminate();
+    this.workers = [];
+    this.load = [];
+    this.inflight.clear();
+    this.inline = new BlobSource(this.blob, this.plan.chunk);
+    this.pump();
+  }
+
+  private onWorkerMessage(index: number, msg: { type: string; frame?: PreparedFrame; message?: string; seq?: number }) {
+    if (this.disposed) return;
+    this.load[index] = Math.max(0, this.load[index] - 1);
+    if (msg.type === "frame" && msg.frame) {
+      const frame = msg.frame;
+      this.inflight.delete(frame.seq);
+      if (frame.seq >= this.wanted) this.ready.set(frame.seq, frame);
+      this.onChange?.();
+    } else if (msg.type === "error") {
+      if (msg.seq !== undefined) this.inflight.delete(msg.seq);
+      this.fallBackToInline(); // the main-thread path will surface a real error if one persists
+    }
+    this.pump();
   }
 
   /** Declare the frame currently on screen; everything behind it is dropped. */
   want(seq: number) {
     this.wanted = seq;
     for (const key of this.ready.keys()) if (key < seq) this.ready.delete(key);
-    void this.pump();
+    this.pump();
   }
 
   /** Throw away prefetched frames (e.g. after a seek/reset). */
   reset(seq: number) {
     this.ready.clear();
+    this.inflight.clear();
     this.want(seq);
   }
 
@@ -284,135 +262,63 @@ export class FramePipeline {
 
   dispose() {
     this.disposed = true;
+    for (const w of this.workers) w.terminate();
+    this.workers = [];
     this.ready.clear();
-    this.worker?.terminate();
-    this.worker = null;
-    for (const pending of this.workerPending.values()) {
-      pending.reject(new Error("Frame generation was cancelled."));
-    }
-    this.workerPending.clear();
     this.onChange = null;
   }
 
-  private async pump() {
-    if (this.pumping) return;
-    this.pumping = true;
+  private pump() {
+    if (this.disposed) return;
+    if (this.inline) return void this.pumpInline();
+    for (let s = this.wanted; s <= this.wanted + this.lookahead; s++) {
+      if (this.ready.has(s) || this.inflight.has(s)) continue;
+      // Least-loaded worker, capped so we don't buffer unboundedly.
+      let best = 0;
+      for (let i = 1; i < this.workers.length; i++) if (this.load[i] < this.load[best]) best = i;
+      if (this.load[best] >= 6) break;
+      this.inflight.add(s);
+      this.load[best]++;
+      this.workers[best].postMessage({ type: "build", seq: s });
+    }
+  }
+
+  private async pumpInline() {
+    if (this.pumpingInline) return;
+    this.pumpingInline = true;
     try {
       let built = 0;
-      while (!this.disposed) {
+      while (!this.disposed && this.inline) {
         let seq = -1;
-        for (let s = this.wanted; s <= this.wanted + this.lookahead; s++) {
+        for (let s = this.wanted; s <= this.wanted + Math.min(this.lookahead, 12); s++) {
           if (!this.ready.has(s)) {
             seq = s;
             break;
           }
         }
         if (seq < 0) break;
-        const frame = await this.build(seq);
+        const frame = await buildFrame(this.plan, this.inline, seq, this.ec);
         if (this.disposed) return;
-        // The display may have moved on while we were awaiting.
         if (seq >= this.wanted) this.ready.set(seq, frame);
         this.onChange?.();
-        // Yield regularly so touch/paint stay responsive.
         if (++built % 2 === 0) await nextTick();
       }
     } catch (error) {
-      if (this.disposed) return;
       this.error = error instanceof Error ? error : new Error("Frame generation failed.");
       this.onChange?.();
     } finally {
-      this.pumping = false;
+      this.pumpingInline = false;
     }
-  }
-
-  private async build(seq: number): Promise<PreparedFrame> {
-    const { text, slot } = await frameAt(this.plan, this.source, seq);
-    try {
-      const { size, modules } = await this.encode(text);
-      return { seq, slot, size, modules };
-    } catch {
-      if (this.disposed) throw new Error("Frame generation was cancelled.");
-      const qr = QRCode.create(text, {
-        errorCorrectionLevel: this.ec,
-        version: this.qrVersion,
-      });
-      const size = qr.modules.size;
-      const modules = new Uint8Array(size * size);
-      for (let r = 0; r < size; r++) {
-        for (let c = 0; c < size; c++) modules[r * size + c] = qr.modules.get(r, c) ? 1 : 0;
-      }
-      return { seq, slot, size, modules };
-    }
-  }
-
-  private encode(text: string): Promise<{ size: number; modules: Uint8Array }> {
-    if (this.worker === undefined) {
-      try {
-        this.worker =
-          typeof Worker === "undefined"
-            ? null
-            : new Worker(new URL("./qr-encode.worker.ts", import.meta.url), {
-                type: "module",
-              });
-      } catch {
-        this.worker = null;
-      }
-      if (this.worker) {
-        this.worker.onmessage = (
-          event: MessageEvent<{ id: number; size: number; modules: ArrayBuffer; error?: string }>,
-        ) => {
-          const pending = this.workerPending.get(event.data.id);
-          if (!pending) return;
-          this.workerPending.delete(event.data.id);
-          if (event.data.error) {
-            pending.reject(new Error(event.data.error));
-            return;
-          }
-          pending.resolve({
-            size: event.data.size,
-            modules: new Uint8Array(event.data.modules),
-          });
-        };
-        this.worker.onerror = () => {
-          this.worker?.terminate();
-          this.worker = null;
-          for (const pending of this.workerPending.values()) {
-            pending.reject(new Error("QR worker failed."));
-          }
-          this.workerPending.clear();
-        };
-      }
-    }
-    if (!this.worker) {
-      const qr = QRCode.create(text, {
-        errorCorrectionLevel: this.ec,
-        version: this.qrVersion,
-      });
-      const size = qr.modules.size;
-      const modules = new Uint8Array(size * size);
-      for (let r = 0; r < size; r++) {
-        for (let c = 0; c < size; c++) modules[r * size + c] = qr.modules.get(r, c) ? 1 : 0;
-      }
-      return Promise.resolve({ size, modules });
-    }
-
-    const id = ++this.workerSeq;
-    return new Promise((resolve, reject) => {
-      this.workerPending.set(id, { resolve, reject });
-      this.worker?.postMessage({
-        id,
-        text,
-        errorCorrectionLevel: this.ec,
-        version: this.qrVersion,
-      });
-    });
   }
 }
 
-/** Paint a prepared frame, with crisp integer-sized modules and a 4-module quiet zone. */
+// One reusable 1-pixel-per-module scratch bitmap; blitting it up with smoothing off is
+// a single GPU-friendly drawImage instead of thousands of canvas path operations.
+let scratch: HTMLCanvasElement | null = null;
+
+/** Paint a prepared frame with crisp integer-sized modules (quiet zone is baked in). */
 export function paintFrame(canvas: HTMLCanvasElement, frame: PreparedFrame, targetPx = 1000) {
-  const quiet = 4;
-  const cells = frame.size + quiet * 2;
+  const { cells } = frame;
   const cell = Math.max(2, Math.floor(targetPx / cells));
   const px = cell * cells;
   if (canvas.width !== px || canvas.height !== px) {
@@ -421,24 +327,16 @@ export function paintFrame(canvas: HTMLCanvasElement, frame: PreparedFrame, targ
   }
   const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) throw new Error("QR canvas is unavailable.");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, px, px);
-  ctx.fillStyle = "#000000";
-  ctx.beginPath();
-  const { modules, size } = frame;
-  for (let r = 0; r < size; r++) {
-    let c = 0;
-    while (c < size) {
-      if (!modules[r * size + c]) {
-        c++;
-        continue;
-      }
-      // Merge horizontal runs into a single rect: far fewer draw ops.
-      let end = c + 1;
-      while (end < size && modules[r * size + end]) end++;
-      ctx.rect((c + quiet) * cell, (r + quiet) * cell, (end - c) * cell, cell);
-      c = end;
-    }
+  scratch ??= document.createElement("canvas");
+  if (scratch.width !== cells || scratch.height !== cells) {
+    scratch.width = cells;
+    scratch.height = cells;
   }
-  ctx.fill();
+  const sctx = scratch.getContext("2d");
+  if (!sctx) throw new Error("QR canvas is unavailable.");
+  sctx.putImageData(new ImageData(frame.pixels, cells, cells), 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(scratch, 0, 0, px, px);
 }
+
+export { QUIET };

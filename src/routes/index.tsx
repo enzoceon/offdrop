@@ -88,7 +88,6 @@ function Index() {
     return () => window.removeEventListener("pointerdown", unlock);
   }, []);
 
-  const immersive = tab === "scan" && scannerBusy;
 
   function confirmLeaveScanner() {
     if (!pendingTab || confirming) return;
@@ -135,12 +134,11 @@ function Index() {
   }, []);
 
   const panelPad = "flex min-h-0 flex-1 flex-col";
-  const bottomPad = "pb-28 md:pb-24";
+  const bottomPad = "pb-[5.75rem] md:pb-24";
 
   return (
     <div
       className="app-bg group/app fixed inset-0 flex flex-col overflow-hidden"
-      data-immersive={immersive ? "true" : "false"}
     >
       <div className="ambient-orbs pointer-events-none absolute inset-0 -z-0" aria-hidden="true">
         <span className="orb orb-a" />
@@ -148,37 +146,30 @@ function Index() {
         <span className="orb orb-c" />
       </div>
 
-      {/* Header collapses on phones while the camera is live; stays on tablet/desktop. */}
-      <div
-        className={`relative z-10 grid transition-[grid-template-rows,opacity] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-          immersive ? "max-md:grid-rows-[0fr] max-md:opacity-0" : "grid-rows-[1fr] opacity-100"
-        }`}
-      >
-        <header className="safe-top mx-auto flex w-full max-w-5xl items-center justify-between overflow-hidden px-5 pb-3 md:px-8">
-          <div className="flex items-center gap-2.5">
-            <div className="logo-mark grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent shadow-lg shadow-primary/30 md:h-10 md:w-10">
-              <QrCode className="h-4.5 w-4.5 text-primary-foreground" strokeWidth={2.5} />
-            </div>
-            <div>
-              <h1 className="text-display text-lg leading-none md:text-xl">OFFDROP</h1>
-              <p className="text-[10px] text-muted-foreground md:text-xs">Offline file transfer</p>
-            </div>
+      <header className="safe-top relative z-10 mx-auto flex w-full max-w-5xl items-center justify-between px-5 pb-2 md:px-8 md:pb-3">
+        <div className="flex items-center gap-2.5">
+          <div className="logo-mark grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent shadow-lg shadow-primary/30 md:h-10 md:w-10">
+            <QrCode className="h-4.5 w-4.5 text-primary-foreground" strokeWidth={2.5} />
           </div>
-          <div className="flex items-center gap-2">
-            <MuteToggle />
-            <ThemeToggle />
-            <RefreshButton />
+          <div>
+            <h1 className="text-display text-lg leading-none md:text-xl">OFFDROP</h1>
+            <p className="text-[10px] text-muted-foreground md:text-xs">Offline file transfer</p>
           </div>
-        </header>
-      </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <MuteToggle />
+          <ThemeToggle />
+          <RefreshButton />
+        </div>
+      </header>
 
       <main className="relative z-10 flex min-h-0 flex-1 flex-col">
-        <Pager index={TAB_ORDER.indexOf(tab)} onIndexChange={onPagerIndex} locked={immersive}>
+        <Pager index={TAB_ORDER.indexOf(tab)} onIndexChange={onPagerIndex}>
           {[
             <div key="send" className={`${panelPad} ${bottomPad}`}>
               <Sender active={tab === "send"} />
             </div>,
-            <div key="scan" className={`${panelPad} ${immersive ? "pb-0 md:pb-24" : bottomPad}`}>
+            <div key="scan" className={`${panelPad} ${bottomPad}`}>
               <Scanner
                 stopRequestKey={stopRequestKey}
                 onStopRequestComplete={completeScannerStopRequest}
@@ -241,7 +232,7 @@ function Index() {
         </div>
       )}
 
-      <GlassTabs value={tab} onChange={requestTab} hidden={immersive} />
+      <GlassTabs value={tab} onChange={requestTab} />
       <InstallPrompt />
     </div>
   );

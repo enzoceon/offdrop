@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { Send, ScanLine, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -26,6 +27,18 @@ export function GlassTabs({
   hidden?: boolean;
 }) {
   const fallback = TAB_ORDER.indexOf(value);
+  const barRef = useRef<HTMLDivElement>(null);
+  const press = useRef<{ id: number; x: number; scrubbing: boolean } | null>(null);
+  const suppressClick = useRef(false);
+
+  /** Which tab is under this x? */
+  function tabAt(clientX: number): TabKey {
+    const r = barRef.current?.getBoundingClientRect();
+    if (!r) return value;
+    const i = Math.min(TAB_ORDER.length - 1, Math.max(0, Math.floor(((clientX - r.left) / r.width) * TAB_ORDER.length)));
+    return TAB_ORDER[i];
+  }
+
   return (
     <nav
       aria-label="Primary"
@@ -34,7 +47,45 @@ export function GlassTabs({
         hidden ? "max-md:translate-y-[140%] max-md:opacity-0 max-md:pointer-events-none" : "translate-y-0 opacity-100",
       )}
     >
-      <div className="glass-strong pointer-events-auto relative mx-auto grid max-w-md grid-cols-3 items-center rounded-full p-1.5 md:max-w-lg">
+      <div
+        ref={barRef}
+        className="glass-strong pointer-events-auto relative mx-auto grid max-w-md touch-none select-none grid-cols-3 items-center rounded-full p-1.5 md:max-w-lg"
+        onPointerDown={(e) => {
+          if (e.pointerType === "mouse" && e.button !== 0) return;
+          press.current = { id: e.pointerId, x: e.clientX, scrubbing: false };
+        }}
+        onPointerMove={(e) => {
+          const p = press.current;
+          if (!p || p.id !== e.pointerId) return;
+          if (!p.scrubbing && Math.abs(e.clientX - p.x) > 8) {
+            p.scrubbing = true;
+            suppressClick.current = true;
+            try {
+              barRef.current?.setPointerCapture(e.pointerId);
+            } catch {
+              /* ignore */
+            }
+          }
+          if (p.scrubbing) {
+            const next = tabAt(e.clientX);
+            if (next !== value) onChange(next);
+          }
+        }}
+        onPointerUp={(e) => {
+          if (press.current?.id === e.pointerId) press.current = null;
+          window.setTimeout(() => (suppressClick.current = false), 0);
+        }}
+        onPointerCancel={() => {
+          press.current = null;
+          suppressClick.current = false;
+        }}
+        onClickCapture={(e) => {
+          if (suppressClick.current) {
+            e.stopPropagation();
+            e.preventDefault();
+          }
+        }}
+      >
         <span
           className="tab-pill absolute bottom-1.5 top-1.5 z-0 rounded-full bg-gradient-to-br from-primary to-accent shadow-lg shadow-primary/30"
           style={{

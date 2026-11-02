@@ -89,3 +89,17 @@ await run(300_001, 0.1, 0, "300 KB chunk=1001 (odd), 10% loss", 1001);
   console.log("OK compressed header flag");
 }
 console.log("ALL PASS");
+
+// Every frame in the stream must be the same length => the same QR version/grid.
+{
+  const size = 100_003; const bytes = new Uint8Array(size).map((_, i) => (i * 13) & 255);
+  for (const chunk of [600, 900, 1400, 2000]) {
+    const plan = createPlan({ name: "same-size.bin", type: "application/octet-stream", size, crc: crc32(bytes), chunk, origSize: size + 50 });
+    const src = makeSource(bytes, chunk);
+    const lens = new Set<number>();
+    for (let seq = 0; seq < plan.total + 120; seq++) lens.add((await frameAt(plan, src, seq)).text.length);
+    if (lens.size !== 1) throw new Error(`frame length varies at chunk=${chunk}: ${[...lens].join(",")}`);
+  }
+  console.log("OK every frame (header, data, last chunk, repair) has identical length");
+}
+console.log("ALL PASS 2");

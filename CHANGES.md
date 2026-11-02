@@ -74,3 +74,45 @@
 
 ## Tests
 `npm run test:protocol`, `node --experimental-strip-types scripts/compress-test.ts`.
+
+---
+
+# Round 3: parity, bundles, layouts, Vercel
+
+- **Identical QR on every frame.** The header frame and the final short chunk used to be much shorter than data
+  frames and rendered as visibly smaller/sparser codes. Every frame type is now padded to exactly 9 + chunk bytes,
+  so every QR in the stream has the same version and module grid (covered by a test at all four densities).
+- **Multi-file sending.** Pick or drop many files; they are bundled into one stored `.zip` built from Blob parts
+  (no memory copy), verified with Python `zipfile` and `unzip`. The receiver gets a normal zip.
+- **Receiver**: removed manual zoom/pinch/pan/focus button entirely. Framing is now automatic: the view eases in
+  until the code fills ~62% of the frame and re-centres on it, eases back out if the code is lost, and the lens
+  autofocuses on the code itself. Resume after pause (progress is kept), screen wake-lock, unload warning
+  mid-transfer, and a mobile-first idle screen.
+- **Sender layout**: the QR is sized from its container (container query units) so it is as large as the space
+  allows on any screen; desktop is a two-column layout with a large preview, stats and controls filling the full
+  height; phones get a compact file row with a fixed square thumbnail so any image aspect ratio stays tidy.
+- **Fullscreen presenter** redesigned: dark stage, QR as large as possible, title + exit on top, transport
+  (play, progress, ETA, speed) below; becomes a side panel in landscape.
+- **Deploy**: standard TanStack Start + Nitro Vite config (auto-selects Vercel at build), `vercel.json`, GitHub
+  Actions CI, README deploy steps.
+
+---
+
+# Round 4: fixes from real-device screenshots
+
+- **Send no longer scrolls on phones.** Compact file row (fixed square thumbnail), QR sized from remaining space,
+  three tight control rows; desktop keeps the roomy two-column layout. Scrollbars are hidden on the shell.
+- **Receive**: the camera is a bounded viewfinder (not the whole screen); progress/status and controls sit below it,
+  never over the video. Header/tab bar stay put (removed the collapse trick that left a coloured strip).
+  Auto-focus & framing is a toggle again (default on); off = plain camera.
+- **Swiping**: Receive screen is swipeable again (the no-swipe flag was on the whole screen); you can also drag across
+  the bottom tab bar to scrub between tabs. History filter uses one gliding pill.
+- **Edge sliver / clipped HUD**: caused by my pager parallax pushing the neighbouring panel 6% into view at rest.
+  Removed; off-screen panels are fully hidden once settled.
+- **Fullscreen QR cut off on the right**: a grid column was being sized by the long filename; fixed with explicit
+  minmax(0,1fr) tracks.
+- **Performance**: QR encoding moved off the UI thread into a Web Worker pool (fixed mask pattern skips the 8-way mask
+  scoring, ~4x faster), frames are blitted as pre-rendered bitmaps, up to 60 fps (Ultra), choice remembered.
+  Receiver: camera requests 60 fps, jsQR runs in a worker, lighter UI updates, no per-scan vibration.
+- **Dual QR (fullscreen)**: two codes per tick = 2x throughput; receiver reads multiple codes per frame natively and
+  via a second jsQR pass.

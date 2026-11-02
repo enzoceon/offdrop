@@ -257,7 +257,6 @@ export const sfx = {
     const steps = [N.C5, N.D5, N.E5, N.G5, N.A5, N.C6, N.D6, N.E6];
     const idx = Math.min(steps.length - 1, Math.floor(Math.max(0, Math.min(1, frac)) * steps.length));
     voice(steps[idx], 0, 0.07, { type: "triangle", gain: 0.05, attack: 0.002, decay: 0.06, cutoff: 3500, reverb: 0.25 });
-    vibrate(6);
   },
 
   /** Playback begins / resumes: rising soft pluck. */
@@ -333,12 +332,13 @@ export const sfx = {
     vibrate(6);
   },
 
-  speedTier(tier: "Gentle" | "Normal" | "Fast" | "Turbo") {
+  speedTier(tier: "Gentle" | "Normal" | "Fast" | "Turbo" | "Ultra") {
     const ladder: Record<typeof tier, number[]> = {
       Gentle: [N.C5],
       Normal: [N.C5, N.E5],
       Fast: [N.C5, N.E5, N.G5],
       Turbo: [N.C5, N.E5, N.G5, N.C6],
+      Ultra: [N.C5, N.E5, N.G5, N.C6, N.E6],
     };
     ladder[tier].forEach((f, i) => voice(f, i * 0.05, 0.1, { type: "triangle", gain: 0.08, decay: 0.12, cutoff: 3600, reverb: 0.3 }));
     const patterns: Record<typeof tier, VibratePattern> = {
@@ -346,6 +346,7 @@ export const sfx = {
       Normal: 12,
       Fast: [10, 18, 10],
       Turbo: [14, 14, 18],
+      Ultra: [16, 12, 16, 12, 22],
     };
     vibrate(patterns[tier]);
   },
