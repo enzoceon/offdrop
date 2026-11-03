@@ -116,3 +116,26 @@
   Receiver: camera requests 60 fps, jsQR runs in a worker, lighter UI updates, no per-scan vibration.
 - **Dual QR (fullscreen)**: two codes per tick = 2x throughput; receiver reads multiple codes per frame natively and
   via a second jsQR pass.
+
+
+---
+
+# Round 5
+
+- **Protocol v3 (self-describing frames).** Every frame carries the 24-byte meta block (id, size, chunk, crc, flags,
+  original size), so the receiver starts assembling from the FIRST frame it sees; no waiting for a header frame.
+  Header frames (name + type) are still interleaved every 12 frames. Tested: decoder created from a mid-stream
+  repair frame; foreign / truncated QR payloads rejected.
+- **1/2/4/6 QR codes at once** (fullscreen, and the large desktop stage). The grid auto-arranges for the screen
+  shape; the receiver reads all codes in view (native detector, or up to 4 per frame via a jsQR worker pool).
+- **Receiver pipeline.** Two frames decoded concurrently, frame de-dupe before parsing, live "camera fps / new
+  codes per second" readout so you can see whether the sender is going faster than the camera can follow.
+- **Auto focus** works on the union of all detected codes; 3D lock-on frame, centred status chip, new progress ring,
+  progress track and chunk map OUTSIDE the status card; controls ordered Flip, Stop, Auto focus.
+- **Density presets retuned** (Reliable 500 / Balanced 800 / Dense 1100 / Max 1400 B). The old Max (v35) was too
+  dense to read; the new one is v29. Density and lane pickers are gliding sliders.
+- **Send**: button order Loop, Play, Reset, Fullscreen (corner button removed).
+- **Gestures**: fixed swipe jumping forward to History (pointercancel reported 0,0); stronger rubber band at both
+  ends; tab pill clamped inside the bar; browser back-swipe suppressed.
+- **Glitches**: off-screen tabs use content-visibility:hidden and release GPU layers; removed the glow that formed
+  a visible edge above the tab bar on Receive.

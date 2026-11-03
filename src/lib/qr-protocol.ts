@@ -1,41 +1,44 @@
-// OFFDROP QR-stream protocol v2.
+// OFFDROP QR-stream protocol v3.
 //
 // Goals: carry as many bytes per QR as possible, support big files without ever
-// materialising every frame in memory, and recover from missed frames without
-// waiting for the whole file to loop again.
+// materialising every frame in memory, start instantly from ANY frame, and recover
+// from missed frames without waiting for the whole file to loop again.
 //
-// Wire format
-// -----------
+// Wire format (self-describing)
+// -----------------------------
 // Every frame is a small binary record, base45-encoded. Base45 only uses the QR
 // "alphanumeric" character set, so QR encoders pack it at 5.5 bits/char
 // (~97% efficient) instead of the 75% efficiency of base64-in-byte-mode.
 // It is also pure text, so native BarcodeDetector and jsQR both read it safely.
 //
-// Every frame type is padded to exactly 9 + chunk bytes, so every QR in the
-// stream has the same version and module grid (the header and the final short
-// chunk used to render as visibly smaller codes).
+// EVERY frame starts with the same 24-byte meta block, so a receiver can start
+// assembling the file from the very first frame it sees; it never has to wait
+// for a special header frame:
 //
-//   Header  : [0xD1][ver|0x80 if compressed][id u32][size u32][chunk u16][total u32]
-//             [crc u32][nameLen u8][mimeLen u8][name utf8][mime utf8]
-//             [origSize u32 — only when compressed]
-//             `size`/`crc` always describe the bytes actually transmitted. When the
-//             compressed flag is set those bytes are a raw-deflate stream of the file.
-//   Data    : [0xD2][id u32][index u32][payload == chunk bytes, zero-padded]
-//   Repair  : [0xD3][id u32][seed u32][payload == chunk bytes]
+//   [magic u8][ver<<4 | flags u8][id u32][ref u32][size u32][chunk u16][crc u32][origSize u32]
+//
+//   magic  0xD1 header, 0xD2 data, 0xD3 repair
+//   ref    data: chunk index; repair: seed; header: 0
+//   flags  bit0 = the transmitted bytes are a raw-deflate stream of the file
+//   size/crc describe the bytes actually transmitted; origSize is the original file size
+//
+// followed by exactly `chunk` payload bytes:
+//   data / repair : the chunk (or XOR of chunks), zero-padded
+//   header        : [nameLen u8][mimeLen u8][name utf8][mime utf8][noise padding]
+//
+// Every frame therefore has the same length, so every QR has the same version and
+// module grid.
 //
 // The file is split into blocks of BLOCK_CHUNKS chunks. A repair frame is the
 // XOR of a pseudo-random ~50% subset of ONE block's chunks. The subset and the
 // block are derived from (id, seed, total), so describing it costs only 4 bytes.
 // A receiver missing m chunks of a block needs only ~m+2 repair frames for that
-// block, whichever chunks they were — instead of waiting for the sender to loop
-// all the way around to those exact frames again.
+// block, whichever chunks they were.
 //
 // Playback stream: every data chunk once, in order (so a clean scan finishes in
 // the minimum possible time), then an endless run of repair frames cycling
-// through the blocks. A repair frame helps any receiver that is missing
-// something in its block, so after the first pass no frame is wasted on chunks
-// the receiver already has. A header is interleaved every HEADER_EVERY frames
-// so a late joiner can lock on at any moment.
+// through the blocks. A header frame (name + type) is interleaved every
+// HEADER_EVERY frames.
 
 // ---------------------------------------------------------------------------
 // CRC32 (incremental, so huge files can be hashed block by block)
@@ -137,7 +140,7 @@ export function b45ToBytes(text: string): Uint8Array | null {
 export const DEFAULT_CHUNK_BYTES = 900;
 
 /** A header frame is interleaved after this many data/repair frames. */
-export const HEADER_EVERY = 24;
+export const HEADER_EVERY = 12;
 
 /** Largest file the protocol can describe (u32 sizes). */
 export const MAX_FILE_BYTES = 0xffffffff;
@@ -151,8 +154,10 @@ export const BLOCK_CHUNKS = 256;
 const MAGIC_HEADER = 0xd1;
 const MAGIC_DATA = 0xd2;
 const MAGIC_REPAIR = 0xd3;
-const VERSION = 2;
-const FLAG_COMPRESSED = 0x80;
+const VERSION = 3;
+const FLAG_COMPRESSED = 0x01;
+/** Bytes of meta carried by every frame. */
+export const META_BYTES = 24;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -216,6 +221,18 @@ export function randomId(): number {
   return (Math.random() * 0x100000000) >>> 0;
 }
 
+function writeMeta(buf: Uint8Array, magic: number, plan: StreamPlan, ref: number) {
+  buf[0] = magic;
+  buf[1] = (VERSION << 4) | (plan.compressed ? FLAG_COMPRESSED : 0);
+  putU32(buf, 2, plan.id);
+  putU32(buf, 6, ref);
+  putU32(buf, 10, plan.size);
+  buf[14] = (plan.chunk >> 8) & 0xff;
+  buf[15] = plan.chunk & 0xff;
+  putU32(buf, 16, plan.crc);
+  putU32(buf, 20, plan.origSize);
+}
+
 export function createPlan(input: {
   name: string;
   type: string;
@@ -237,26 +254,7 @@ export function createPlan(input: {
   const mimeBytes = truncateUtf8(mime, 80);
   const compressed = input.origSize !== undefined && input.origSize !== input.size;
   const origSize = compressed ? (input.origSize as number) : input.size;
-  const buf = new Uint8Array(22 + nameBytes.length + mimeBytes.length + (compressed ? 4 : 0));
-  buf[0] = MAGIC_HEADER;
-  buf[1] = VERSION | (compressed ? FLAG_COMPRESSED : 0);
-  putU32(buf, 2, id);
-  putU32(buf, 6, input.size);
-  buf[10] = (chunk >> 8) & 0xff;
-  buf[11] = chunk & 0xff;
-  putU32(buf, 12, total);
-  putU32(buf, 16, input.crc >>> 0);
-  buf[20] = nameBytes.length;
-  buf[21] = mimeBytes.length;
-  buf.set(nameBytes, 22);
-  buf.set(mimeBytes, 22 + nameBytes.length);
-  if (compressed) putU32(buf, 22 + nameBytes.length + mimeBytes.length, origSize);
-  // Pad with noise-like bytes up to a full frame so the header QR matches the data QRs.
-  const framed = new Uint8Array(Math.max(buf.length, 9 + chunk));
-  framed.set(buf);
-  const padRng = mulberry32(id ^ 0x5bd1e995);
-  for (let i = buf.length; i < framed.length; i++) framed[i] = (padRng() * 256) | 0;
-  return {
+  const plan: StreamPlan = {
     compressed,
     origSize,
     id,
@@ -267,8 +265,21 @@ export function createPlan(input: {
     chunk,
     total,
     crc: input.crc >>> 0,
-    headerFrame: bytesToB45(framed),
+    headerFrame: "",
   };
+  const buf = new Uint8Array(META_BYTES + chunk);
+  writeMeta(buf, MAGIC_HEADER, plan, 0);
+  buf[META_BYTES] = nameBytes.length;
+  buf[META_BYTES + 1] = mimeBytes.length;
+  buf.set(nameBytes, META_BYTES + 2);
+  buf.set(mimeBytes, META_BYTES + 2 + nameBytes.length);
+  // Pad the rest with noise-like bytes so the header QR looks like every other QR.
+  const padRng = mulberry32(id ^ 0x5bd1e995);
+  for (let i = META_BYTES + 2 + nameBytes.length + mimeBytes.length; i < buf.length; i++) {
+    buf[i] = (padRng() * 256) | 0;
+  }
+  plan.headerFrame = bytesToB45(buf);
+  return plan;
 }
 
 // ---------------------------------------------------------------------------
@@ -332,22 +343,18 @@ export interface ChunkSource {
 }
 
 export function dataFrame(plan: StreamPlan, index: number, payload: Uint8Array): string {
-  const buf = new Uint8Array(9 + plan.chunk); // short final chunk stays zero-padded
-  buf[0] = MAGIC_DATA;
-  putU32(buf, 1, plan.id);
-  putU32(buf, 5, index);
-  buf.set(payload, 9);
+  const buf = new Uint8Array(META_BYTES + plan.chunk); // short final chunk stays zero-padded
+  writeMeta(buf, MAGIC_DATA, plan, index);
+  buf.set(payload, META_BYTES);
   return bytesToB45(buf);
 }
 
 export async function repairFrame(plan: StreamPlan, seed: number, source: ChunkSource): Promise<string> {
   const spec = repairSpec(plan.id, seed, plan.total);
   const range = await source.readRange(spec.start, spec.count);
-  const buf = new Uint8Array(9 + plan.chunk);
-  buf[0] = MAGIC_REPAIR;
-  putU32(buf, 1, plan.id);
-  putU32(buf, 5, seed);
-  const out = buf.subarray(9);
+  const buf = new Uint8Array(META_BYTES + plan.chunk);
+  writeMeta(buf, MAGIC_REPAIR, plan, seed);
+  const out = buf.subarray(META_BYTES);
   for (let j = 0; j < spec.count; j++) {
     if (!(spec.bits[j >> 5] & (1 << (j & 31)))) continue;
     const from = j * plan.chunk;
@@ -402,69 +409,80 @@ export async function frameAt(
 // Decoding
 // ---------------------------------------------------------------------------
 
-export interface ParsedHeader {
-  kind: "header";
-  compressed: boolean;
-  origSize: number;
+/** Everything a receiver needs to start assembling the file, present in EVERY frame. */
+export interface FrameMeta {
   id: number;
-  name: string;
-  mime: string;
+  /** Bytes actually transmitted (compressed size when `compressed`). */
   size: number;
   chunk: number;
   total: number;
   crc: number;
+  compressed: boolean;
+  /** Size of the original file. */
+  origSize: number;
+}
+export interface ParsedHeader {
+  kind: "header";
+  id: number;
+  meta: FrameMeta;
+  name: string;
+  mime: string;
 }
 export interface ParsedData {
   kind: "data";
   id: number;
+  meta: FrameMeta;
   index: number;
   payload: Uint8Array;
 }
 export interface ParsedRepair {
   kind: "repair";
   id: number;
+  meta: FrameMeta;
   seed: number;
   payload: Uint8Array;
 }
 export type ParsedFrame = ParsedHeader | ParsedData | ParsedRepair;
 
 export function parseFrame(text: string): ParsedFrame | null {
-  if (!text || text.length < 8 || text.length > 4000) return null;
+  if (!text || text.length < 40 || text.length > 6000) return null;
   const buf = b45ToBytes(text);
-  if (!buf || buf.length < 9) return null;
-  switch (buf[0]) {
-    case MAGIC_HEADER: {
-      if (buf.length < 22 || (buf[1] & 0x7f) !== VERSION) return null;
-      const compressed = (buf[1] & FLAG_COMPRESSED) !== 0;
-      const nameLen = buf[20];
-      const mimeLen = buf[21];
-      if (buf.length < 22 + nameLen + mimeLen + (compressed ? 4 : 0)) return null;
-      const chunk = (buf[10] << 8) | buf[11];
-      const size = getU32(buf, 6);
-      const total = getU32(buf, 12);
-      if (chunk < 16 || total < 1) return null;
-      // total must agree with size/chunk, otherwise this is not one of our headers.
-      if (total !== Math.max(1, Math.ceil(size / chunk))) return null;
-      return {
-        kind: "header",
-        compressed,
-        origSize: compressed ? getU32(buf, 22 + nameLen + mimeLen) : size,
-        id: getU32(buf, 2),
-        size,
-        chunk,
-        total,
-        crc: getU32(buf, 16),
-        name: decoder.decode(buf.subarray(22, 22 + nameLen)),
-        mime: decoder.decode(buf.subarray(22 + nameLen, 22 + nameLen + mimeLen)),
-      };
-    }
-    case MAGIC_DATA:
-      return { kind: "data", id: getU32(buf, 1), index: getU32(buf, 5), payload: buf.subarray(9) };
-    case MAGIC_REPAIR:
-      return { kind: "repair", id: getU32(buf, 1), seed: getU32(buf, 5), payload: buf.subarray(9) };
-    default:
-      return null;
+  if (!buf || buf.length < META_BYTES + 16) return null;
+  const magic = buf[0];
+  if (magic !== MAGIC_HEADER && magic !== MAGIC_DATA && magic !== MAGIC_REPAIR) return null;
+  if (buf[1] >> 4 !== VERSION) return null;
+  const chunk = (buf[14] << 8) | buf[15];
+  // Frames are exactly META + chunk bytes: a strong check that this really is one of ours.
+  if (chunk < 16 || buf.length !== META_BYTES + chunk) return null;
+  const size = getU32(buf, 10);
+  const total = Math.max(1, Math.ceil(size / chunk));
+  const compressed = (buf[1] & FLAG_COMPRESSED) !== 0;
+  const id = getU32(buf, 2);
+  const ref = getU32(buf, 6);
+  const meta: FrameMeta = {
+    id,
+    size,
+    chunk,
+    total,
+    crc: getU32(buf, 16),
+    compressed,
+    origSize: getU32(buf, 20),
+  };
+  const payload = buf.subarray(META_BYTES);
+  if (magic === MAGIC_HEADER) {
+    const nameLen = payload[0];
+    const mimeLen = payload[1];
+    if (2 + nameLen + mimeLen > payload.length) return null;
+    return {
+      kind: "header",
+      id,
+      meta,
+      name: decoder.decode(payload.subarray(2, 2 + nameLen)),
+      mime: decoder.decode(payload.subarray(2 + nameLen, 2 + nameLen + mimeLen)),
+    };
   }
+  if (magic === MAGIC_DATA) return { kind: "data", id, meta, index: ref, payload };
+  return { kind: "repair", id, meta, seed: ref, payload };
 }
 
 interface Equation {
@@ -503,18 +521,18 @@ export class FountainDecoder {
   private seenSeeds = new Set<number>();
   count = 0;
 
-  constructor(header: ParsedHeader) {
-    this.total = header.total;
-    this.chunk = header.chunk;
-    this.size = header.size;
-    this.id = header.id;
+  constructor(meta: FrameMeta) {
+    this.total = meta.total;
+    this.chunk = meta.chunk;
+    this.size = meta.size;
+    this.id = meta.id;
     // Throws RangeError if the device can't allocate this much; callers catch it.
-    this.buffer = new Uint8Array(header.total * header.chunk);
-    this.have = new Uint8Array(header.total);
-    const blocks = blockCount(header.total);
+    this.buffer = new Uint8Array(meta.total * meta.chunk);
+    this.have = new Uint8Array(meta.total);
+    const blocks = blockCount(meta.total);
     this.unknownInBlock = new Uint16Array(blocks);
     for (let b = 0; b < blocks; b++) {
-      this.unknownInBlock[b] = Math.min(BLOCK_CHUNKS, header.total - b * BLOCK_CHUNKS);
+      this.unknownInBlock[b] = Math.min(BLOCK_CHUNKS, meta.total - b * BLOCK_CHUNKS);
     }
     this.eqs = Array.from({ length: blocks }, () => []);
   }
@@ -534,6 +552,20 @@ export class FountainDecoder {
       banked += Math.min(this.eqs[b].length, this.unknownInBlock[b]);
     }
     return Math.min(1, (this.count + banked) / this.total);
+  }
+
+  /** Coarse completeness map (0..1 per bucket) for the live chunk-map display. */
+  coverage(buckets: number): number[] {
+    const out: number[] = [];
+    const n = Math.max(1, Math.min(buckets, this.total));
+    for (let b = 0; b < n; b++) {
+      const from = Math.floor((b * this.total) / n);
+      const to = Math.max(from + 1, Math.floor(((b + 1) * this.total) / n));
+      let got = 0;
+      for (let i = from; i < to; i++) got += this.have[i];
+      out.push(got / (to - from));
+    }
+    return out;
   }
 
   /** Returns true if this frame taught the decoder something new. */
@@ -648,12 +680,12 @@ export interface DensityPreset {
 }
 
 export const DENSITY_PRESETS: DensityPreset[] = [
-  { key: "reliable", label: "Reliable", chunk: 600, ec: "M", hint: "Any camera, any distance" },
-  { key: "balanced", label: "Balanced", chunk: 900, ec: "M", hint: "Good on most phones" },
-  { key: "dense", label: "Dense", chunk: 1400, ec: "L", hint: "~1.5× faster, needs a sharp camera" },
-  { key: "max", label: "Max", chunk: 2000, ec: "L", hint: "~2.2× faster, best phones + steady hands" },
+  { key: "reliable", label: "Reliable", chunk: 500, ec: "M", hint: "Any camera, any distance" },
+  { key: "balanced", label: "Balanced", chunk: 800, ec: "M", hint: "Good on most phones" },
+  { key: "dense", label: "Dense", chunk: 1100, ec: "L", hint: "~1.4× faster, needs a sharp camera" },
+  { key: "max", label: "Max", chunk: 1400, ec: "L", hint: "~1.75× faster, best phones + steady hands" },
 ];
 
 export function presetFor(key: DensityKey): DensityPreset {
-  return DENSITY_PRESETS.find((p) => p.key === key) ?? DENSITY_PRESETS[2];
+  return DENSITY_PRESETS.find((p) => p.key === key) ?? DENSITY_PRESETS[1];
 }

@@ -91,7 +91,7 @@ export function GlassTabs({
           style={{
             left: "0.375rem",
             width: "calc((100% - 0.75rem) / 3)",
-            transform: `translateX(calc(var(--pager-pos, ${fallback}) * 100%))`,
+            transform: `translateX(calc(clamp(0, var(--pager-pos, ${fallback}), ${TAB_ORDER.length - 1}) * 100%))`,
           }}
         />
         {tabs.map((t) => {

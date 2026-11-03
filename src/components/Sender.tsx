@@ -22,6 +22,7 @@ import {
   Files,
   Timer,
   Activity,
+  Expand,
 } from "lucide-react";
 import {
   DENSITY_PRESETS,
@@ -41,9 +42,31 @@ import { useWakeLock } from "@/lib/wake-lock";
 import { cn } from "@/lib/utils";
 import { MediaViewer, type ViewerItem } from "@/components/MediaViewer";
 import { Portal } from "@/components/Portal";
+import { GlideSegment } from "@/components/GlideSegment";
+import { LaneGrid } from "@/components/LaneGrid";
 
 type SpeedTier = "Gentle" | "Normal" | "Fast" | "Turbo" | "Ultra";
 type Phase = "bundle" | "compress" | "hash";
+type Lanes = 1 | 2 | 4 | 6;
+
+const LANE_OPTIONS: { key: Lanes; label: string }[] = [
+  { key: 1, label: "1×" },
+  { key: 2, label: "2×" },
+  { key: 4, label: "4×" },
+  { key: 6, label: "6×" },
+];
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const update = () => setMatches(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, [query]);
+  return matches;
+}
 
 const MIN_FPS = 1;
 const MAX_FPS = 60;
@@ -118,11 +141,11 @@ export function Sender({ active = true }: { active?: boolean }) {
   const [qrError, setQrError] = useState<string | null>(null);
   const [qrReady, setQrReady] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [lanes, setLanes] = useState<1 | 2>(1);
+  const [lanes, setLanes] = useState<Lanes>(1);
+  const isLg = useMediaQuery("(min-width: 1024px)");
   const inputRef = useRef<HTMLInputElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const mainRefs = useRef<Array<HTMLCanvasElement | null>>([]);
   const fullRefs = useRef<Array<HTMLCanvasElement | null>>([]);
-  const tiltRef = useRef<HTMLDivElement>(null);
   const pipelineRef = useRef<FramePipeline | null>(null);
   const preparedRef = useRef<PreparedFile | null>(null);
   const seqRef = useRef(0);
@@ -303,7 +326,8 @@ export function Sender({ active = true }: { active?: boolean }) {
   // Playback clock. Frames are built ahead of time by the worker pipeline; this loop only
   // decides *when* to advance and blits already-finished bitmaps, so it stays smooth up to 60 fps.
   // In dual mode every tick shows two consecutive frames side by side (2x the data per tick).
-  const activeLanes = expanded ? lanes : 1;
+  // Several codes per tick only make sense where there is room: fullscreen, or the big desktop stage.
+  const activeLanes: Lanes = expanded || isLg ? lanes : 1;
   useEffect(() => {
     const pipeline = pipelineRef.current;
     if (!plan || !pipeline) return;
@@ -322,11 +346,13 @@ export function Sender({ active = true }: { active?: boolean }) {
     const paint = (n: number) => {
       if (!have(n)) return false;
       try {
+        const multi = activeLanes > 1;
         for (let i = 0; i < activeLanes; i++) {
           const frame = pipeline.get(n + i)!;
-          if (i === 0 && canvasRef.current) paintFrame(canvasRef.current, frame);
-          const target = fullRefs.current[i];
-          if (target) paintFrame(target, frame, 1600);
+          const main = mainRefs.current[i];
+          const full = fullRefs.current[i];
+          if (main) paintFrame(main, frame, multi ? 700 : 1000);
+          if (full) paintFrame(full, frame, multi ? 900 : 1600);
         }
       } catch (error) {
         setQrError(error instanceof Error ? error.message : "QR rendering failed.");
@@ -343,7 +369,7 @@ export function Sender({ active = true }: { active?: boolean }) {
 
       // A presenter canvas that mounted after the frame was painted needs catching up.
       for (let i = 0; i < activeLanes; i++) {
-        const c = fullRefs.current[i];
+        const c = fullRefs.current[i] ?? mainRefs.current[i];
         if (c && c.width <= 300) paintedRef.current = -1;
       }
 
@@ -476,18 +502,6 @@ export function Sender({ active = true }: { active?: boolean }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   });
-
-  function onTilt(e: ReactPointerEvent<HTMLDivElement>) {
-    const el = tiltRef.current;
-    if (!el || e.pointerType === "touch") return;
-    const r = el.getBoundingClientRect();
-    const px = (e.clientX - r.left) / r.width - 0.5;
-    const py = (e.clientY - r.top) / r.height - 0.5;
-    el.style.transform = `perspective(900px) rotateY(${px * 8}deg) rotateX(${-py * 8}deg) scale3d(1.012,1.012,1.012)`;
-  }
-  function onTiltLeave() {
-    if (tiltRef.current) tiltRef.current.style.transform = "perspective(900px) rotateY(0) rotateX(0)";
-  }
 
   const ready = Boolean(plan);
   const tickRate = fps * activeLanes; // frames shown per second
@@ -729,27 +743,11 @@ export function Sender({ active = true }: { active?: boolean }) {
   );
 
   const stage = (
-    <div className="relative flex h-full w-full min-h-0 flex-col items-center justify-center">
-      <div
-        ref={tiltRef}
-        onPointerMove={onTilt}
-        onPointerLeave={onTiltLeave}
-        style={{ width: "min(100%, calc(100cqh - 1.25rem))" }}
-        className={cn(
-          "qr-stage relative aspect-square rounded-[1.5rem] bg-white p-1.5 shadow-2xl transition-[transform,box-shadow] duration-300 ease-out",
-          playing ? "qr-stage-live shadow-primary/40" : "shadow-black/20",
-        )}
-      >
-        <canvas
-          ref={canvasRef}
-          aria-label="OFFDROP transfer QR frame"
-          className={cn(
-            "h-full w-full rounded-2xl object-contain [image-rendering:pixelated] transition-opacity duration-300",
-            !qrReady || !ready ? "opacity-0" : "opacity-100",
-          )}
-        />
+    <div className="relative flex h-full w-full min-h-0 flex-col">
+      <div className="relative min-h-0 flex-1">
+        <LaneGrid count={activeLanes} refs={mainRefs} live={playing} gap={8} />
         {(!qrReady || !ready) && !qrError && (
-          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm font-semibold text-neutral-500">
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm font-semibold text-muted-foreground">
             <Loader2 className="h-6 w-6 animate-spin text-primary" />
             {busyLabel ?? "Building frames…"}
           </div>
@@ -757,41 +755,29 @@ export function Sender({ active = true }: { active?: boolean }) {
         {ready && qrReady && !playing && (
           <button
             onClick={togglePlaying}
-            className="absolute inset-0 grid place-items-center rounded-[1.5rem] bg-black/35 opacity-0 backdrop-blur-[2px] transition-opacity duration-300 hover:opacity-100 focus-visible:opacity-100"
+            className="group absolute inset-0 grid place-items-center rounded-[1.5rem] opacity-0 transition-opacity duration-300 hover:opacity-100 focus-visible:opacity-100"
             aria-label="Play"
           >
-            <span className="grid h-16 w-16 place-items-center rounded-full bg-white/90 shadow-xl">
-              <Play className="ml-1 h-7 w-7 text-neutral-900" fill="currentColor" />
+            <span className="grid h-16 w-16 place-items-center rounded-full bg-black/55 shadow-xl backdrop-blur">
+              <Play className="ml-1 h-7 w-7 text-white" fill="currentColor" />
             </span>
           </button>
         )}
-        <button
-          onClick={toggleExpanded}
-          disabled={!ready}
-          className="absolute -right-1.5 -top-1.5 grid h-9 w-9 place-items-center rounded-full bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/40 transition-transform active:scale-90 disabled:opacity-50"
-          aria-label="Fullscreen QR"
-          title="Fullscreen QR (F)"
-        >
-          <Maximize2 className="h-4 w-4" />
-        </button>
+        {qrError && (
+          <div
+            role="alert"
+            className="glass animate-pop-in absolute inset-x-0 top-2 z-10 mx-auto w-[min(100%,24rem)] rounded-2xl border border-destructive/40 p-2.5 text-center text-xs text-destructive"
+          >
+            {qrError}
+          </div>
+        )}
       </div>
-      <div
-        className="mt-2 h-1.5 shrink-0 overflow-hidden rounded-full bg-secondary"
-        style={{ width: "min(100%, calc(100cqh - 1.25rem))" }}
-      >
+      <div className="mx-auto mt-2 h-1.5 w-full max-w-md shrink-0 overflow-hidden rounded-full bg-secondary">
         <div
           className="progress-fill h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-200 ease-out"
           style={{ width: `${progress}%` }}
         />
       </div>
-      {qrError && (
-        <div
-          role="alert"
-          className="glass animate-pop-in absolute inset-x-0 top-2 z-10 mx-auto w-[min(100%,24rem)] rounded-2xl border border-destructive/40 p-2.5 text-center text-xs text-destructive"
-        >
-          {qrError}
-        </div>
-      )}
     </div>
   );
 
@@ -807,6 +793,18 @@ export function Sender({ active = true }: { active?: boolean }) {
       {!playing && <span className="btn-sheen absolute inset-0" />}
       {playing ? <Pause className="relative h-4 w-4" /> : <Play className="relative h-4 w-4" />}
       <span className="relative">{playing ? "Pause" : "Play"}</span>
+    </button>
+  );
+  const fullscreenButton = (
+    <button
+      type="button"
+      onClick={toggleExpanded}
+      disabled={!ready}
+      className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/30 transition-transform active:scale-90 disabled:opacity-50"
+      aria-label="Fullscreen QR"
+      title="Fullscreen QR (F)"
+    >
+      <Expand className="h-4 w-4" />
     </button>
   );
   const loopButton = (
@@ -838,32 +836,32 @@ export function Sender({ active = true }: { active?: boolean }) {
     />
   );
   const densityPicker = (
-    <div className="grid grid-cols-4 gap-1 rounded-2xl bg-secondary/60 p-1" role="radiogroup" aria-label="QR density">
-      {DENSITY_PRESETS.map((p) => (
-        <button
-          key={p.key}
-          role="radio"
-          aria-checked={density === p.key}
-          onClick={() => changeDensity(p.key)}
-          className={cn(
-            "rounded-xl px-1 py-1.5 text-[11px] font-bold transition-all duration-300",
-            density === p.key
-              ? "bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-md shadow-primary/25"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {p.label}
-        </button>
-      ))}
-    </div>
+    <GlideSegment
+      ariaLabel="QR density"
+      value={density}
+      onChange={changeDensity}
+      options={DENSITY_PRESETS.map((p) => ({ key: p.key, label: p.label }))}
+    />
+  );
+  const lanePicker = (
+    <GlideSegment
+      ariaLabel="QR codes per frame"
+      value={lanes}
+      onChange={(l) => {
+        setLanes(l);
+        paintedRef.current = -1;
+        sfx.tick();
+      }}
+      options={LANE_OPTIONS}
+    />
   );
 
   /** Phone/tablet controls: three tight rows, sized so the whole Send screen fits without scrolling. */
   const controlsCompact = (
     <div className="flex w-full shrink-0 flex-col gap-1.5 lg:hidden">
       <div className="flex items-center gap-2">
-        {playButton}
         {loopButton}
+        {playButton}
         <button
           onClick={resetPlayback}
           className="glass grid h-11 w-11 shrink-0 place-items-center rounded-2xl transition-transform active:scale-90"
@@ -871,6 +869,7 @@ export function Sender({ active = true }: { active?: boolean }) {
         >
           <RotateCcw className="h-4 w-4" />
         </button>
+        {fullscreenButton}
       </div>
       <div className="glass flex items-center gap-2.5 rounded-2xl px-3 py-2">
         <Gauge className="h-4 w-4 shrink-0 text-primary" />
@@ -887,8 +886,8 @@ export function Sender({ active = true }: { active?: boolean }) {
   const controlsRich = (
     <div className="hidden w-full shrink-0 flex-col gap-2.5 lg:flex">
       <div className="flex w-full items-center gap-2">
-        {playButton}
         {loopButton}
+        {playButton}
         <button
           onClick={resetPlayback}
           className="glass flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-bold transition-transform active:scale-95"
@@ -896,6 +895,7 @@ export function Sender({ active = true }: { active?: boolean }) {
           <RotateCcw className="h-4 w-4" />
           Reset
         </button>
+        {fullscreenButton}
       </div>
       <div className="glass rounded-3xl px-4 py-3">
         <div className="flex items-center gap-3">
@@ -912,11 +912,16 @@ export function Sender({ active = true }: { active?: boolean }) {
           <span>{formatDuration(payloadBytes / (preset.chunk * fps))} total</span>
         </p>
       </div>
-      <div className="glass rounded-3xl p-2.5">
+      <div className="glass flex flex-col gap-2 rounded-3xl p-2.5">
         {densityPicker}
-        <p className="mt-1.5 px-1 text-center text-[11px] font-medium text-muted-foreground">
+        <p className="px-1 text-center text-[11px] font-medium text-muted-foreground">
           {preset.hint} · {formatBytes(preset.chunk)}/code
         </p>
+        <div className="flex items-center gap-2">
+          <Layers3 className="ml-1 h-4 w-4 shrink-0 text-primary" />
+          <span className="shrink-0 text-[11px] font-bold">QR codes at once</span>
+          <div className="min-w-0 flex-1">{lanePicker}</div>
+        </div>
       </div>
       {isLarge && ready && !qrError && (
         <div className="glass flex items-start gap-2 rounded-2xl p-3 text-left text-xs text-muted-foreground">
@@ -935,7 +940,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       <MediaViewer item={viewer} onClose={() => setViewer(null)} />
 
       <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col gap-2 lg:grid lg:grid-cols-[minmax(0,1.1fr)_minmax(24rem,0.9fr)] lg:gap-8 lg:py-1">
-        <div className="order-2 min-h-[8.5rem] flex-1 lg:order-1 lg:min-h-0" style={{ containerType: "size" }}>
+        <div className="order-2 min-h-[8.5rem] flex-1 lg:order-1 lg:min-h-0">
           {stage}
         </div>
         <div className="order-1 flex shrink-0 flex-col gap-2 lg:order-2 lg:min-h-0 lg:shrink lg:gap-3 lg:overflow-y-auto lg:pr-1 no-scrollbar">
@@ -955,26 +960,9 @@ export function Sender({ active = true }: { active?: boolean }) {
             aria-modal="true"
             aria-label="Fullscreen QR"
           >
-            {/* QR area: one code, or two when Dual is on. Layout flips with the area's own aspect ratio. */}
-            <div className="lane-area row-start-2 min-h-0 min-w-0 p-3 sm:p-5 landscape:col-start-1 landscape:row-span-2 landscape:row-start-1">
-              <div className="lane-inner" style={{ ["--n" as string]: activeLanes }}>
-                {Array.from({ length: activeLanes }, (_, i) => (
-                  <div
-                    key={i}
-                    className={cn(
-                      "lane-tile relative rounded-[1.5rem] bg-white p-2 shadow-[0_0_90px_-10px_var(--color-primary)]",
-                      playing && "qr-stage-live",
-                    )}
-                  >
-                    <canvas
-                      ref={(el) => {
-                        fullRefs.current[i] = el;
-                      }}
-                      className="h-full w-full rounded-xl object-contain [image-rendering:pixelated]"
-                    />
-                  </div>
-                ))}
-              </div>
+            {/* QR area: 1-6 codes, auto-arranged to be as large as the screen allows. */}
+            <div className="row-start-2 min-h-0 min-w-0 p-3 sm:p-5 landscape:col-start-1 landscape:row-span-2 landscape:row-start-1">
+              <LaneGrid count={activeLanes} refs={fullRefs} live={playing} gap={12} />
             </div>
 
             {/* Title + exit */}
@@ -1037,25 +1025,21 @@ export function Sender({ active = true }: { active?: boolean }) {
                     {fps} fps
                   </span>
                 </div>
-                <div className="mt-3 flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setLanes((l) => (l === 1 ? 2 : 1));
-                      paintedRef.current = -1;
-                      sfx.toggleOn();
-                    }}
-                    aria-pressed={lanes === 2}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-bold transition-all active:scale-95",
-                      lanes === 2 ? "bg-primary text-primary-foreground" : "bg-white/12 text-white/80",
-                    )}
-                  >
-                    <Layers3 className="h-3.5 w-3.5" /> Dual QR {lanes === 2 ? "on" : "off"}
-                  </button>
-                  <span className="truncate text-[11px] font-medium text-white/55">
-                    ≈ {formatBytes(throughput)}/s{activeLanes === 2 ? " · needs a sharp camera" : ""}
-                  </span>
+                <div className="mt-3 flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-white/80">
+                    <span className="flex items-center gap-1.5">
+                      <Layers3 className="h-3.5 w-3.5" /> QR codes at once
+                    </span>
+                    <span className="font-medium text-white/55">≈ {formatBytes(throughput)}/s</span>
+                  </div>
+                  <GlideSegment ariaLabel="QR codes per frame" tone="dark" value={lanes} options={LANE_OPTIONS} onChange={(l) => {
+                    setLanes(l);
+                    paintedRef.current = -1;
+                    sfx.tick();
+                  }} />
+                  <p className="text-center text-[10px] font-medium text-white/45">
+                    More codes = faster, but the receiver camera must resolve all of them. Raise screen brightness.
+                  </p>
                 </div>
               </div>
             </footer>

@@ -41,24 +41,29 @@ function decode(buf: Uint8ClampedArray, w: number, h: number, deep: boolean) {
 
 type Found = NonNullable<ReturnType<typeof decode>>;
 
-/** Find up to two codes: decode one, white-out its footprint, then look again (dual-QR streams). */
+/** Find up to MAX_CODES codes: decode one, white-out its footprint, then look again (multi-QR streams). */
+const MAX_CODES = 4;
 function decodeAll(buf: Uint8ClampedArray, w: number, h: number, deep: boolean): Found[] {
-  const first = decode(buf, w, h, deep);
-  if (!first) return [];
-  const results: Found[] = [first];
-  const xs = first.corners.map((p) => p.x);
-  const ys = first.corners.map((p) => p.y);
-  const pad = 6;
-  const x0 = Math.max(0, Math.floor(Math.min(...xs)) - pad);
-  const x1 = Math.min(w, Math.ceil(Math.max(...xs)) + pad);
-  const y0 = Math.max(0, Math.floor(Math.min(...ys)) - pad);
-  const y1 = Math.min(h, Math.ceil(Math.max(...ys)) + pad);
-  // Only worth a second pass if there is meaningful room left beside/below the first code.
-  if ((x1 - x0) * (y1 - y0) < w * h * 0.7) {
-    const copy = new Uint8ClampedArray(buf); // keep the caller's buffer untouched
-    for (let y = y0; y < y1; y++) copy.fill(255, (y * w + x0) * 4, (y * w + x1) * 4);
-    const second = decode(copy, w, h, false);
-    if (second && second.data !== first.data) results.push(second);
+  const results: Found[] = [];
+  let work = buf;
+  let copied = false;
+  for (let pass = 0; pass < MAX_CODES; pass++) {
+    const found = decode(work, w, h, deep && pass === 0);
+    if (!found || results.some((r) => r.data === found.data)) break;
+    results.push(found);
+    const xs = found.corners.map((p) => p.x);
+    const ys = found.corners.map((p) => p.y);
+    const pad = 8;
+    const x0 = Math.max(0, Math.floor(Math.min(...xs)) - pad);
+    const x1 = Math.min(w, Math.ceil(Math.max(...xs)) + pad);
+    const y0 = Math.max(0, Math.floor(Math.min(...ys)) - pad);
+    const y1 = Math.min(h, Math.ceil(Math.max(...ys)) + pad);
+    if ((x1 - x0) * (y1 - y0) > w * h * 0.7) break; // one code fills the frame: nothing else to find
+    if (!copied) {
+      work = new Uint8ClampedArray(buf); // keep the caller's buffer untouched
+      copied = true;
+    }
+    for (let y = y0; y < y1; y++) work.fill(255, (y * w + x0) * 4, (y * w + x1) * 4);
   }
   return results;
 }

@@ -195,7 +195,7 @@ export class FramePipeline {
     private plan: StreamPlan,
     private blob: Blob,
     private ec: "L" | "M" = "M",
-    private lookahead = 48,
+    private lookahead = 120,
   ) {
     this.startWorkers();
   }
@@ -203,7 +203,7 @@ export class FramePipeline {
   private startWorkers() {
     try {
       const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
-      const count = cores <= 2 ? 1 : 2;
+      const count = Math.max(1, Math.min(3, cores - 1));
       for (let i = 0; i < count; i++) {
         const worker = new Worker(new URL("./frame-builder.worker.ts", import.meta.url), { type: "module" });
         worker.onmessage = (event: MessageEvent) => this.onWorkerMessage(i, event.data);

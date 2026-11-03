@@ -53,6 +53,7 @@ export function Pager({
     const track = trackRef.current;
     if (!track) return;
     window.clearTimeout(hideTimer.current);
+    track.style.willChange = "transform";
     track.style.transition = dragging ? "none" : `transform ${SETTLE_MS}ms ${EASE}`;
     track.style.transform = `translate3d(${(-pos * 100) / count}%,0,0)`;
     const settled = !dragging;
@@ -61,6 +62,8 @@ export function Pager({
       const delta = i - pos;
       const d = Math.min(1, Math.abs(delta));
       panel.style.visibility = "visible"; // everything is drawn while moving
+      (panel.style as CSSStyleDeclaration & { contentVisibility: string }).contentVisibility = "visible";
+      panel.style.willChange = "transform, opacity";
       panel.style.transition = dragging
         ? "none"
         : `transform ${SETTLE_MS}ms ${EASE}, opacity ${SETTLE_MS}ms ${EASE}`;
@@ -73,8 +76,15 @@ export function Pager({
       // After the slide settles, fully hide off-screen panels so nothing can peek in at an edge.
       hideTimer.current = window.setTimeout(() => {
         panelRefs.current.forEach((panel, i) => {
-          if (panel && i !== Math.round(pos)) panel.style.visibility = "hidden";
+          if (!panel) return;
+          panel.style.willChange = "auto"; // release GPU layers once settled (prevents colour glitches)
+          if (i !== Math.round(pos)) {
+            panel.style.visibility = "hidden";
+            // Skip painting/layout of off-screen panels entirely: frees memory, stops background repaints.
+            (panel.style as CSSStyleDeclaration & { contentVisibility: string }).contentVisibility = "hidden";
+          }
         });
+        if (trackRef.current) trackRef.current.style.willChange = "auto";
       }, SETTLE_MS + 40);
     }
     const root = document.documentElement;
@@ -140,9 +150,9 @@ export function Pager({
       d.lastT = now;
 
       let pos = indexRef.current - dx / d.width;
-      // Rubber band past the first/last panel.
-      if (pos < 0) pos = pos * 0.28;
-      if (pos > count - 1) pos = count - 1 + (pos - (count - 1)) * 0.28;
+      // Rubber band past the first/last panel: a short, heavy stretch, never a real move.
+      if (pos < 0) pos = Math.max(-0.1, pos * 0.16);
+      if (pos > count - 1) pos = Math.min(count - 1 + 0.1, count - 1 + (pos - (count - 1)) * 0.16);
       paint(pos, true);
     };
 
@@ -156,12 +166,14 @@ export function Pager({
       } catch {
         /* ignore */
       }
-      const dx = e.clientX - d.x;
+      // pointercancel can report clientX/clientY = 0: always use the last *real* move position.
+      const dx = d.lastX - d.x;
       const travelled = dx / d.width;
       let next = indexRef.current;
       if (travelled < -0.2 || d.vx < -0.5) next += 1;
       else if (travelled > 0.2 || d.vx > 0.5) next -= 1;
       next = Math.max(0, Math.min(count - 1, next));
+      // Never commit a move past either end (that was the rubber band, not a real swipe).
       if (next !== indexRef.current) onIndexChange(next);
       else paint(indexRef.current, false);
     };
@@ -182,7 +194,7 @@ export function Pager({
     <div ref={rootRef} className="relative min-h-0 flex-1 overflow-hidden" style={{ touchAction: "pan-y" }}>
       <div
         ref={trackRef}
-        className="flex h-full will-change-transform"
+        className="flex h-full"
         style={{ width: `${count * 100}%`, transform: `translate3d(${(-index * 100) / count}%,0,0)` }}
       >
         {children.map((child, i) => (
@@ -191,7 +203,7 @@ export function Pager({
             ref={(el) => {
               panelRefs.current[i] = el;
             }}
-            className="flex h-full min-w-0 flex-col will-change-transform"
+            className="flex h-full min-w-0 flex-col"
             style={{ width: `${100 / count}%`, transformOrigin: i < index ? "right center" : "left center" }}
           >
             {child}

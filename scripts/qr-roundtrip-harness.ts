@@ -14,7 +14,6 @@ import {
   frameAt,
   parseFrame,
   type ChunkSource,
-  type ParsedHeader,
 } from "../src/lib/qr-protocol";
 
 async function decodeRendered(text: string) {
@@ -43,7 +42,6 @@ async function run() {
     readRange: (s, c) => bytes.subarray(s * plan.chunk, Math.min(size, (s + c) * plan.chunk)),
   };
 
-  let header: ParsedHeader | null = null;
   let decoder: FountainDecoder | null = null;
   let rendered = 0;
   const limit = cycleLength(plan.total) * 3;
@@ -54,12 +52,8 @@ async function run() {
     const parsed = parseFrame(await decodeRendered(text));
     rendered++;
     if (!parsed) throw new Error("Parser rejected a decoded frame.");
-    if (parsed.kind === "header") {
-      if (!header) {
-        header = parsed;
-        decoder = new FountainDecoder(parsed);
-      }
-    } else decoder?.add(parsed);
+    if (!decoder) decoder = new FountainDecoder(parsed.meta);
+    if (parsed.kind !== "header") decoder.add(parsed);
   }
 
   if (!decoder?.complete) throw new Error(`Transfer did not complete (${decoder?.count}/${plan.total}).`);

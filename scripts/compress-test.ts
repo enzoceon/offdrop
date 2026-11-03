@@ -1,5 +1,5 @@
 // Compression path: deflate-raw -> plan(origSize) -> lossy fountain transfer -> inflate. Node >= 20.
-import { FountainDecoder, createPlan, crc32, frameAt, parseFrame, type ChunkSource, type ParsedHeader } from "../src/lib/qr-protocol.ts";
+import { FountainDecoder, createPlan, crc32, frameAt, parseFrame, type ChunkSource, type FrameMeta } from "../src/lib/qr-protocol.ts";
 
 async function deflate(b: Uint8Array) { return new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(new CompressionStream("deflate-raw"))).arrayBuffer()); }
 async function inflate(b: Uint8Array) { return new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer()); }
@@ -10,12 +10,13 @@ const packed = await deflate(original);
 const plan = createPlan({ name: "big.txt", type: "text/plain", size: packed.length, crc: crc32(packed), origSize: original.length, chunk: 1400 });
 const src: ChunkSource = { read: (i) => packed.subarray(i * 1400, Math.min(packed.length, (i + 1) * 1400)), readRange: (s, c) => packed.subarray(s * 1400, Math.min(packed.length, (s + c) * 1400)) };
 let seed = 7; const rnd = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
-let dec: FountainDecoder | null = null; let hdr: ParsedHeader | null = null; let got = 0;
+let dec: FountainDecoder | null = null; let hdr: FrameMeta | null = null; let got = 0;
 for (let seq = 3; seq < plan.total * 5 + 100 && !dec?.complete; seq++) {
   const { text: f } = await frameAt(plan, src, seq);
   if (rnd() < 0.15) continue; got++;
   const p = parseFrame(f)!;
-  if (p.kind === "header") { if (!hdr) { hdr = p; dec = new FountainDecoder(p); } } else dec?.add(p);
+  if (!dec) { hdr = p.meta; dec = new FountainDecoder(p.meta); }
+  if (p.kind !== "header") dec.add(p);
 }
 if (!dec?.complete || !hdr) throw new Error("incomplete");
 const bytes = dec.result();

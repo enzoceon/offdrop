@@ -28,19 +28,20 @@ To target another host set `NITRO_PRESET` (e.g. `cloudflare-module`, `node-serve
 
 ## How fast is it?
 
-QR streaming is bound by camera pixels, not CPU. Rough ceilings (payload per QR × frames per second):
+QR streaming is bound by what the receiving camera can resolve, not by CPU. Throughput =
+payload per code x frames/s x codes on screen at once.
 
-| Density  | Bytes / QR | @ 8 fps  | @ 15 fps | @ 30 fps |
-| -------- | ---------- | -------- | -------- | -------- |
-| Reliable | 600        | 4.7 KB/s | 8.8 KB/s | 17.6 KB/s |
-| Balanced | 900        | 7.0 KB/s | 13 KB/s  | 26 KB/s  |
-| Dense    | 1400       | 11 KB/s  | 21 KB/s  | 41 KB/s  |
-| Max      | 2000       | 16 KB/s  | 29 KB/s  | 59 KB/s  |
+| Density  | Bytes / QR | 1 code @ 15 fps | 4 codes @ 15 fps | 6 codes @ 15 fps |
+| -------- | ---------- | --------------- | ---------------- | ---------------- |
+| Reliable | 500        | 7.3 KB/s        | 29 KB/s          | 44 KB/s          |
+| Balanced | 800        | 11.7 KB/s       | 47 KB/s          | 70 KB/s          |
+| Dense    | 1100       | 16 KB/s         | 64 KB/s          | 97 KB/s          |
+| Max      | 1400       | 20 KB/s         | 82 KB/s          | 123 KB/s         |
 
-A 100 MB file therefore takes ~30–60+ minutes at best over QR. The app helps: compression (documents, text,
-uncompressed media can shrink dramatically), batch bundling, screen wake-lock on both devices, pause/resume on the
-receiver, and repair frames so a shaky camera costs ~10% extra instead of a full replay.
+Phone cameras usually capture 30 fps, so showing a new code more than ~15-30 times per second mostly just
+drops frames; adding *codes per frame* (2x / 4x / 6x in fullscreen on a big screen) is what scales. A 100 MB file
+is therefore roughly 14-20 minutes in the best realistic case (large sender screen, sharp receiver camera), not
+seconds. The app helps: compression, multi-file bundling, screen wake-lock, pause/resume, repair frames, and a
+receiver that starts from the very first frame it sees.
 
 See `CHANGES.md` for the technical history.
-
-# Lockfile note: run `bun install` (or `npm install`) once locally and commit the generated lockfile.

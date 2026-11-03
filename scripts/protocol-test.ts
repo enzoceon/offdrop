@@ -1,7 +1,7 @@
 // Pure-protocol test (no QR rendering). Run: node --experimental-strip-types scripts/protocol-test.ts
 import {
   FountainDecoder, createPlan, crc32, frameAt, parseFrame, slotAt, cycleLength,
-  b45ToBytes, bytesToB45, type ChunkSource, type ParsedHeader,
+  b45ToBytes, bytesToB45, type ChunkSource, type FrameMeta, type ParsedHeader,
 } from "../src/lib/qr-protocol.ts";
 
 function rnd(seed: number) { let a = seed; return () => ((a = (Math.imul(a, 1664525) + 1013904223) >>> 0) / 4294967296); }
@@ -20,7 +20,7 @@ async function run(size: number, lossRate: number, startAt: number, label: strin
   const plan = createPlan({ name: "tëst|file.bin", type: "application/octet-stream", size, crc: crc32(bytes), chunk });
   const src = makeSource(bytes, plan.chunk);
   let dec: FountainDecoder | null = null;
-  let header: ParsedHeader | null = null;
+  let header: FrameMeta | null = null;
   let frames = 0;
   const limit = plan.total * 8 + 400;
   for (let seq = startAt; seq < startAt + limit; seq++) {
@@ -29,11 +29,9 @@ async function run(size: number, lossRate: number, startAt: number, label: strin
     frames++;
     const p = parseFrame(text);
     if (!p) throw new Error("parse failed at " + seq);
-    if (p.kind === "header") {
-      if (!header) { header = p; dec = new FountainDecoder(p); }
-      continue;
-    }
-    if (dec) { dec.add(p); if (dec.complete) break; }
+    // Self-describing frames: the decoder can start from ANY frame, header or not.
+    if (!dec) { header = p.meta; dec = new FountainDecoder(p.meta); }
+    if (p.kind !== "header") { dec.add(p); if (dec.complete) break; }
   }
   if (!dec || !dec.complete) throw new Error(`${label}: did not complete (${dec?.count}/${dec?.total})`);
   const out = dec.result();
@@ -83,9 +81,9 @@ await run(300_001, 0.1, 0, "300 KB chunk=1001 (odd), 10% loss", 1001);
 {
   const plan = createPlan({ name: "doc.pdf", type: "application/pdf", size: 1234, crc: 99, origSize: 99999 });
   const h = parseFrame(plan.headerFrame) as ParsedHeader;
-  if (!h.compressed || h.origSize !== 99999 || h.size !== 1234 || h.name !== "doc.pdf") throw new Error("compressed header roundtrip");
+  if (h.kind !== "header" || !h.meta.compressed || h.meta.origSize !== 99999 || h.meta.size !== 1234 || h.name !== "doc.pdf" || h.mime !== "application/pdf") throw new Error("compressed header roundtrip");
   const plain = parseFrame(createPlan({ name: "a", type: "", size: 10, crc: 1 }).headerFrame) as ParsedHeader;
-  if (plain.compressed || plain.origSize !== 10) throw new Error("plain header");
+  if (plain.meta.compressed || plain.meta.origSize !== 10) throw new Error("plain header");
   console.log("OK compressed header flag");
 }
 console.log("ALL PASS");
@@ -101,5 +99,20 @@ console.log("ALL PASS");
     if (lens.size !== 1) throw new Error(`frame length varies at chunk=${chunk}: ${[...lens].join(",")}`);
   }
   console.log("OK every frame (header, data, last chunk, repair) has identical length");
+}
+// Instant start: the very first frame seen (a repair frame, mid-stream) is enough to create the decoder.
+{
+  const size = 60_000; const bytes = new Uint8Array(size).map((_, i) => (i * 29) & 255);
+  const plan = createPlan({ name: "instant.bin", type: "", size, crc: crc32(bytes), chunk: 1100 });
+  const src = makeSource(bytes, plan.chunk);
+  const first = parseFrame((await frameAt(plan, src, plan.total + 40)).text)!;
+  if (first.kind !== "repair") throw new Error("expected a repair frame");
+  const dec = new FountainDecoder(first.meta);
+  if (dec.total !== plan.total || dec.size !== size || dec.chunk !== plan.chunk) throw new Error("meta mismatch");
+  // Foreign / corrupted QR payloads must be rejected, not crash.
+  for (const junk of ["HTTPS://EXAMPLE.COM/SOME/PATH?Q=1".repeat(3), "0".repeat(80), plan.headerFrame.slice(0, -3), plan.headerFrame + "AB"]) {
+    if (parseFrame(junk) !== null) throw new Error("junk accepted: " + junk.slice(0, 20));
+  }
+  console.log("OK instant start from a mid-stream repair frame; junk payloads rejected");
 }
 console.log("ALL PASS 2");
