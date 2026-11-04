@@ -553,7 +553,7 @@ html[data-pager-drag] .tab-pill {
 }
 
 @keyframes lane-pop { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }
-.lane-pop { animation: lane-pop 0.35s var(--ease-spring) both; }
+.lane-pop { animation: lane-pop 0.35s var(--ease-spring) backwards; }
 
 /* ======================= Receive: detection graphics ======================= */
 
@@ -596,3 +596,77 @@ html[data-pager-drag] .tab-pill {
 
 /* Stop the browser's own edge-swipe / pull-to-refresh from competing with the app's gestures. */
 html, body { overscroll-behavior: none; }
+
+
+/* ======================= Round 6 ======================= */
+
+/*
+ * Gestures: a touch inside ANY scrolling container uses that container's own touch-action. Unless every
+ * element opts in to "pan-y", the browser claims horizontal drags and cancels the pager's swipe.
+ */
+[data-pager-panel], [data-pager-panel] * { touch-action: pan-y; }
+[data-pager-panel] input[type="range"], [data-pager-panel] [data-no-swipe] { touch-action: none; }
+
+/* Live-playing QR tiles: a soft breathing glow that follows the tile's own rounded corners
+   (replaces the expanding "wave" ring whose radius never matched the tile). */
+.qr-stage-live::after { content: none !important; }
+.qr-stage-live { animation: tile-glow 1.8s ease-in-out infinite alternate; }
+@keyframes tile-glow {
+  from { box-shadow: 0 10px 30px -12px color-mix(in oklab, var(--color-primary) 35%, transparent), 0 0 0 0 color-mix(in oklab, var(--color-primary) 0%, transparent); }
+  to { box-shadow: 0 12px 38px -10px color-mix(in oklab, var(--color-primary) 55%, transparent), 0 0 0 4px color-mix(in oklab, var(--color-primary) 22%, transparent); }
+}
+
+/* Visible, short transition when density / lane count changes (instead of a loading spinner). */
+.lane-switching { transform: scale(0.97); opacity: 0.8; filter: blur(1.5px) saturate(0.9); }
+.lane-anim { transition: transform 260ms var(--ease-out-expo), opacity 260ms ease, filter 260ms ease; }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px) scale(0.9); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+.switch-toast { animation: toast-in 0.3s var(--ease-spring) both; }
+
+/* No glow halos on progress visuals (they showed up as a stray purple layer at 1-4%). */
+.progress-track .progress-fill { box-shadow: none !important; }
+.progress-ring.receiving { filter: none !important; }
+
+/* Indeterminate "searching" bar + wave across the chunk map. */
+.indeterminate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--color-primary) 70%, transparent), transparent);
+  animation: indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes indeterminate { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+.chunk-wave { animation: chunk-wave 1.6s ease-in-out infinite; }
+@keyframes chunk-wave { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.9; } }
+@keyframes scan-bob { 0%, 100% { transform: translateY(-3px); } 50% { transform: translateY(3px); } }
+.animate-scan-bob { animation: scan-bob 1s ease-in-out infinite; }
+
+/* Auto focus: obvious, felt feedback. */
+.autofocus-ring { box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-primary) 85%, transparent), 0 0 28px color-mix(in oklab, var(--color-primary) 45%, transparent) !important; }
+.focus-ping {
+  position: absolute;
+  width: 4.5rem;
+  height: 4.5rem;
+  margin: -2.25rem 0 0 -2.25rem;
+  border: 2px solid oklch(0.9 0.18 95);
+  border-radius: 0.9rem;
+  animation: focus-ping 0.8s cubic-bezier(0.2, 0.9, 0.2, 1) both;
+  pointer-events: none;
+}
+@keyframes focus-ping {
+  0% { opacity: 0; transform: scale(1.7); }
+  35% { opacity: 1; }
+  70% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(0.95); }
+}
+
+/* Lock label: placed above / below / inside the frame so it can never be clipped by the viewfinder. */
+.lock-label { position: absolute; left: 50%; display: flex; align-items: center; gap: 0.375rem; white-space: nowrap; border-radius: 999px; background: oklch(0.82 0.19 150); color: oklch(0.25 0.06 150); padding: 0.25rem 0.625rem; font-size: 10px; font-weight: 800; box-shadow: 0 6px 18px -6px oklch(0 0 0 / 0.6); }
+.lock-label[data-pos="above"] { top: -6px; transform: translate(-50%, -100%); }
+.lock-label[data-pos="below"] { top: calc(100% + 6px); transform: translate(-50%, 0); }
+.lock-label[data-pos="inside"] { top: 6px; transform: translate(-50%, 0); }
+.lock-frame { transition: left 0.12s linear, top 0.12s linear, width 0.12s linear, height 0.12s linear, opacity 0.2s ease, transform 0.25s ease-out; }
+
+.lock-frame { animation: none; }
+.lock-frame.lock-enter { animation: lock-in 0.5s cubic-bezier(0.2, 0.9, 0.2, 1) backwards; }

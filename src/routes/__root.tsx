@@ -18,7 +18,7 @@ const themeInitScript = `
 (() => {
   try {
     const stored = localStorage.getItem("offdrop-theme") || localStorage.getItem("theme");
-    const dark = stored ? stored === "dark" : false;
+    const dark = stored ? stored === "dark" : true;
     document.documentElement.classList.toggle("dark", dark);
     document.documentElement.style.colorScheme = dark ? "dark" : "light";
   } catch (_) {}

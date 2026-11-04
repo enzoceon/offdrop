@@ -139,3 +139,30 @@
   ends; tab pill clamped inside the bar; browser back-swipe suppressed.
 - **Glitches**: off-screen tabs use content-visibility:hidden and release GPU layers; removed the glow that formed
   a visible edge above the tab bar on Receive.
+
+
+---
+
+# Round 6
+
+- **Speed**: slider capped at 30 fps, default 15 (the sweet spot). Codes at once: 1 / 2 / 4 / 6 / **8**, default **4**.
+- **Swiping**: a touch inside a scrolling container uses that container's own `touch-action`, so horizontal drags were
+  being cancelled by the browser on Receive/Send/History. Every element inside the pager now opts in to `pan-y`.
+- **Refresh glitch**: the saved tab was read during the first render, so the client HTML differed from the server HTML
+  (hydration mismatch). The tab is now restored right after mount. Default theme is dark.
+- **Tab bar**: pill position and label colours come from one live number, so a white label can never sit on a light
+  background; identical height on every screen size.
+- **Auto focus**: OFF by default and no focus command at camera start. When ON: smoothed bounding box over ALL
+  codes, stepped zoom levels (1 / 1.25 / 1.5 / 2 / 2.5) that only change after being wanted for 0.7 s, immediate
+  zoom-out if a code nears the edge, plus a visible focus square, glowing viewfinder ring, "AUTO FOCUS" badge and toast.
+- **Detection**: outline and lock frame are updated directly in the DOM every frame (no React re-render) so they track
+  the code exactly; recovery pass re-scans four upscaled quarters when fewer codes than expected are found; lock label
+  moves above / below / inside the frame so it is never clipped; jsQR worker reads up to 8 codes.
+- **Camera restart**: start waits for a previous stop to finish, retries while a desktop webcam is being released and
+  waits for the video element; Stop takes effect immediately.
+- **ETA**: measured over the last ~10 s of real progress and smoothed; stalls show no promise.
+- **Receive UI**: Send-style idle card with icon chips and room for the pulse; content-sized Start button; blue Stop;
+  scan icon instead of "..."; indeterminate bar and wave while searching; progress/chunk map without glow layers.
+- **Send UI**: no clipped shadows on desktop; tile glow follows the QR's rounded corners (no expanding wave);
+  density / lane changes show a brief dim + toast instead of a loading state; richer fullscreen (preview, chips,
+  stats grid and details in the desktop side panel).

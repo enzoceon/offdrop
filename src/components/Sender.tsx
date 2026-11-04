@@ -23,6 +23,8 @@ import {
   Timer,
   Activity,
   Expand,
+  Sparkles,
+  Zap as ZapIcon,
 } from "lucide-react";
 import {
   DENSITY_PRESETS,
@@ -45,15 +47,16 @@ import { Portal } from "@/components/Portal";
 import { GlideSegment } from "@/components/GlideSegment";
 import { LaneGrid } from "@/components/LaneGrid";
 
-type SpeedTier = "Gentle" | "Normal" | "Fast" | "Turbo" | "Ultra";
+type SpeedTier = "Gentle" | "Normal" | "Fast" | "Turbo";
 type Phase = "bundle" | "compress" | "hash";
-type Lanes = 1 | 2 | 4 | 6;
+type Lanes = 1 | 2 | 4 | 6 | 8;
 
 const LANE_OPTIONS: { key: Lanes; label: string }[] = [
   { key: 1, label: "1×" },
   { key: 2, label: "2×" },
   { key: 4, label: "4×" },
   { key: 6, label: "6×" },
+  { key: 8, label: "8×" },
 ];
 
 function useMediaQuery(query: string) {
@@ -69,19 +72,19 @@ function useMediaQuery(query: string) {
 }
 
 const MIN_FPS = 1;
-const MAX_FPS = 60;
-const DEFAULT_FPS = 8;
+const MAX_FPS = 30;
+/** 15 fps is the sweet spot: every code stays on screen for ~2 camera frames at 30 fps. */
+const DEFAULT_FPS = 15;
 const DENSITY_KEY = "offdrop:density";
-const FPS_KEY = "offdrop:fps";
+const FPS_KEY = "offdrop:fps2";
 /** Largest file we also keep a copy of in local history. */
 const HISTORY_BLOB_LIMIT = 64 * 1024 * 1024;
 
 const TIER_RANGES: { tier: SpeedTier; min: number; max: number }[] = [
-  { tier: "Gentle", min: 1, max: 3 },
-  { tier: "Normal", min: 4, max: 8 },
-  { tier: "Fast", min: 9, max: 15 },
-  { tier: "Turbo", min: 16, max: 30 },
-  { tier: "Ultra", min: 31, max: 60 },
+  { tier: "Gentle", min: 1, max: 6 },
+  { tier: "Normal", min: 7, max: 12 },
+  { tier: "Fast", min: 13, max: 20 },
+  { tier: "Turbo", min: 21, max: 30 },
 ];
 
 function tierForFps(fps: number): SpeedTier {
@@ -141,7 +144,10 @@ export function Sender({ active = true }: { active?: boolean }) {
   const [qrError, setQrError] = useState<string | null>(null);
   const [qrReady, setQrReady] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [lanes, setLanes] = useState<Lanes>(1);
+  // Default is always 4 codes at once (the fastest setting that stays readable on most screens).
+  const [lanes, setLanes] = useState<Lanes>(4);
+  const [switching, setSwitching] = useState<string | null>(null);
+  const switchingRef = useRef(false);
   const isLg = useMediaQuery("(min-width: 1024px)");
   const inputRef = useRef<HTMLInputElement>(null);
   const mainRefs = useRef<Array<HTMLCanvasElement | null>>([]);
@@ -302,8 +308,21 @@ export function Sender({ active = true }: { active?: boolean }) {
     const prepared = preparedRef.current;
     if (!prepared) return;
     const p = presetFor(next);
+    announceSwitch(`${p.label} · ${formatBytes(p.chunk)} per code`);
     installPipeline(prepared.rechunk(p.chunk), p.ec);
-    setQrReady(false);
+  }
+
+  /** Brief, visible acknowledgement while the new frames render (replaces the old loading state). */
+  function announceSwitch(label: string) {
+    switchingRef.current = true;
+    setSwitching(label);
+    window.setTimeout(() => {
+      // Safety net: never leave the tile dimmed if no frame arrives.
+      if (switchingRef.current) {
+        switchingRef.current = false;
+        setSwitching(null);
+      }
+    }, 1500);
   }
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
@@ -360,6 +379,10 @@ export function Sender({ active = true }: { active?: boolean }) {
         return false;
       }
       paintedRef.current = n;
+      if (switchingRef.current) {
+        switchingRef.current = false;
+        window.setTimeout(() => setSwitching(null), 380);
+      }
       return true;
     };
 
@@ -745,7 +768,7 @@ export function Sender({ active = true }: { active?: boolean }) {
   const stage = (
     <div className="relative flex h-full w-full min-h-0 flex-col">
       <div className="relative min-h-0 flex-1">
-        <LaneGrid count={activeLanes} refs={mainRefs} live={playing} gap={8} />
+        <LaneGrid count={activeLanes} refs={mainRefs} live={playing} gap={8} switching={Boolean(switching)} />
         {(!qrReady || !ready) && !qrError && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm font-semibold text-muted-foreground">
             <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -762,6 +785,12 @@ export function Sender({ active = true }: { active?: boolean }) {
               <Play className="ml-1 h-7 w-7 text-white" fill="currentColor" />
             </span>
           </button>
+        )}
+        {switching && (
+          <div className="switch-toast pointer-events-none absolute bottom-3 left-1/2 z-10 flex items-center gap-2 whitespace-nowrap rounded-full bg-black/65 px-3.5 py-1.5 text-[11px] font-bold text-white shadow-lg backdrop-blur">
+            <Sparkles className="h-3.5 w-3.5 text-primary" />
+            {switching}
+          </div>
         )}
         {qrError && (
           <div
@@ -850,6 +879,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       onChange={(l) => {
         setLanes(l);
         paintedRef.current = -1;
+        announceSwitch(`${l}× codes at once`);
         sfx.tick();
       }}
       options={LANE_OPTIONS}
@@ -936,14 +966,14 @@ export function Sender({ active = true }: { active?: boolean }) {
   );
 
   return (
-    <div className="no-scrollbar flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden px-4 pb-1 animate-fade-up md:px-8 lg:overflow-hidden">
+    <div className="no-scrollbar flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden px-4 pb-1 animate-fade-up md:px-8 lg:overflow-visible lg:px-10">
       <MediaViewer item={viewer} onClose={() => setViewer(null)} />
 
       <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col gap-2 lg:grid lg:grid-cols-[minmax(0,1.1fr)_minmax(24rem,0.9fr)] lg:gap-8 lg:py-1">
         <div className="order-2 min-h-[8.5rem] flex-1 lg:order-1 lg:min-h-0">
           {stage}
         </div>
-        <div className="order-1 flex shrink-0 flex-col gap-2 lg:order-2 lg:min-h-0 lg:shrink lg:gap-3 lg:overflow-y-auto lg:pr-1 no-scrollbar">
+        <div className="order-1 flex shrink-0 flex-col gap-2 lg:order-2 lg:min-h-0 lg:shrink lg:gap-3 [@media(max-height:780px)]:lg:-m-3 [@media(max-height:780px)]:lg:overflow-y-auto [@media(max-height:780px)]:lg:p-3 no-scrollbar">
           {fileRow}
           {filePanel}
           {stats}
@@ -955,36 +985,70 @@ export function Sender({ active = true }: { active?: boolean }) {
       {expanded && plan && (
         <Portal>
           <div
-            className="presenter fixed inset-0 z-[90] grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-neutral-950 text-white [background-image:radial-gradient(60%_50%_at_50%_0%,color-mix(in_oklab,var(--color-primary)_28%,transparent),transparent)] landscape:grid-cols-[minmax(0,1fr)_19rem] landscape:grid-rows-[auto_minmax(0,1fr)]"
+            className="presenter fixed inset-0 z-[90] grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-neutral-950 text-white [background-image:radial-gradient(60%_50%_at_50%_0%,color-mix(in_oklab,var(--color-primary)_28%,transparent),transparent)] landscape:grid-cols-[minmax(0,1fr)_19rem] landscape:grid-rows-[auto_minmax(0,1fr)] lg:landscape:grid-cols-[minmax(0,1fr)_24rem]"
             role="dialog"
             aria-modal="true"
             aria-label="Fullscreen QR"
           >
-            {/* QR area: 1-6 codes, auto-arranged to be as large as the screen allows. */}
+            {/* QR area: 1-8 codes, auto-arranged to be as large as the screen allows. */}
             <div className="row-start-2 min-h-0 min-w-0 p-3 sm:p-5 landscape:col-start-1 landscape:row-span-2 landscape:row-start-1">
-              <LaneGrid count={activeLanes} refs={fullRefs} live={playing} gap={12} />
+              <LaneGrid count={activeLanes} refs={fullRefs} live={playing} gap={12} switching={Boolean(switching)} />
             </div>
 
-            {/* Title + exit */}
-            <header className="safe-top row-start-1 flex min-w-0 items-center gap-3 px-4 pb-1 pt-3 landscape:col-start-2 landscape:row-start-1 landscape:pt-4">
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-bold">{file.name}</p>
-                <p className="truncate text-[11px] text-white/60">
-                  {bundleCount ? `${bundleCount} files · ` : ""}
-                  {formatBytes(file.size)} · {plan.total} frames
-                </p>
+            {/* Title block: preview, name and the key facts as chips. */}
+            <header className="safe-top row-start-1 flex min-w-0 flex-col gap-2 px-4 pb-1 pt-3 landscape:col-start-2 landscape:row-start-1 landscape:pt-4 lg:px-5">
+              <div className="flex items-center gap-3">
+                <div className="relative grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-2xl bg-white/10 ring-1 ring-white/15">
+                  {thumb("h-full w-full")}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[15px] font-extrabold leading-tight">{file.name}</p>
+                  <p className="mt-0.5 truncate text-[11px] font-medium text-white/55">{file.type || "File"} · {bundleCount ? `${bundleCount} files` : "single file"}</p>
+                </div>
+                <button
+                  onClick={toggleExpanded}
+                  className="hud-card grid h-11 w-11 shrink-0 place-items-center rounded-full text-white transition-transform active:scale-90"
+                  aria-label="Exit fullscreen"
+                >
+                  <Minimize2 className="h-5 w-5" />
+                </button>
               </div>
-              <button
-                onClick={toggleExpanded}
-                className="hud-card grid h-11 w-11 shrink-0 place-items-center rounded-full text-white transition-transform active:scale-90"
-                aria-label="Exit fullscreen"
-              >
-                <Minimize2 className="h-5 w-5" />
-              </button>
+              <div className="flex flex-wrap gap-1.5">
+                <PChip icon={<HardDrive className="h-3 w-3" />}>{formatBytes(file.size)}</PChip>
+                <PChip icon={<Layers3 className="h-3 w-3" />}>{plan.total} frames</PChip>
+                <PChip icon={<ZapIcon className="h-3 w-3" />}>{activeLanes}× · {fps} fps</PChip>
+                {savedBytes > 0 && (
+                  <PChip icon={<PackageOpen className="h-3 w-3" />} tone="good">
+                    −{Math.round((savedBytes / file.size) * 100)}% compressed
+                  </PChip>
+                )}
+                <PChip icon={<Gauge className="h-3 w-3" />}>{preset.label}</PChip>
+              </div>
             </header>
 
-            {/* Transport */}
-            <footer className="safe-bottom row-start-3 flex min-w-0 flex-col gap-3 px-4 pb-4 pt-2 landscape:col-start-2 landscape:row-start-2 landscape:justify-end landscape:pb-5">
+            {/* Details (large screens) + transport */}
+            <footer className="safe-bottom row-start-3 flex min-w-0 flex-col gap-3 px-4 pb-4 pt-2 landscape:col-start-2 landscape:row-start-2 landscape:min-h-0 landscape:justify-end landscape:overflow-y-auto landscape:pb-5 lg:px-5 no-scrollbar">
+              {/* Large screens: the exact preview plus a stats grid in the side space. */}
+              <div className="hidden min-h-0 flex-1 overflow-hidden rounded-3xl bg-white/[0.06] ring-1 ring-white/10 lg:landscape:block">
+                <div className="relative h-full min-h-[8rem]">
+                  {preview && isImage ? (
+                    <img src={preview} alt="" className="absolute inset-0 h-full w-full object-contain p-2" />
+                  ) : preview && isVideo ? (
+                    <video src={preview} muted playsInline preload="metadata" className="absolute inset-0 h-full w-full object-contain p-2" />
+                  ) : (
+                    <span className="absolute inset-0 grid place-items-center text-white/50">
+                      {isAudio ? <Music2 className="h-12 w-12" /> : bundleCount ? <Files className="h-12 w-12" /> : <FileText className="h-12 w-12" />}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="hidden grid-cols-2 gap-2 lg:landscape:grid">
+                <PStat icon={<HardDrive className="h-3.5 w-3.5" />} label="Size" value={formatBytes(payloadBytes)} />
+                <PStat icon={<Layers3 className="h-3.5 w-3.5" />} label="Frames" value={`${shownFrames}/${plan.total}`} />
+                <PStat icon={<Timer className="h-3.5 w-3.5" />} label="Time left" value={inFirstPass ? formatDuration(remainingSeconds) : "Repair"} />
+                <PStat icon={<Activity className="h-3.5 w-3.5" />} label="Rate" value={`${formatBytes(throughput)}/s`} />
+              </div>
+
               <div className="hud-card min-w-0 rounded-3xl p-3.5">
                 <div className="flex items-center gap-3">
                   <button
@@ -1002,10 +1066,7 @@ export function Sender({ active = true }: { active?: boolean }) {
                       </span>
                     </div>
                     <div className="mt-1 h-2 overflow-hidden rounded-full bg-white/15">
-                      <div
-                        className="progress-fill h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-200"
-                        style={{ width: `${progress}%` }}
-                      />
+                      <div className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-200" style={{ width: `${progress}%` }} />
                     </div>
                   </div>
                 </div>
@@ -1032,11 +1093,25 @@ export function Sender({ active = true }: { active?: boolean }) {
                     </span>
                     <span className="font-medium text-white/55">≈ {formatBytes(throughput)}/s</span>
                   </div>
-                  <GlideSegment ariaLabel="QR codes per frame" tone="dark" value={lanes} options={LANE_OPTIONS} onChange={(l) => {
-                    setLanes(l);
-                    paintedRef.current = -1;
-                    sfx.tick();
-                  }} />
+                  <GlideSegment
+                    ariaLabel="QR codes per frame"
+                    tone="dark"
+                    value={lanes}
+                    options={LANE_OPTIONS}
+                    onChange={(l) => {
+                      setLanes(l);
+                      paintedRef.current = -1;
+                      announceSwitch(`${l}× codes at once`);
+                      sfx.tick();
+                    }}
+                  />
+                  <GlideSegment
+                    ariaLabel="QR density"
+                    tone="dark"
+                    value={density}
+                    options={DENSITY_PRESETS.map((p) => ({ key: p.key, label: p.label }))}
+                    onChange={changeDensity}
+                  />
                   <p className="text-center text-[10px] font-medium text-white/45">
                     More codes = faster, but the receiver camera must resolve all of them. Raise screen brightness.
                   </p>
@@ -1046,6 +1121,33 @@ export function Sender({ active = true }: { active?: boolean }) {
           </div>
         </Portal>
       )}
+    </div>
+  );
+}
+
+/** Small pill used in the fullscreen header. */
+function PChip({ icon, children, tone }: { icon: ReactNode; children: ReactNode; tone?: "good" }) {
+  return (
+    <span
+      className={cn(
+        "flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold",
+        tone === "good" ? "bg-emerald-400/20 text-emerald-300" : "bg-white/10 text-white/80",
+      )}
+    >
+      {icon}
+      {children}
+    </span>
+  );
+}
+
+function PStat({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-2xl bg-white/[0.07] px-3 py-2.5 ring-1 ring-white/10">
+      <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-white/50">
+        {icon}
+        {label}
+      </span>
+      <span className="mt-0.5 block truncate text-sm font-extrabold tabular-nums">{value}</span>
     </div>
   );
 }

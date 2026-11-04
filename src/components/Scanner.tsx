@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { memo, useEffect, useRef, useState, type CSSProperties } from "react";
 import jsQR from "jsqr";
 import {
   Camera,
@@ -20,6 +20,9 @@ import {
   Sparkles,
   Activity,
   Video,
+  WifiOff,
+  Zap,
+  Layers3,
 } from "lucide-react";
 import {
   FountainDecoder,
@@ -99,11 +102,14 @@ const SEEN_MS = 150; // ignore the same frame seen again within this window
 const SWITCH_AFTER = 4; // frames of a different transfer before we abandon the current one
 const NAME_WAIT_MS = 3500; // finish without a header frame after this long
 
-// Auto-framing
-const FRAME_TARGET_FILL = 0.7; // all codes together should fill ~70% of the shorter view side
-const FRAME_MAX_ZOOM = 3;
+// Auto-framing: calm, stepped and dwell-based (it used to chase every jitter and zoom constantly).
+const FRAME_STEPS = [1, 1.25, 1.5, 2, 2.5];
+const FRAME_FIT = 0.8; // all codes may fill at most 80% of the zoomed window
+const FRAME_DWELL_MS = 700; // a new zoom level must be wanted this long before we move
 const FRAME_STEP_MS = 90;
-const FRAME_LOST_MS = 1500;
+const FRAME_LOST_MS = 2500;
+const MAX_BOXES = 8;
+const PING_MS = 800;
 
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -159,7 +165,7 @@ function waitForUsableVideo(video: HTMLVideoElement) {
   });
 }
 
-async function openCameraStream(facingMode: "environment" | "user") {
+async function openCameraOnce(facingMode: "environment" | "user") {
   const attempts: MediaStreamConstraints[] = [
     {
       video: {
@@ -187,6 +193,25 @@ async function openCameraStream(facingMode: "environment" | "user") {
       return await navigator.mediaDevices.getUserMedia(constraints);
     } catch (error) {
       lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Camera permission is unavailable in this browser.");
+}
+
+/**
+ * Open the camera, retrying briefly when the device is still being released by a previous session
+ * (Windows/Chrome webcams report "NotReadableError" if you re-open them right after stopping).
+ */
+async function openCameraStream(facingMode: "environment" | "user") {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return await openCameraOnce(facingMode);
+    } catch (error) {
+      lastError = error;
+      const name = (error as { name?: string })?.name ?? "";
+      if (name === "NotAllowedError" || name === "SecurityError") break; // permission problems won't fix themselves
+      await sleep(250 * (attempt + 1));
     }
   }
   throw lastError instanceof Error ? lastError : new Error("Camera permission is unavailable in this browser.");
@@ -331,8 +356,25 @@ export function Scanner({
   const doneUrlRef = useRef<string | null>(null);
   const progressCommitRef = useRef(0);
   const viewRef = useRef<View>({ cx: 0.5, cy: 0.5, z: 1 });
-  const autoAssistRef = useRef(true);
+  const autoAssistRef = useRef(false); // OFF by default: a plain camera until the user asks for help
   const stopRef = useRef<(showStopping?: boolean) => Promise<void>>(async () => {});
+  const polyRefs = useRef<Array<SVGPolygonElement | null>>([]);
+  const lockRef = useRef<HTMLDivElement>(null);
+  const labelRef = useRef<HTMLSpanElement>(null);
+  const labelTextRef = useRef<HTMLSpanElement>(null);
+  const stageSize = useRef({ w: 1, h: 1 });
+  const videoSizeRef = useRef({ w: 16, h: 9 });
+  const pctRef = useRef(0);
+  const expectedRef = useRef({ n: 0, t: 0 });
+  const stableRef = useRef<{ z: number; since: number }>({ z: 1, since: 0 });
+  const smoothRef = useRef<{ minX: number; maxX: number; minY: number; maxY: number } | null>(null);
+  const lastPingRef = useRef(0);
+  const samplesRef = useRef<Array<{ t: number; f: number }>>([]);
+  const etaRateRef = useRef(0);
+  const busyRef = useRef(false);
+  const stoppingRef = useRef(false);
+  const activeRef = useRef(false);
+  const flippingRef = useRef(false);
 
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -340,7 +382,9 @@ export function Scanner({
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressState>(EMPTY_PROGRESS);
   const [scanInfo, setScanInfo] = useState<{ name: string; mime: string; size: number; named: boolean } | null>(null);
-  const [qrBox, setQrBox] = useState<QrBox | null>(null);
+  const [codeCount, setCodeCount] = useState(0);
+  const [focusPing, setFocusPing] = useState<{ x: number; y: number; key: number } | null>(null);
+  const [assistToast, setAssistToast] = useState<string | null>(null);
   const [done, setDone] = useState<DonePreview | null>(null);
   const [facing, setFacing] = useState<"environment" | "user">("environment");
   const [flipping, setFlipping] = useState(false);
@@ -351,7 +395,7 @@ export function Scanner({
   const [celebrate, setCelebrate] = useState(0);
   const [viewer, setViewer] = useState<ViewerItem | null>(null);
   const [paused, setPaused] = useState<PausedTransfer | null>(null);
-  const [autoAssist, setAutoAssist] = useState(true);
+  const [autoAssist, setAutoAssist] = useState(false);
   const [stats, setStats] = useState({ cam: 0, rx: 0 });
 
   useWakeLock(active);
@@ -468,6 +512,17 @@ export function Scanner({
       const zoomed = v.z > 1.02;
       const { sx, sy, cropW, cropH } = cropOf(W, H, v);
       const quads: Quad[] = []; // video pixel space
+      const seenValues = new Set<string>();
+      const expected = expectedRef.current;
+      // We have recently seen several codes: if this frame finds fewer, look harder for the missing ones.
+      const wantMore = expected.n > 1 && now - expected.t < 2500;
+
+      const collect = (raw: string, pts: Point[] | undefined, map: (p: Point) => Point) => {
+        if (!raw || seenValues.has(raw)) return;
+        if (!handleScan(raw)) return;
+        seenValues.add(raw);
+        if (pts && pts.length >= 4) quads.push([map(pts[0]), map(pts[1]), map(pts[2]), map(pts[3])] as Quad);
+      };
 
       if (detector) {
         try {
@@ -485,17 +540,32 @@ export function Scanner({
             ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cw, ch);
             source = canvas;
           }
+          const mapMain = (p: Point): Point =>
+            zoomed ? { x: sx + (p.x * cropW) / cw, y: sy + (p.y * cropH) / ch } : { x: p.x, y: p.y };
           const found = await detector.detect(source);
           if (!scanningRef.current) return;
-          for (const item of found) {
-            if (!item.rawValue || !handleScan(item.rawValue)) continue;
-            const pts = item.cornerPoints;
-            if (pts && pts.length >= 4) {
-              quads.push(
-                [pts[0], pts[1], pts[2], pts[3]].map((p) =>
-                  zoomed ? { x: sx + (p.x * cropW) / cw, y: sy + (p.y * cropH) / ch } : { x: p.x, y: p.y },
-                ) as Quad,
-              );
+          for (const item of found) collect(item.rawValue, item.cornerPoints, mapMain);
+
+          // Recovery pass: re-detect on four overlapping, upscaled quarters to catch small/blurred codes.
+          if (wantMore && quads.length < expected.n && decodeFrameRef.current % 2 === 0) {
+            const rw = cropW * 0.6;
+            const rh = cropH * 0.6;
+            const scale = Math.min(1, NATIVE_MAX_EDGE / Math.max(rw, rh));
+            const qw = Math.max(1, Math.round(rw * scale));
+            const qh = Math.max(1, Math.round(rh * scale));
+            for (const [fx, fy] of [[0, 0], [0.4, 0], [0, 0.4], [0.4, 0.4]] as const) {
+              if (!scanningRef.current || quads.length >= expected.n) break;
+              const rx = sx + cropW * fx;
+              const ry = sy + cropH * fy;
+              if (canvas.width !== qw) canvas.width = qw;
+              if (canvas.height !== qh) canvas.height = qh;
+              const ctx = canvas.getContext("2d", { willReadFrequently: true });
+              if (!ctx) break;
+              ctx.drawImage(video, rx, ry, rw, rh, 0, 0, qw, qh);
+              const part = await detector.detect(canvas);
+              for (const item of part) {
+                collect(item.rawValue, item.cornerPoints, (p) => ({ x: rx + (p.x * rw) / qw, y: ry + (p.y * rh) / qh }));
+              }
             }
           }
         } catch (err) {
@@ -512,29 +582,31 @@ export function Scanner({
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) return;
         ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cw, ch);
-        const deep = !boxVisibleRef.current ? decodeFrameRef.current % 3 === 0 : decodeFrameRef.current % 14 === 0;
+        const frameNo = decodeFrameRef.current;
+        const deep = (!boxVisibleRef.current ? frameNo % 3 === 0 : frameNo % 14 === 0) || (wantMore && frameNo % 2 === 0);
         const codes = await decodeAsync(ctx, cw, ch, deep);
         if (!scanningRef.current) return;
         for (const code of codes) {
-          if (!code.data || !handleScan(code.data)) continue;
-          quads.push(code.corners.map((p) => ({ x: sx + (p.x * cropW) / cw, y: sy + (p.y * cropH) / ch })) as Quad);
+          collect(code.data, code.corners, (p) => ({ x: sx + (p.x * cropW) / cw, y: sy + (p.y * cropH) / ch }));
         }
       }
       frameErrorCountRef.current = 0;
 
-      if (quads.length) {
+      const n = quads.length;
+      if (n >= expected.n || now - expected.t > 2500) expectedRef.current = { n, t: now };
+
+      if (n > 0) {
         lastSeenQrRef.current = now;
-        if (now - lastBoxUpdateRef.current > 100) {
-          boxVisibleRef.current = true;
-          lastBoxUpdateRef.current = now;
-          setQrBox({ w: W, h: H, quads });
-          stepAutoFrame(quads, W, H, now);
-        }
+        boxVisibleRef.current = true;
+        // Tracking is applied straight to the DOM (no React render) so the outline follows the code exactly.
+        applyDetections(quads, W, H);
+        setCodeCount((prev) => (prev === n ? prev : n));
+        stepAutoFrame(quads, W, H, now);
       } else {
-        if (boxVisibleRef.current && now - lastBoxUpdateRef.current > 200) {
+        if (boxVisibleRef.current && now - lastSeenQrRef.current > 250) {
           boxVisibleRef.current = false;
-          lastBoxUpdateRef.current = now;
-          setQrBox(null);
+          applyDetections(null, W, H);
+          setCodeCount(0);
         }
         // Lost every code for a while: ease back out so they can be re-acquired.
         if (autoAssistRef.current && now - lastSeenQrRef.current > FRAME_LOST_MS && viewRef.current.z > 1.01) {
@@ -557,77 +629,196 @@ export function Scanner({
     setView(next);
   }
 
-  /**
-   * Gently zoom + re-centre so ALL visible codes together fill ~70% of the view, as centred as
-   * possible. If they are already big enough nothing moves; the view only ever eases (never jumps).
-   */
-  function stepAutoFrame(quads: Quad[], W: number, H: number, now: number) {
-    if (!autoAssistRef.current) return; // plain camera: no zoom, no steering
-    if (now - lastFrameStepRef.current < FRAME_STEP_MS || flipping) return;
-    lastFrameStepRef.current = now;
+  /** Draw the tracking graphics straight into the DOM: outlines (video space) + 3D lock frame (screen space). */
+  function applyDetections(quads: Quad[] | null, W: number, H: number) {
+    const polys = polyRefs.current;
+    const lock = lockRef.current;
+    if (!quads || quads.length === 0) {
+      for (const el of polys) if (el) el.style.display = "none";
+      if (lock) {
+        lock.style.opacity = "0";
+        lock.dataset.shown = "0";
+      }
+      return;
+    }
+    for (let i = 0; i < MAX_BOXES; i++) {
+      const el = polys[i];
+      if (!el) continue;
+      const q = quads[i];
+      if (q) {
+        el.setAttribute("points", q.map((pt) => `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`).join(" "));
+        el.style.display = "";
+      } else {
+        el.style.display = "none";
+      }
+    }
+    if (!lock) return;
+    const g = makeScreenMapper(W, H, stageSize.current.w, stageSize.current.h, viewRef.current);
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
     let maxY = -Infinity;
     for (const q of quads) {
-      for (const p of q) {
-        minX = Math.min(minX, p.x);
-        maxX = Math.max(maxX, p.x);
-        minY = Math.min(minY, p.y);
-        maxY = Math.max(maxY, p.y);
+      for (const pt of q) {
+        const sp = g.map(pt.x / W, pt.y / H);
+        minX = Math.min(minX, sp.x);
+        maxX = Math.max(maxX, sp.x);
+        minY = Math.min(minY, sp.y);
+        maxY = Math.max(maxY, sp.y);
       }
     }
-    minX /= W;
-    maxX /= W;
-    minY /= H;
-    maxY /= H;
+    const pad = 0.018;
+    minX = clamp(minX - pad, 0, 1);
+    maxX = clamp(maxX + pad, 0, 1);
+    minY = clamp(minY - pad, 0, 1);
+    maxY = clamp(maxY + pad, 0, 1);
+    lock.style.left = `${minX * 100}%`;
+    lock.style.top = `${minY * 100}%`;
+    lock.style.width = `${(maxX - minX) * 100}%`;
+    lock.style.height = `${(maxY - minY) * 100}%`;
+    lock.style.setProperty("--tx", `${(((minX + maxX) / 2 - 0.5) * -14).toFixed(2)}deg`);
+    lock.style.setProperty("--ty", `${(((minY + maxY) / 2 - 0.5) * 14).toFixed(2)}deg`);
+    if (lock.dataset.shown !== "1") {
+      lock.dataset.shown = "1";
+      lock.classList.remove("lock-enter");
+      void lock.offsetWidth; // restart the CSS animation
+      lock.classList.add("lock-enter");
+    }
+    lock.style.opacity = "1";
+    // The label sits above the frame, or below / inside it when there is no room (never clipped).
+    const label = labelRef.current;
+    if (label) {
+      label.dataset.pos = minY > 0.14 ? "above" : maxY < 0.86 ? "below" : "inside";
+      if (labelTextRef.current) {
+        const n = quads.length;
+        const p = pctRef.current;
+        labelTextRef.current.textContent = `${n} code${n > 1 ? "s" : ""}${p > 0 ? ` · ${Math.floor(p)}%` : ""}`;
+      }
+    }
+  }
+
+  /** Visible confirmation that the lens is being steered: a focus square at the point it aims for. */
+  function pingFocus(vx: number, vy: number, W: number, H: number, now: number, force = false) {
+    if (!force && now - lastPingRef.current < 1500) return;
+    lastPingRef.current = now;
+    const g = makeScreenMapper(W, H, stageSize.current.w, stageSize.current.h, viewRef.current);
+    const sp = g.map(vx, vy);
+    setFocusPing({ x: clamp(sp.x, 0.08, 0.92) * 100, y: clamp(sp.y, 0.08, 0.92) * 100, key: Math.round(now) });
+    window.setTimeout(() => setFocusPing(null), PING_MS);
+  }
+
+  /**
+   * Calm auto-framing. Zoom moves in discrete steps and only after the same step has been wanted for
+   * ~0.7 s (so it never "breathes"); it zooms out immediately only if a code is about to leave the
+   * window; and it targets ALL visible codes together, using a smoothed bounding box.
+   */
+  function stepAutoFrame(quads: Quad[], W: number, H: number, now: number) {
+    if (!autoAssistRef.current || flippingRef.current) return;
+    if (now - lastFrameStepRef.current < FRAME_STEP_MS) return;
+    lastFrameStepRef.current = now;
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const q of quads) {
+      for (const pt of q) {
+        minX = Math.min(minX, pt.x / W);
+        maxX = Math.max(maxX, pt.x / W);
+        minY = Math.min(minY, pt.y / H);
+        maxY = Math.max(maxY, pt.y / H);
+      }
+    }
+    const raw = { minX, maxX, minY, maxY };
+    const prev = smoothRef.current;
+    const a = 0.25; // heavy smoothing: ignore hand jitter
+    const sm = prev
+      ? {
+          minX: prev.minX + (raw.minX - prev.minX) * a,
+          maxX: prev.maxX + (raw.maxX - prev.maxX) * a,
+          minY: prev.minY + (raw.minY - prev.minY) * a,
+          maxY: prev.maxY + (raw.maxY - prev.maxY) * a,
+        }
+      : raw;
+    smoothRef.current = sm;
+
     const v = viewRef.current;
-    const span = Math.max((maxX - minX) * W, (maxY - minY) * H);
-    const fill = span / (Math.min(W, H) / v.z);
+    const bw = sm.maxX - sm.minX;
+    const bh = sm.maxY - sm.minY;
+    const cx = (sm.minX + sm.maxX) / 2;
+    const cy = (sm.minY + sm.maxY) / 2;
+
+    // Largest step at which every code still fits inside the window with margin.
+    let desired = 1;
+    for (const z of FRAME_STEPS) if (bw * z <= FRAME_FIT && bh * z <= FRAME_FIT) desired = z;
+
+    const half = 0.5 / v.z;
+    const m = 0.012;
+    const inside =
+      sm.minX >= v.cx - half + m && sm.maxX <= v.cx + half - m && sm.minY >= v.cy - half + m && sm.maxY <= v.cy + half - m;
 
     let z = v.z;
-    if (fill < FRAME_TARGET_FILL * 0.8 || fill > FRAME_TARGET_FILL * 1.35) {
-      z = clamp(v.z * clamp(FRAME_TARGET_FILL / Math.max(0.02, fill), 0.94, 1.09), 1, FRAME_MAX_ZOOM);
+    if (v.z > 1 && !inside) {
+      // A code is touching the edge of the zoomed window: step out right away so it is never lost.
+      const idx = FRAME_STEPS.findIndex((s) => s >= v.z - 0.001);
+      z = FRAME_STEPS[Math.max(0, idx - 1)];
+      stableRef.current = { z, since: now };
+    } else if (desired !== v.z) {
+      if (stableRef.current.z !== desired) stableRef.current = { z: desired, since: now };
+      else if (now - stableRef.current.since >= FRAME_DWELL_MS) z = desired;
+    } else {
+      stableRef.current = { z: v.z, since: now };
     }
-    const tx = (minX + maxX) / 2;
-    const ty = (minY + maxY) / 2;
-    const pull = z > 1.02 ? 0.28 : 0;
-    const half = 0.5 / z;
-    const next: View = {
-      z,
-      cx: clamp(v.cx + (tx - v.cx) * pull, half, 1 - half),
-      cy: clamp(v.cy + (ty - v.cy) * pull, half, 1 - half),
-    };
-    if (Math.abs(next.z - v.z) > 0.004 || Math.abs(next.cx - v.cx) > 0.003 || Math.abs(next.cy - v.cy) > 0.003) {
-      commitView(next);
+
+    // Re-centre only once zoomed, and only for a noticeable offset (dead-band).
+    let ncx = v.cx;
+    let ncy = v.cy;
+    if (z > 1) {
+      const offX = cx - v.cx;
+      const offY = cy - v.cy;
+      const pull = inside ? 0.25 : 0.6;
+      if (Math.abs(offX) > 0.05 || !inside) ncx = v.cx + offX * pull;
+      if (Math.abs(offY) > 0.05 || !inside) ncy = v.cy + offY * pull;
+    } else {
+      ncx = 0.5;
+      ncy = 0.5;
     }
-    // Real autofocus: aim the lens at the middle of the codes.
-    if (now - lastFocusRef.current > 900) {
+    const h2 = 0.5 / z;
+    ncx = clamp(ncx, h2, 1 - h2);
+    ncy = clamp(ncy, h2, 1 - h2);
+
+    if (z !== v.z || Math.abs(ncx - v.cx) > 0.004 || Math.abs(ncy - v.cy) > 0.004) {
+      commitView({ z, cx: ncx, cy: ncy });
+    }
+    // Real autofocus: aim the lens at the middle of the codes, and show it.
+    if (now - lastFocusRef.current > 1500) {
       lastFocusRef.current = now;
-      void applyCameraFocus(streamRef.current, { x: tx, y: ty });
+      void applyCameraFocus(streamRef.current, { x: cx, y: cy });
+      pingFocus(cx, cy, W, H, now, true);
     }
   }
 
   function relaxAutoFrame(now: number) {
-    if (now - lastFrameStepRef.current < FRAME_STEP_MS * 1.5) return;
+    if (now - lastFrameStepRef.current < 600) return;
     lastFrameStepRef.current = now;
+    smoothRef.current = null;
     const v = viewRef.current;
-    const z = Math.max(1, v.z * 0.94);
+    const idx = FRAME_STEPS.findIndex((s) => s >= v.z - 0.001);
+    const z = FRAME_STEPS[Math.max(0, idx - 1)];
     const half = 0.5 / z;
     commitView({
       z,
-      cx: clamp(v.cx + (0.5 - v.cx) * 0.2, half, 1 - half),
-      cy: clamp(v.cy + (0.5 - v.cy) * 0.2, half, 1 - half),
+      cx: clamp(v.cx + (0.5 - v.cx) * 0.5, half, 1 - half),
+      cy: clamp(v.cy + (0.5 - v.cy) * 0.5, half, 1 - half),
     });
   }
 
   /** CSS transform that makes the (cover-fitted) video show the same region the decoder crops. */
   function viewTransform(v: View): CSSProperties {
-    const stage = stageRef.current;
-    const g = makeScreenMapper(videoSize.w, videoSize.h, stage?.clientWidth ?? 1, stage?.clientHeight ?? 1, v);
+    const g = makeScreenMapper(videoSize.w, videoSize.h, stageSize.current.w, stageSize.current.h, v);
     return {
       transform: `translate3d(${(-(g.exc - 0.5) * v.z * 100).toFixed(3)}%, ${(-(g.eyc - 0.5) * v.z * 100).toFixed(3)}%, 0) scale(${v.z.toFixed(4)})`,
-      transition: flipping ? "opacity 0.16s ease" : "transform 0.18s linear",
+      transition: flipping ? "opacity 0.16s ease" : "transform 0.45s cubic-bezier(0.22, 1, 0.36, 1)",
     };
   }
 
@@ -638,15 +829,31 @@ export function Scanner({
     if (!force && now - progressCommitRef.current < PROGRESS_COMMIT_MS) return;
     progressCommitRef.current = now;
     const frac = t.decoder.progress;
+    pctRef.current = frac * 100;
     const elapsed = (Date.now() - t.startedAt) / 1000;
-    const eta = frac > 0.03 && elapsed > 3 ? (elapsed * (1 - frac)) / frac : null;
-    const rate = elapsed > 1 ? (frac * t.meta.size) / elapsed : 0;
+
+    // Rate is measured over the LAST ~10 seconds of real progress, smoothed: it follows reality
+    // (camera quality, distance) instead of extrapolating the slow first moments.
+    const samples = samplesRef.current;
+    samples.push({ t: now, f: frac });
+    while (samples.length > 2 && now - samples[0].t > 10000) samples.shift();
+    const first = samples[0];
+    const span = (now - first.t) / 1000;
+    const df = frac - first.f;
+    if (span >= 2 && df > 0) {
+      const inst = df / span;
+      etaRateRef.current = etaRateRef.current ? etaRateRef.current * 0.6 + inst * 0.4 : inst;
+    } else if (span >= 5 && df <= 0) {
+      etaRateRef.current = 0; // stalled: do not promise a time
+    }
+    const rate = etaRateRef.current;
+    const eta = elapsed >= 2.5 && frac >= 0.015 && rate > 0 && frac < 1 ? (1 - frac) / rate : null;
     setProgress({
       have: t.decoder.count,
       total: t.meta.total,
       frac,
       eta,
-      rate,
+      rate: rate * t.meta.size,
       coverage: t.decoder.coverage(48),
     });
   }
@@ -668,6 +875,9 @@ export function Scanner({
     const t: Transfer = { meta, decoder, startedAt: Date.now(), name: null, mime: null };
     transferRef.current = t;
     candidateRef.current = null;
+    samplesRef.current = [];
+    etaRateRef.current = 0;
+    pctRef.current = 0;
     window.clearTimeout(nameTimerRef.current);
     setError(null);
     setPaused(null);
@@ -822,36 +1032,41 @@ export function Scanner({
       await video.play();
       await waitForUsableVideo(video);
       setVideoSize({ w: video.videoWidth, h: video.videoHeight });
+      videoSizeRef.current = { w: video.videoWidth, h: video.videoHeight };
     }
-    void applyCameraFocus(stream);
   }
 
   async function start(facingMode: "environment" | "user" = facingRef.current) {
-    if (active || starting || stopping) return;
+    if (busyRef.current || activeRef.current) return;
+    busyRef.current = true;
     facingRef.current = facingMode;
     setFacing(facingMode);
-    const startedAt = performance.now();
     setError(null);
-    if (doneUrlRef.current) {
-      URL.revokeObjectURL(doneUrlRef.current);
-      doneUrlRef.current = null;
-    }
-    setDone(null);
-    setStarting(true);
-    finishingRef.current = false;
     try {
+      // If the previous session is still shutting down, wait for it instead of silently doing nothing.
+      for (let i = 0; i < 60 && stoppingRef.current; i++) await sleep(25);
+      if (doneUrlRef.current) {
+        URL.revokeObjectURL(doneUrlRef.current);
+        doneUrlRef.current = null;
+      }
+      setDone(null);
+      setStarting(true);
+      finishingRef.current = false;
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera permission is unavailable in this browser.");
       setFastDecoder(Boolean(getDetector()));
-      // Wait for React to mount the viewfinder <video> before attaching the stream to it.
       const stream = await openCameraStream(facingMode);
-      for (let i = 0; i < 20 && !videoRef.current; i++) await sleep(16);
+      // The viewfinder <video> mounts after setStarting(true): wait (generously) for it to exist.
+      for (let i = 0; i < 125 && !videoRef.current; i++) await sleep(16);
+      if (!videoRef.current) throw new Error("The camera view could not be created. Please try again.");
       await attachStream(stream);
-      const remaining = CAMERA_TRANSITION_MS - (performance.now() - startedAt);
-      if (remaining > 0) await sleep(remaining);
+      await sleep(CAMERA_TRANSITION_MS);
       scanningRef.current = true;
+      activeRef.current = true;
       lastSeenQrRef.current = performance.now();
       camFramesRef.current = 0;
       learnedRef.current = 0;
+      expectedRef.current = { n: 0, t: 0 };
+      smoothRef.current = null;
       setActive(true);
       setStarting(false);
       cancelTick();
@@ -859,21 +1074,29 @@ export function Scanner({
     } catch (e) {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
+      scanningRef.current = false;
+      activeRef.current = false;
       setStarting(false);
       setStopping(false);
       setActive(false);
       setError(e instanceof Error ? e.message : "Camera unavailable. Grant camera permission and retry.");
+    } finally {
+      busyRef.current = false;
     }
   }
 
   async function stop(showStopping = false) {
+    // Take effect IMMEDIATELY (the button must feel instant), then tidy up.
+    scanningRef.current = false;
+    activeRef.current = false;
+    stoppingRef.current = true;
+    cancelTick();
     const shouldShowStopping = showStopping && (active || starting || Boolean(streamRef.current));
     if (shouldShowStopping) {
       setStopping(true);
       setStarting(false);
-      await sleep(CAMERA_TRANSITION_MS);
     }
-    scanningRef.current = false;
+    applyDetections(null, 1, 1);
     finishingRef.current = false;
     window.clearTimeout(nameTimerRef.current);
     nameTimerRef.current = 0;
@@ -888,10 +1111,11 @@ export function Scanner({
     seenRef.current.clear();
     setActive(false);
     setStarting(false);
-    setQrBox(null);
+    setCodeCount(0);
     setScanInfo(null);
     setProgress(EMPTY_PROGRESS);
     setFlipping(false);
+    flippingRef.current = false;
     commitView({ cx: 0.5, cy: 0.5, z: 1 });
     boxVisibleRef.current = false;
     cancelTick();
@@ -912,7 +1136,10 @@ export function Scanner({
       }
     });
     streamRef.current = null;
+    // Give the OS a moment to release the device so an immediate restart works (desktop webcams).
+    await sleep(120);
     setStopping(false);
+    stoppingRef.current = false;
   }
   stopRef.current = stop;
 
@@ -920,6 +1147,7 @@ export function Scanner({
     if (!active || stopping || starting || flipping) return;
     const next = facingRef.current === "environment" ? "user" : "environment";
     setFlipping(true);
+    flippingRef.current = true;
     try {
       scanningRef.current = false;
       cancelTick();
@@ -935,6 +1163,7 @@ export function Scanner({
     } finally {
       await sleep(160);
       setFlipping(false);
+      flippingRef.current = false;
     }
   }
 
@@ -943,8 +1172,13 @@ export function Scanner({
     const next = !autoAssistRef.current;
     autoAssistRef.current = next;
     setAutoAssist(next);
+    smoothRef.current = null;
+    stableRef.current = { z: 1, since: performance.now() };
+    setAssistToast(next ? "Auto focus on · tracking codes" : "Auto focus off · plain camera");
+    window.setTimeout(() => setAssistToast(null), 1600);
     if (next) {
       void applyCameraFocus(streamRef.current);
+      pingFocus(0.5, 0.5, videoSizeRef.current.w, videoSizeRef.current.h, performance.now(), true);
       sfx.toggleOn();
     } else {
       commitView({ cx: 0.5, cy: 0.5, z: 1 });
@@ -1024,6 +1258,20 @@ export function Scanner({
     return () => window.clearInterval(id);
   }, [active]);
 
+  // Keep the viewfinder size in a ref (reading clientWidth during render forced a layout each frame).
+  const liveNow = active || starting;
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const measure = () => {
+      stageSize.current = { w: el.clientWidth || 1, h: el.clientHeight || 1 };
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [liveNow]);
+
   // Warn before the page is closed mid-transfer.
   useEffect(() => {
     if (!active || progress.total === 0) return;
@@ -1054,7 +1302,6 @@ export function Scanner({
   const named = scanInfo?.named ?? false;
   const speedLabel = progress.rate > 0 ? `${formatBytes(Math.round(progress.rate))}/s` : null;
   const etaLabel = formatEta(progress.eta);
-  const codeCount = qrBox?.quads.length ?? 0;
   const phase: "searching" | "locked" | "receiving" = hasProgress ? "receiving" : codeCount > 0 ? "locked" : "searching";
 
   const errorBanner = error ? (
@@ -1082,109 +1329,85 @@ export function Scanner({
       ? [scanInfo ? formatBytes(scanInfo.size) : null, speedLabel, etaLabel].filter(Boolean).join(" · ")
       : phase === "locked"
         ? "Reading… hold steady"
-        : "Aim at the sender's screen";
-
-  // Screen-space geometry for the 3D lock-on frame (outside the zoomed layer so text stays crisp).
-  let lock: { left: number; top: number; width: number; height: number; tx: number; ty: number } | null = null;
-  if (active && qrBox && stageRef.current) {
-    const g = makeScreenMapper(qrBox.w, qrBox.h, stageRef.current.clientWidth, stageRef.current.clientHeight, view);
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    for (const q of qrBox.quads) {
-      for (const p of q) {
-        const s = g.map(p.x / qrBox.w, p.y / qrBox.h);
-        minX = Math.min(minX, s.x);
-        maxX = Math.max(maxX, s.x);
-        minY = Math.min(minY, s.y);
-        maxY = Math.max(maxY, s.y);
-      }
-    }
-    const pad = 0.02;
-    minX = clamp(minX - pad, 0, 1);
-    maxX = clamp(maxX + pad, 0, 1);
-    minY = clamp(minY - pad, 0, 1);
-    maxY = clamp(maxY + pad, 0, 1);
-    lock = {
-      left: minX * 100,
-      top: minY * 100,
-      width: (maxX - minX) * 100,
-      height: (maxY - minY) * 100,
-      // Parallax tilt toward where the code sits in the viewfinder.
-      tx: ((minX + maxX) / 2 - 0.5) * -16,
-      ty: ((minY + maxY) / 2 - 0.5) * 16,
-    };
-  }
+        : "Aim at the center of the screen";
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <MediaViewer item={viewer} onClose={() => setViewer(null)} />
 
-      {/* ============================ IDLE ============================ */}
+      {/* ============================ IDLE (same card language as Send) ============================ */}
       {!live && !done && (
-        <div className="relative mx-auto flex min-h-0 w-full max-w-xl flex-1 flex-col items-center justify-center gap-5 overflow-y-auto px-6 py-4 text-center no-scrollbar md:glass-strong md:my-auto md:max-h-[34rem] md:flex-none md:rounded-[2rem] md:py-10">
-          <div className="hero-stage relative grid shrink-0 place-items-center">
-            <span className="absolute h-32 w-32 rounded-full bg-primary/25 animate-pulse-ring md:h-40 md:w-40" />
-            <div className="hero-cube relative grid h-24 w-24 place-items-center rounded-[1.75rem] bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40 md:h-28 md:w-28 md:rounded-[2rem]">
-              <ScanLine className="h-10 w-10 text-primary-foreground md:h-12 md:w-12" strokeWidth={2} />
-              <span className="hero-shine absolute inset-0 rounded-[1.75rem] md:rounded-[2rem]" />
+        <div className="no-scrollbar flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-5 py-6 animate-fade-up md:px-8">
+          <div className="relative flex w-full max-w-2xl flex-col items-center justify-center rounded-[2.25rem] px-6 py-9 text-center md:glass md:py-16">
+            <div className="hero-stage relative mb-6 grid shrink-0 place-items-center">
+              <span className="absolute h-32 w-32 rounded-full bg-primary/25 animate-pulse-ring md:h-40 md:w-40" />
+              <div className="hero-cube relative grid h-24 w-24 place-items-center rounded-[1.75rem] bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40 md:h-28 md:w-28 md:rounded-[2rem]">
+                <ScanLine className="h-10 w-10 text-primary-foreground md:h-12 md:w-12" strokeWidth={2} />
+                <span className="hero-shine absolute inset-0 rounded-[1.75rem] md:rounded-[2rem]" />
+              </div>
             </div>
-          </div>
 
-          <div className="relative max-w-xs">
-            <h2 className="text-display text-2xl md:text-3xl">{paused ? "Transfer paused" : "Receive a file"}</h2>
-            <p className="mt-1.5 text-sm text-muted-foreground">
+            <h2 className="text-display text-3xl md:text-4xl">{paused ? "Transfer paused" : "Receive files"}</h2>
+            <p className="mt-2 max-w-sm text-sm text-muted-foreground md:text-base">
               {paused
                 ? "Your progress is kept. Point at the sender's screen again to continue."
-                : "On the other device open Send, press play, then aim this camera at it."}
+                : "Open Send on the other device, press play, then aim this camera at its screen."}
             </p>
-          </div>
 
-          {paused && (
-            <div className="glass animate-pop-in relative w-full max-w-xs rounded-3xl p-4 text-left">
-              <div className="flex items-center gap-3">
-                <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent text-sm font-extrabold text-primary-foreground">
-                  {Math.floor(paused.frac * 100)}%
+            {paused && (
+              <div className="glass animate-pop-in relative mt-5 w-full max-w-xs rounded-3xl p-4 text-left">
+                <div className="flex items-center gap-3">
+                  <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent text-sm font-extrabold text-primary-foreground">
+                    {Math.floor(paused.frac * 100)}%
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-bold">{paused.name}</p>
+                    <p className="text-[11px] text-muted-foreground">{formatBytes(paused.size)}</p>
+                  </div>
+                  <button
+                    onClick={discardPaused}
+                    aria-label="Discard paused transfer"
+                    className="glass grid h-9 w-9 shrink-0 place-items-center rounded-full text-muted-foreground active:scale-90"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-bold">{paused.name}</p>
-                  <p className="text-[11px] text-muted-foreground">{formatBytes(paused.size)}</p>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-secondary">
+                  <div className="h-full rounded-full bg-gradient-to-r from-primary to-accent" style={{ width: `${paused.frac * 100}%` }} />
                 </div>
-                <button
-                  onClick={discardPaused}
-                  aria-label="Discard paused transfer"
-                  className="glass grid h-9 w-9 shrink-0 place-items-center rounded-full text-muted-foreground active:scale-90"
-                >
-                  <X className="h-4 w-4" />
-                </button>
               </div>
-              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-secondary">
-                <div className="h-full rounded-full bg-gradient-to-r from-primary to-accent" style={{ width: `${paused.frac * 100}%` }} />
-              </div>
+            )}
+
+            {errorBanner && <div className="mt-5 w-full max-w-sm">{errorBanner}</div>}
+
+            <button
+              onClick={() => {
+                sfx.unlock();
+                void start();
+              }}
+              disabled={starting}
+              className="group relative mt-7 flex items-center gap-2 overflow-hidden rounded-full bg-gradient-to-br from-primary to-accent px-8 py-4 text-sm font-bold text-primary-foreground shadow-xl shadow-primary/30 transition-transform duration-200 active:scale-95 disabled:opacity-80"
+            >
+              <span className="btn-sheen absolute inset-0" />
+              {paused ? <RotateCcw className="relative h-4 w-4" /> : <Camera className="relative h-4 w-4" />}
+              <span className="relative">{paused ? "Resume scanning" : "Start camera"}</span>
+            </button>
+
+            <div className="mt-7 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold text-muted-foreground">
+              <span className="glass flex items-center gap-1.5 rounded-full px-3 py-1.5">
+                <Zap className="h-3 w-3 text-primary" /> Hardware decoding
+              </span>
+              <span className="glass flex items-center gap-1.5 rounded-full px-3 py-1.5">
+                <Layers3 className="h-3 w-3 text-primary" /> Reads up to 8 codes at once
+              </span>
+              <span className="glass flex items-center gap-1.5 rounded-full px-3 py-1.5">
+                <ShieldCheck className="h-3 w-3 text-primary" /> Checksum verified
+              </span>
+              <span className="glass flex items-center gap-1.5 rounded-full px-3 py-1.5">
+                <WifiOff className="h-3 w-3 text-primary" /> Works offline
+              </span>
             </div>
-          )}
-
-          {errorBanner && <div className="relative w-full max-w-xs">{errorBanner}</div>}
-
-          <button
-            onClick={() => {
-              sfx.unlock();
-              void start();
-            }}
-            disabled={starting}
-            className="group relative flex w-full max-w-xs shrink-0 items-center justify-center gap-2.5 overflow-hidden rounded-2xl bg-gradient-to-br from-primary to-accent py-4 text-base font-bold text-primary-foreground shadow-xl shadow-primary/35 transition-transform duration-200 active:scale-[0.96] disabled:opacity-80"
-          >
-            <span className="btn-sheen absolute inset-0" />
-            {paused ? <RotateCcw className="relative h-5 w-5" /> : <Camera className="relative h-5 w-5" />}
-            <span className="relative">{paused ? "Resume scanning" : "Start camera"}</span>
-          </button>
-
-          <ul className="relative hidden flex-wrap items-center justify-center gap-2 text-[11px] font-semibold text-muted-foreground min-[380px]:flex [@media(max-height:640px)]:hidden">
-            <li className="glass rounded-full px-3 py-1">Works offline</li>
-            <li className="glass rounded-full px-3 py-1">Any file type</li>
-            <li className="glass rounded-full px-3 py-1">Checksum verified</li>
-          </ul>
+          </div>
         </div>
       )}
 
@@ -1195,28 +1418,28 @@ export function Scanner({
           <div
             ref={stageRef}
             data-no-swipe
-            className="relative min-h-[12rem] flex-1 overflow-hidden rounded-[1.75rem] bg-black shadow-2xl shadow-black/30 ring-1 ring-white/10 lg:h-full lg:max-h-[calc(100dvh-13rem)] lg:min-h-0 lg:flex-none lg:aspect-[4/3] lg:w-full lg:self-center"
+            className={`relative min-h-[12rem] flex-1 overflow-hidden rounded-[1.75rem] bg-black shadow-2xl shadow-black/30 ring-1 ring-white/10 transition-shadow duration-500 lg:h-full lg:max-h-[calc(100dvh-13rem)] lg:min-h-0 lg:flex-none lg:aspect-[4/3] lg:w-full lg:self-center ${
+              autoAssist ? "autofocus-ring" : ""
+            }`}
           >
             {/* Video + exact code outlines share ONE transformed layer so they always stay aligned. */}
             <div className="absolute inset-0 will-change-transform" style={viewTransform(view)}>
               <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover" />
-              {qrBox && active && (
-                <svg
-                  key={qrBox.quads.length}
-                  className="scanner-corners lock-svg pointer-events-none absolute inset-0 h-full w-full"
-                  viewBox={`0 0 ${qrBox.w} ${qrBox.h}`}
-                  preserveAspectRatio="xMidYMid slice"
-                >
-                  {qrBox.quads.map((q, qi) => (
-                    <g key={qi}>
-                      <polygon points={q.map((p) => `${p.x},${p.y}`).join(" ")} />
-                      {q.map((p, i) => (
-                        <circle key={i} cx={p.x} cy={p.y} r={Math.max(6, qrBox.w / 150)} />
-                      ))}
-                    </g>
-                  ))}
-                </svg>
-              )}
+              <svg
+                className="scanner-corners lock-svg pointer-events-none absolute inset-0 h-full w-full"
+                viewBox={`0 0 ${videoSize.w} ${videoSize.h}`}
+                preserveAspectRatio="xMidYMid slice"
+              >
+                {Array.from({ length: MAX_BOXES }, (_, i) => (
+                  <polygon
+                    key={i}
+                    ref={(el) => {
+                      polyRefs.current[i] = el;
+                    }}
+                    style={{ display: "none" }}
+                  />
+                ))}
+              </svg>
             </div>
 
             {starting && !active && (
@@ -1245,35 +1468,36 @@ export function Scanner({
                   </div>
                 </div>
 
-                {/* 3D lock-on frame around ALL detected codes: pops in, tilts toward the codes, pulses. */}
-                {lock && (
-                  <div className="lock-stage pointer-events-none absolute inset-0">
-                    <div
-                      key={codeCount}
-                      className="lock-frame absolute"
-                      style={{
-                        left: `${lock.left}%`,
-                        top: `${lock.top}%`,
-                        width: `${lock.width}%`,
-                        height: `${lock.height}%`,
-                        ["--tx" as string]: `${lock.tx}deg`,
-                        ["--ty" as string]: `${lock.ty}deg`,
-                      }}
-                    >
-                      <span className="lock-corner left-0 top-0 rounded-tl-xl border-l-[3px] border-t-[3px]" />
-                      <span className="lock-corner right-0 top-0 rounded-tr-xl border-r-[3px] border-t-[3px]" />
-                      <span className="lock-corner bottom-0 left-0 rounded-bl-xl border-b-[3px] border-l-[3px]" />
-                      <span className="lock-corner bottom-0 right-0 rounded-br-xl border-b-[3px] border-r-[3px]" />
-                      <span className="lock-label absolute -top-1 left-1/2 flex -translate-x-1/2 -translate-y-full items-center gap-1.5 whitespace-nowrap rounded-full bg-emerald-400 px-2.5 py-1 text-[10px] font-extrabold text-emerald-950 shadow-lg">
-                        <Sparkles className="h-3 w-3" />
-                        {codeCount} code{codeCount > 1 ? "s" : ""}
-                        {hasProgress ? ` · ${Math.floor(pct)}%` : ""}
-                      </span>
-                    </div>
+                {/* 3D lock-on frame around ALL detected codes. Positioned imperatively every frame. */}
+                <div className="lock-stage pointer-events-none absolute inset-0">
+                  <div ref={lockRef} className="lock-frame absolute" style={{ opacity: 0 }}>
+                    <span className="lock-corner left-0 top-0 rounded-tl-xl border-l-[3px] border-t-[3px]" />
+                    <span className="lock-corner right-0 top-0 rounded-tr-xl border-r-[3px] border-t-[3px]" />
+                    <span className="lock-corner bottom-0 left-0 rounded-bl-xl border-b-[3px] border-l-[3px]" />
+                    <span className="lock-corner bottom-0 right-0 rounded-br-xl border-b-[3px] border-r-[3px]" />
+                    <span ref={labelRef} data-pos="above" className="lock-label">
+                      <Sparkles className="h-3 w-3" />
+                      <span ref={labelTextRef} />
+                    </span>
+                  </div>
+                </div>
+
+                {/* Auto focus: a focus square where the lens is aimed, and a confirmation toast. */}
+                {focusPing && <span key={focusPing.key} className="focus-ping" style={{ left: `${focusPing.x}%`, top: `${focusPing.y}%` }} />}
+                {assistToast && (
+                  <div className="switch-toast pointer-events-none absolute bottom-4 left-1/2 z-20 flex items-center gap-2 whitespace-nowrap rounded-full bg-black/70 px-3.5 py-2 text-[11px] font-bold text-white shadow-lg backdrop-blur">
+                    <Focus className="h-3.5 w-3.5 text-primary" />
+                    {assistToast}
                   </div>
                 )}
+                {autoAssist && (
+                  <span className="hud-card pointer-events-none absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-extrabold text-white">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+                    AUTO FOCUS{view.z > 1.05 ? ` · ${view.z.toFixed(2)}×` : ""}
+                  </span>
+                )}
 
-                {/* Status chip: centred, and it changes with what is actually happening. */}
+                {/* Status chip: centred at the top, and it changes with what is actually happening. */}
                 <div className="pointer-events-none absolute inset-x-0 top-3 z-10 flex justify-center">
                   <span
                     key={phase}
@@ -1283,9 +1507,6 @@ export function Scanner({
                     {phase === "locked" && <span className="h-2 w-2 rounded-full bg-emerald-400" />}
                     {phase === "receiving" && <Activity className="h-3.5 w-3.5 text-emerald-300" />}
                     {phase === "searching" ? "Searching…" : phase === "locked" ? "Code detected" : `Receiving ${Math.floor(pct)}%`}
-                    {autoAssist && view.z > 1.05 && (
-                      <span className="ml-1 rounded-full bg-white/15 px-1.5 py-0.5 text-[10px] tabular-nums">{view.z.toFixed(1)}×</span>
-                    )}
                   </span>
                 </div>
               </>
@@ -1324,19 +1545,26 @@ export function Scanner({
 
             {/* Progress lives in its own track, with a chunk map showing exactly which parts have arrived. */}
             <div className="min-w-0 px-1">
-              <div className="flex items-baseline justify-between text-[11px] font-bold">
-                <span className="tabular-nums">{hasProgress ? `${pct.toFixed(pct < 10 ? 1 : 0)}%` : "—"}</span>
-                <span className="font-medium text-muted-foreground">
-                  {hasProgress ? [speedLabel, etaLabel].filter(Boolean).join(" · ") || "receiving…" : "waiting for first code"}
+              <div className="flex items-center justify-between gap-3 text-[11px] font-bold">
+                <span className="tabular-nums">{pct.toFixed(pct > 0 && pct < 10 ? 1 : 0)}%</span>
+                <span className="flex min-w-0 items-center gap-1.5 truncate font-medium text-muted-foreground">
+                  {hasProgress ? (
+                    [speedLabel, etaLabel].filter(Boolean).join(" · ") || "receiving…"
+                  ) : (
+                    <>
+                      <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
+                      Waiting for the first code
+                    </>
+                  )}
                 </span>
               </div>
-              <div className="progress-track relative mt-1 h-2.5 overflow-hidden rounded-full bg-secondary">
+              <div className={`progress-track relative mt-1.5 h-2.5 overflow-hidden rounded-full bg-secondary ${hasProgress ? "" : "indeterminate"}`}>
                 <div
                   className="progress-fill h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-300 ease-out"
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <ChunkMap coverage={progress.coverage} />
+              <ChunkMap coverage={progress.coverage} searching={!hasProgress} />
             </div>
 
             <div className="flex items-center justify-center gap-2 text-[10px] font-semibold text-muted-foreground">
@@ -1362,7 +1590,7 @@ export function Scanner({
               <button
                 onClick={() => void stop(true)}
                 disabled={stopping}
-                className="flex h-12 min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl bg-foreground px-4 text-sm font-bold text-background shadow-lg transition-transform active:scale-95 disabled:opacity-80"
+                className="relative flex h-12 min-w-0 flex-1 items-center justify-center gap-2 overflow-hidden rounded-2xl bg-gradient-to-br from-primary to-accent px-4 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/30 transition-transform active:scale-95 disabled:opacity-80"
               >
                 {stopping ? <Loader2 className="h-4 w-4 animate-spin" /> : <CameraOff className="h-4 w-4" />}
                 {stopping ? "Stopping" : "Stop"}
@@ -1373,7 +1601,7 @@ export function Scanner({
                 aria-pressed={autoAssist}
                 aria-label="Auto focus"
                 className={`relative flex h-12 shrink-0 items-center justify-center gap-1.5 rounded-2xl px-3.5 text-xs font-bold transition-all active:scale-90 disabled:opacity-60 ${
-                  autoAssist ? "bg-primary text-primary-foreground shadow-lg shadow-primary/30" : "glass text-muted-foreground"
+                  autoAssist ? "bg-foreground text-background shadow-lg" : "glass text-muted-foreground"
                 }`}
               >
                 <Focus className="h-5 w-5" strokeWidth={2.2} />
@@ -1467,8 +1695,8 @@ export function Scanner({
   );
 }
 
-/** Circular progress: gradient arc with a glowing head, percentage in the middle; reacts to scan phase. */
-function ProgressRing({
+/** Circular progress: spinning arc while searching, gradient arc with a glowing head once receiving. */
+const ProgressRing = memo(function ProgressRing({
   value,
   active,
   phase,
@@ -1494,7 +1722,7 @@ function ProgressRing({
           </linearGradient>
         </defs>
         <circle cx="28" cy="28" r={r} fill="none" stroke="currentColor" strokeOpacity="0.14" strokeWidth="5" />
-        {phase === "searching" && (
+        {phase === "searching" ? (
           <circle
             cx="28"
             cy="28"
@@ -1506,52 +1734,61 @@ function ProgressRing({
             strokeDasharray={`${c * 0.22} ${c}`}
             className="ring-search"
           />
-        )}
-        {phase !== "searching" && (
-          <circle
-            cx="28"
-            cy="28"
-            r={r}
-            fill="none"
-            stroke="url(#ring-grad)"
-            strokeWidth="5"
-            strokeLinecap="round"
-            strokeDasharray={c}
-            strokeDashoffset={c * (1 - Math.max(frac, phase === "locked" ? 0.04 : 0))}
-            style={{ transition: "stroke-dashoffset 0.35s cubic-bezier(0.22,1,0.36,1)", filter: "drop-shadow(0 0 4px var(--color-primary))" }}
-          />
+        ) : (
+          frac > 0 && (
+            <circle
+              cx="28"
+              cy="28"
+              r={r}
+              fill="none"
+              stroke="url(#ring-grad)"
+              strokeWidth="5"
+              strokeLinecap="round"
+              strokeDasharray={c}
+              strokeDashoffset={c * (1 - frac)}
+              style={{ transition: "stroke-dashoffset 0.35s cubic-bezier(0.22,1,0.36,1)" }}
+            />
+          )
         )}
       </svg>
       {active && frac > 0.01 && frac < 0.999 && (
         <svg viewBox="0 0 56 56" className="pointer-events-none absolute inset-0" style={{ width: size, height: size }}>
-          <circle cx={hx + 0} cy={hy + 0} r="3.2" fill="white" style={{ filter: "drop-shadow(0 0 5px var(--color-primary))" }} />
+          <circle cx={hx} cy={hy} r="3" fill="white" />
         </svg>
       )}
-      <span className="absolute text-[12px] font-extrabold tabular-nums">
-        {active ? (value >= 100 ? 100 : Math.floor(value)) : phase === "locked" ? "✓" : "…"}
+      <span className="absolute grid place-items-center text-[12px] font-extrabold tabular-nums">
+        {phase === "searching" ? (
+          <ScanLine className="animate-scan-bob h-5 w-5 text-primary" strokeWidth={2.4} />
+        ) : active ? (
+          value >= 100 ? 100 : Math.floor(value)
+        ) : (
+          "✓"
+        )}
       </span>
     </div>
   );
-}
+});
 
 /** Row of cells, one per slice of the file; each lights up as that slice arrives. */
-function ChunkMap({ coverage }: { coverage: number[] }) {
+const ChunkMap = memo(function ChunkMap({ coverage, searching }: { coverage: number[]; searching: boolean }) {
   const cells = coverage.length ? coverage : new Array(48).fill(0);
   return (
     <div className="mt-1.5 flex h-2.5 gap-[2px]" aria-hidden="true">
       {cells.map((v, i) => (
         <span
           key={i}
-          className="h-full min-w-0 flex-1 rounded-[3px] transition-[background-color,transform] duration-300"
+          className={`h-full min-w-0 flex-1 rounded-[3px] transition-[opacity,background-color] duration-300 ${
+            v > 0 ? "bg-primary" : "bg-secondary"
+          } ${searching ? "chunk-wave" : ""}`}
           style={{
-            backgroundColor: `color-mix(in oklab, var(--color-primary) ${Math.round(v * 100)}%, color-mix(in oklab, currentColor 12%, transparent))`,
-            transform: v >= 1 ? "scaleY(1)" : "scaleY(0.7)",
+            opacity: v > 0 ? 0.45 + 0.55 * v : 1,
+            animationDelay: searching ? `${(i % 12) * 90}ms` : undefined,
           }}
         />
       ))}
     </div>
   );
-}
+});
 
 /** One-shot celebration burst; pure CSS, no dependencies. */
 function Confetti() {

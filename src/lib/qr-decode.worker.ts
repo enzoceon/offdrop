@@ -42,7 +42,7 @@ function decode(buf: Uint8ClampedArray, w: number, h: number, deep: boolean) {
 type Found = NonNullable<ReturnType<typeof decode>>;
 
 /** Find up to MAX_CODES codes: decode one, white-out its footprint, then look again (multi-QR streams). */
-const MAX_CODES = 4;
+const MAX_CODES = 8;
 function decodeAll(buf: Uint8ClampedArray, w: number, h: number, deep: boolean): Found[] {
   const results: Found[] = [];
   let work = buf;

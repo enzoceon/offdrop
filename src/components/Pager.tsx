@@ -49,12 +49,12 @@ export function Pager({
 
   const hideTimer = useRef<number>(0);
 
-  function paint(pos: number, dragging: boolean) {
+  function paint(pos: number, dragging: boolean, instant = false) {
     const track = trackRef.current;
     if (!track) return;
     window.clearTimeout(hideTimer.current);
     track.style.willChange = "transform";
-    track.style.transition = dragging ? "none" : `transform ${SETTLE_MS}ms ${EASE}`;
+    track.style.transition = dragging || instant ? "none" : `transform ${SETTLE_MS}ms ${EASE}`;
     track.style.transform = `translate3d(${(-pos * 100) / count}%,0,0)`;
     const settled = !dragging;
     panelRefs.current.forEach((panel, i) => {
@@ -64,7 +64,7 @@ export function Pager({
       panel.style.visibility = "visible"; // everything is drawn while moving
       (panel.style as CSSStyleDeclaration & { contentVisibility: string }).contentVisibility = "visible";
       panel.style.willChange = "transform, opacity";
-      panel.style.transition = dragging
+      panel.style.transition = dragging || instant
         ? "none"
         : `transform ${SETTLE_MS}ms ${EASE}, opacity ${SETTLE_MS}ms ${EASE}`;
       panel.style.opacity = String(1 - d * 0.6);
@@ -87,6 +87,8 @@ export function Pager({
         if (trackRef.current) trackRef.current.style.willChange = "auto";
       }, SETTLE_MS + 40);
     }
+    // The tab bar listens to this, so its pill AND label colours always follow the very same number.
+    window.dispatchEvent(new CustomEvent("pager-pos", { detail: { pos, dragging } }));
     const root = document.documentElement;
     root.style.setProperty("--pager-pos", pos.toFixed(4));
     if (dragging) root.setAttribute("data-pager-drag", "");
@@ -94,9 +96,11 @@ export function Pager({
   }
 
   // Follow the controlled index.
+  const firstPaint = useRef(true);
   useEffect(() => {
     indexRef.current = index;
-    paint(index, false);
+    paint(index, false, firstPaint.current); // first paint is instant (no slide-in on load)
+    firstPaint.current = false;
     panelRefs.current.forEach((panel, i) => {
       if (!panel) return;
       const inactive = i !== index;
@@ -132,7 +136,7 @@ export function Pager({
       const dx = e.clientX - d.x;
       const dy = e.clientY - d.y;
       if (!d.axis) {
-        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
         d.axis = Math.abs(dx) > Math.abs(dy) * 1.2 ? "x" : "y";
         if (d.axis === "x") {
           try {
@@ -191,7 +195,7 @@ export function Pager({
   }, [count, onIndexChange]);
 
   return (
-    <div ref={rootRef} className="relative min-h-0 flex-1 overflow-hidden" style={{ touchAction: "pan-y" }}>
+    <div ref={rootRef} data-pager-root="" className="relative min-h-0 flex-1 overflow-hidden" style={{ touchAction: "pan-y" }}>
       <div
         ref={trackRef}
         className="flex h-full"
@@ -200,6 +204,7 @@ export function Pager({
         {children.map((child, i) => (
           <div
             key={i}
+            data-pager-panel=""
             ref={(el) => {
               panelRefs.current[i] = el;
             }}

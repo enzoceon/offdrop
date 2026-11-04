@@ -13,11 +13,11 @@ type ViewTransitionDocument = Document & {
 };
 
 export function ThemeToggle() {
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(true);
 
   useEffect(() => {
     const stored = localStorage.getItem(THEME_KEY) || localStorage.getItem("theme");
-    const isDark = stored ? stored === "dark" : false;
+    const isDark = stored ? stored === "dark" : true;
     setDark(isDark);
     applyTheme(isDark);
   }, []);

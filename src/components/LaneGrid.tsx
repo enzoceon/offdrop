@@ -23,6 +23,7 @@ export function LaneGrid({
   refs,
   gap = 10,
   live = false,
+  switching = false,
   className,
   tileClassName,
 }: {
@@ -30,6 +31,7 @@ export function LaneGrid({
   refs: MutableRefObject<Array<HTMLCanvasElement | null>>;
   gap?: number;
   live?: boolean;
+  switching?: boolean;
   className?: string;
   tileClassName?: string;
 }) {
@@ -65,8 +67,9 @@ export function LaneGrid({
             key={i}
             style={{ width: layout.size, height: layout.size }}
             className={cn(
-              "lane-pop relative rounded-[1.25rem] bg-white p-1.5 shadow-xl",
+              "lane-pop lane-anim relative rounded-[1.25rem] bg-white p-1.5 shadow-xl",
               live && "qr-stage-live",
+              switching && "lane-switching",
               tileClassName,
             )}
           >

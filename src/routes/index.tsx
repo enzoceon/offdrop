@@ -47,7 +47,10 @@ function readStoredTab(): TabKey {
 }
 
 function Index() {
-  const [tab, setTab] = useState<TabKey>(() => readStoredTab());
+  // Always start as "send" so the first client render matches the server HTML (a mismatch breaks the
+  // layout after a refresh). The saved tab is restored right after mount, before anything is shown.
+  const [tab, setTab] = useState<TabKey>("send");
+  const [hydrated, setHydrated] = useState(false);
   const [historyKey, setHistoryKey] = useState(0);
   const [scannerBusy, setScannerBusy] = useState(false);
   const [pendingTab, setPendingTab] = useState<TabKey | null>(null);
@@ -56,12 +59,18 @@ function Index() {
   const [stopRequestKey, setStopRequestKey] = useState(0);
 
   useEffect(() => {
+    setTab(readStoredTab());
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
     try {
       window.localStorage.setItem(TAB_STORAGE_KEY, tab);
     } catch {
       /* ignore */
     }
-  }, [tab]);
+  }, [tab, hydrated]);
 
 
   function requestTab(nextTab: TabKey) {
@@ -164,6 +173,7 @@ function Index() {
       </header>
 
       <main className="relative z-10 flex min-h-0 flex-1 flex-col">
+        {hydrated ? (
         <Pager index={TAB_ORDER.indexOf(tab)} onIndexChange={onPagerIndex}>
           {[
             <div key="send" className={`${panelPad} ${bottomPad}`}>
@@ -186,6 +196,9 @@ function Index() {
             </div>,
           ]}
         </Pager>
+        ) : (
+          <div className="flex-1" />
+        )}
       </main>
 
       {confirmOpen && (
