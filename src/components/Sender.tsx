@@ -117,7 +117,7 @@ function readDensity(): DensityKey {
 
 /** Play <-> Pause: both glyphs are always mounted and cross-rotate/scale into each other. */
 function PlayPauseIcon({ playing, className }: { playing: boolean; className?: string }) {
-  const base = "absolute inset-0 transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]";
+  const base = "absolute inset-0 h-full w-full transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]";
   return (
     <span className={cn("relative inline-block", className ?? "h-4 w-4")} aria-hidden="true">
       <Play
