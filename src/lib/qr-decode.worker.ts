@@ -4,7 +4,7 @@
 import jsQR from "jsqr";
 
 type Pt = { x: number; y: number };
-type In = { id: number; data: ArrayBuffer; w: number; h: number; deep: boolean };
+type In = { id: number; data: ArrayBuffer; w: number; h: number; deep: boolean; channels?: boolean };
 
 function crop(src: Uint8ClampedArray, w: number, sx: number, sy: number, sw: number, sh: number) {
   if (sx === 0 && sy === 0 && sw === w) return src.subarray(0, sw * sh * 4);
@@ -42,7 +42,7 @@ function decode(buf: Uint8ClampedArray, w: number, h: number, deep: boolean) {
 type Found = NonNullable<ReturnType<typeof decode>>;
 
 /** Find up to MAX_CODES codes: decode one, white-out its footprint, then look again (multi-QR streams). */
-const MAX_CODES = 8;
+const MAX_CODES = 12;
 function decodeAll(buf: Uint8ClampedArray, w: number, h: number, deep: boolean): Found[] {
   const results: Found[] = [];
   let work = buf;
@@ -68,11 +68,35 @@ function decodeAll(buf: Uint8ClampedArray, w: number, h: number, deep: boolean):
   return results;
 }
 
+/** Colour (RGB) streams: decode each channel separately as a contrast-stretched greyscale image. */
+function decodeChannels(buf: Uint8ClampedArray, w: number, h: number): Found[] {
+  const all: Found[] = [];
+  const gray = new Uint8ClampedArray(buf.length);
+  for (let k = 0; k < 3; k++) {
+    let mn = 255;
+    let mx = 0;
+    for (let i = k; i < buf.length; i += 4 * 37) {
+      const v = buf[i];
+      if (v < mn) mn = v;
+      if (v > mx) mx = v;
+    }
+    const gain = 255 / Math.max(32, mx - mn);
+    for (let i = 0; i < buf.length; i += 4) {
+      const v = Math.max(0, Math.min(255, (buf[i + k] - mn) * gain));
+      gray[i] = gray[i + 1] = gray[i + 2] = v;
+      gray[i + 3] = 255;
+    }
+    for (const f of decodeAll(gray, w, h, true)) if (!all.some((a) => a.data === f.data)) all.push(f);
+  }
+  return all;
+}
+
 self.onmessage = (event: MessageEvent<In>) => {
-  const { id, data, w, h, deep } = event.data;
+  const { id, data, w, h, deep, channels } = event.data;
   let results: Found[] = [];
   try {
-    results = decodeAll(new Uint8ClampedArray(data), w, h, deep);
+    const buf = new Uint8ClampedArray(data);
+    results = channels ? decodeChannels(buf, w, h) : decodeAll(buf, w, h, deep);
   } catch {
     results = [];
   }

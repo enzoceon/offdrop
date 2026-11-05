@@ -8,6 +8,8 @@
 // consonant, and the scan tick rises in pitch with transfer progress so the
 // receiver can *hear* how close it is to done.
 
+import { haptics } from "./haptics";
+
 const MUTE_KEY = "paperdrop.muted";
 
 type VoiceOpts = {
@@ -27,6 +29,7 @@ type VoiceOpts = {
 };
 
 let muted = readMuted();
+haptics.setEnabled(!muted);
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
 let reverbSend: GainNode | null = null;
@@ -214,7 +217,7 @@ function noise(at: number, duration: number, o: { gain?: number; from?: number; 
 }
 
 function vibrate(pattern: VibratePattern) {
-  if (!muted && typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(pattern);
+  if (!muted) haptics.play(pattern);
 }
 
 let lastTickAt = 0;
@@ -226,6 +229,7 @@ export const sfx = {
   },
   setMuted(next: boolean) {
     muted = next;
+    haptics.setEnabled(!next);
     try {
       if (typeof localStorage !== "undefined") localStorage.setItem(MUTE_KEY, next ? "1" : "0");
     } catch {

@@ -39,7 +39,7 @@ payload per code x frames/s x codes on screen at once.
 | Max      | 1400       | 20 KB/s         | 82 KB/s          | 123 KB/s         |
 
 Phone cameras usually capture 30 fps, so the speed slider stops at 30 and defaults to 15 (each code stays on
-screen for about two camera frames); adding *codes per frame* (2x / 4x / 6x / 8x; default 4x) is what scales. A 100 MB file
+screen for about two camera frames); adding *codes per frame* (1x / 2x / 4x / 6x / 8x / 9x / 12x; default 4x, plus an experimental Colour x3 mode) is what scales. A 100 MB file
 is therefore roughly 14-20 minutes in the best realistic case (large sender screen, sharp receiver camera), not
 seconds. The app helps: compression, multi-file bundling, screen wake-lock, pause/resume, repair frames, and a
 receiver that starts from the very first frame it sees.

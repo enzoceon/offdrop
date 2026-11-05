@@ -166,3 +166,27 @@
 - **Send UI**: no clipped shadows on desktop; tile glow follows the QR's rounded corners (no expanding wave);
   density / lane changes show a brief dim + toast instead of a loading state; richer fullscreen (preview, chips,
   stats grid and details in the desktop side panel).
+
+
+---
+
+# Round 7
+
+- **Codes at once**: 1, 2, 4, 6, 8, **9, 12**. Grids are scored for tile size, squareness and empty cells: 6 = 2x3 / 3x2,
+  8 = 2x4 / 4x2, 9 = 3x3, 12 = 3x4 / 4x3 depending on the screen shape.
+- **Cut-off QR on phones fixed**: small tiles no longer get padding or large rounded corners that clipped the baked-in
+  quiet zone (and the finder patterns). Multi-code tiles use tiny radii, no padding and tighter gaps.
+- **Colour x3 (beta)**: a tile can carry three independent QR codes, one in each of the R, G and B channels. The receiver
+  splits the camera image into channels (with per-channel contrast stretching) and decodes each. Off by default; the
+  receiver tries it automatically when a greyscale read finds nothing. Tile composition is unit-tested; real-world
+  reliability depends on screen and camera colour fidelity.
+- **Receive**: the camera view is now always mounted, which removes the "camera view could not be created" failure;
+  Start's camera icon morphs into a spinner (and the camera opens during it); Stop shows a "Stopping camera" spinner
+  moment; Auto focus indicator and toast are centred; the searching icon bounces far less; right-click / long-press
+  menus (copy video frame, picture-in-picture) are blocked on the viewfinder.
+- **Send**: Play/Pause icons cross-morph, Reset spins, Loop rotates, Fullscreen expand/collapse morphs; the four
+  fullscreen header chips stay on one line on phones.
+- **Haptics engine** (`src/lib/haptics.ts`): semantic patterns (tap, tick, select, toggle, start/stop, edge bump at the
+  first/last tab, code lock-on, progress milestones at 25/50/75%, success flourish, warning, error). Android uses
+  shaped vibration pulses; iOS 17.4+ uses the native switch haptic. A global listener gives every button a tap and
+  every slider fine ticks. Tied to the mute button.

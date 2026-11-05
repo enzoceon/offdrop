@@ -24,6 +24,7 @@ import {
   Activity,
   Expand,
   Sparkles,
+  Palette,
   Zap as ZapIcon,
 } from "lucide-react";
 import {
@@ -40,6 +41,7 @@ import { FramePipeline, PrepareCancelled, paintFrame, prepareFile, type Prepared
 import { BundleCancelled, buildZip } from "@/lib/zip-bundle";
 import { saveItem } from "@/lib/history";
 import { sfx } from "@/lib/feedback";
+import { haptics } from "@/lib/haptics";
 import { useWakeLock } from "@/lib/wake-lock";
 import { cn } from "@/lib/utils";
 import { MediaViewer, type ViewerItem } from "@/components/MediaViewer";
@@ -49,7 +51,7 @@ import { LaneGrid } from "@/components/LaneGrid";
 
 type SpeedTier = "Gentle" | "Normal" | "Fast" | "Turbo";
 type Phase = "bundle" | "compress" | "hash";
-type Lanes = 1 | 2 | 4 | 6 | 8;
+type Lanes = 1 | 2 | 4 | 6 | 8 | 9 | 12;
 
 const LANE_OPTIONS: { key: Lanes; label: string }[] = [
   { key: 1, label: "1×" },
@@ -57,6 +59,8 @@ const LANE_OPTIONS: { key: Lanes; label: string }[] = [
   { key: 4, label: "4×" },
   { key: 6, label: "6×" },
   { key: 8, label: "8×" },
+  { key: 9, label: "9×" },
+  { key: 12, label: "12×" },
 ];
 
 function useMediaQuery(query: string) {
@@ -111,6 +115,36 @@ function readDensity(): DensityKey {
   return "dense";
 }
 
+/** Play <-> Pause: both glyphs are always mounted and cross-rotate/scale into each other. */
+function PlayPauseIcon({ playing, className }: { playing: boolean; className?: string }) {
+  const base = "absolute inset-0 transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]";
+  return (
+    <span className={cn("relative inline-block", className ?? "h-4 w-4")} aria-hidden="true">
+      <Play
+        className={base}
+        fill="currentColor"
+        style={{ opacity: playing ? 0 : 1, transform: playing ? "rotate(90deg) scale(0.3)" : "rotate(0deg) scale(1)" }}
+      />
+      <Pause
+        className={base}
+        fill="currentColor"
+        style={{ opacity: playing ? 1 : 0, transform: playing ? "rotate(0deg) scale(1)" : "rotate(-90deg) scale(0.3)" }}
+      />
+    </span>
+  );
+}
+
+/** Two glyphs morphing into each other (used for fullscreen expand/collapse). */
+function SwapIcon({ on, a, b, className }: { on: boolean; a: ReactNode; b: ReactNode; className?: string }) {
+  const base = "absolute inset-0 grid place-items-center transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]";
+  return (
+    <span className={cn("relative inline-block", className ?? "h-4 w-4")} aria-hidden="true">
+      <span className={base} style={{ opacity: on ? 0 : 1, transform: on ? "scale(0.3) rotate(45deg)" : "scale(1)" }}>{a}</span>
+      <span className={base} style={{ opacity: on ? 1 : 0, transform: on ? "scale(1)" : "scale(0.3) rotate(-45deg)" }}>{b}</span>
+    </span>
+  );
+}
+
 function readFps(): number {
   try {
     const v = Number(localStorage.getItem(FPS_KEY));
@@ -147,6 +181,9 @@ export function Sender({ active = true }: { active?: boolean }) {
   // Default is always 4 codes at once (the fastest setting that stays readable on most screens).
   const [lanes, setLanes] = useState<Lanes>(4);
   const [switching, setSwitching] = useState<string | null>(null);
+  // EXPERIMENTAL: three independent QR codes per tile (R, G, B channels).
+  const [color, setColor] = useState(false);
+  const [resetSpin, setResetSpin] = useState(0);
   const switchingRef = useRef(false);
   const isLg = useMediaQuery("(min-width: 1024px)");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -180,9 +217,9 @@ export function Sender({ active = true }: { active?: boolean }) {
     setPreview(url);
   }
 
-  function installPipeline(prepared: { plan: StreamPlan; blob: Blob }, ec: "L" | "M") {
+  function installPipeline(prepared: { plan: StreamPlan; blob: Blob }, ec: "L" | "M", colorMode = color) {
     disposePipeline();
-    const pipeline = new FramePipeline(prepared.plan, prepared.blob, ec);
+    const pipeline = new FramePipeline(prepared.plan, prepared.blob, ec, colorMode);
     pipeline.onChange = () => {
       if (pipeline.error) {
         setQrError("A QR frame could not be generated. Remove the file and try again.");
@@ -271,7 +308,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       if (token !== pickTokenRef.current) return;
       preparedRef.current = prepared;
       setSavedBytes(prepared.savedBytes);
-      installPipeline(prepared, preset.ec);
+      installPipeline(prepared, preset.ec, color);
       setBusy(null);
       sfx.fileFound();
       void saveItem({
@@ -309,7 +346,17 @@ export function Sender({ active = true }: { active?: boolean }) {
     if (!prepared) return;
     const p = presetFor(next);
     announceSwitch(`${p.label} · ${formatBytes(p.chunk)} per code`);
-    installPipeline(prepared.rechunk(p.chunk), p.ec);
+    installPipeline(prepared.rechunk(p.chunk), p.ec, color);
+  }
+
+  function toggleColor() {
+    const prepared = preparedRef.current;
+    const next = !color;
+    setColor(next);
+    announceSwitch(next ? "Colour ×3 (beta) on" : "Colour mode off");
+    haptics.toggle(next);
+    sfx.toggleOn();
+    if (prepared && plan) installPipeline({ plan, blob: prepared.blob }, preset.ec, next);
   }
 
   /** Brief, visible acknowledgement while the new frames render (replaces the old loading state). */
@@ -347,6 +394,8 @@ export function Sender({ active = true }: { active?: boolean }) {
   // In dual mode every tick shows two consecutive frames side by side (2x the data per tick).
   // Several codes per tick only make sense where there is room: fullscreen, or the big desktop stage.
   const activeLanes: Lanes = expanded || isLg ? lanes : 1;
+  const stride = color ? 3 : 1; // frames consumed per tile
+  const step = activeLanes * stride; // sequence numbers consumed per tick
   useEffect(() => {
     const pipeline = pipelineRef.current;
     if (!plan || !pipeline) return;
@@ -358,7 +407,7 @@ export function Sender({ active = true }: { active?: boolean }) {
     pipeline.want(seqRef.current);
 
     const have = (n: number) => {
-      for (let i = 0; i < activeLanes; i++) if (!pipeline.get(n + i)) return false;
+      for (let i = 0; i < activeLanes; i++) if (!pipeline.get(n + i * stride)) return false;
       return true;
     };
 
@@ -367,7 +416,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       try {
         const multi = activeLanes > 1;
         for (let i = 0; i < activeLanes; i++) {
-          const frame = pipeline.get(n + i)!;
+          const frame = pipeline.get(n + i * stride)!;
           const main = mainRefs.current[i];
           const full = fullRefs.current[i];
           if (main) paintFrame(main, frame, multi ? 700 : 1000);
@@ -407,7 +456,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       }
 
       if (playing && now >= nextAt) {
-        const next = seqRef.current + activeLanes;
+        const next = seqRef.current + step;
         if (!loop && next >= passLength) {
           setPlaying(false);
           setSeq(seqRef.current);
@@ -435,7 +484,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       cancelAnimationFrame(raf);
       setSeq(seqRef.current);
     };
-  }, [plan, playing, fps, loop, passLength, expanded, activeLanes]);
+  }, [plan, playing, fps, loop, passLength, expanded, activeLanes, stride, step]);
 
   // Stop broadcasting when the user leaves the Send tab.
   useEffect(() => {
@@ -527,12 +576,12 @@ export function Sender({ active = true }: { active?: boolean }) {
   });
 
   const ready = Boolean(plan);
-  const tickRate = fps * activeLanes; // frames shown per second
+  const tickRate = fps * step; // frames shown per second
   const passSeconds = passLength / tickRate;
   const inFirstPass = seq < passLength;
-  const remainingSeconds = Math.max(0, (passLength - seq - activeLanes) / tickRate);
-  const progress = !plan ? 0 : inFirstPass ? Math.min(100, ((seq + activeLanes) / passLength) * 100) : 100;
-  const shownFrames = plan ? Math.min(totalData, Math.round(((seq + activeLanes) / passLength) * totalData)) : 0;
+  const remainingSeconds = Math.max(0, (passLength - seq - step) / tickRate);
+  const progress = !plan ? 0 : inFirstPass ? Math.min(100, ((seq + step) / passLength) * 100) : 100;
+  const shownFrames = plan ? Math.min(totalData, Math.round(((seq + step) / passLength) * totalData)) : 0;
   const isLarge = Boolean(file && file.size > LONG_TRANSFER_BYTES);
   const throughput = (plan?.chunk ?? preset.chunk) * tickRate;
   const payloadBytes = plan?.size ?? file?.size ?? 0;
@@ -820,7 +869,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       )}
     >
       {!playing && <span className="btn-sheen absolute inset-0" />}
-      {playing ? <Pause className="relative h-4 w-4" /> : <Play className="relative h-4 w-4" />}
+      <PlayPauseIcon playing={playing} className="relative h-4 w-4" />
       <span className="relative">{playing ? "Pause" : "Play"}</span>
     </button>
   );
@@ -833,7 +882,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       aria-label="Fullscreen QR"
       title="Fullscreen QR (F)"
     >
-      <Expand className="h-4 w-4" />
+      <SwapIcon on={expanded} a={<Expand className="h-4 w-4" />} b={<Minimize2 className="h-4 w-4" />} />
     </button>
   );
   const loopButton = (
@@ -848,7 +897,10 @@ export function Sender({ active = true }: { active?: boolean }) {
       aria-pressed={loop}
       title="Keep sending repair frames after the first pass (L)"
     >
-      <Repeat2 className="h-4 w-4" />
+      <Repeat2
+        className="h-4 w-4 transition-transform duration-500 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+        style={{ transform: loop ? "rotate(180deg)" : "rotate(0deg)" }}
+      />
     </button>
   );
   const speedSlider = (
@@ -893,11 +945,17 @@ export function Sender({ active = true }: { active?: boolean }) {
         {loopButton}
         {playButton}
         <button
-          onClick={resetPlayback}
+          onClick={() => {
+            setResetSpin((n) => n + 1);
+            resetPlayback();
+          }}
           className="glass grid h-11 w-11 shrink-0 place-items-center rounded-2xl transition-transform active:scale-90"
           aria-label="Reset"
         >
-          <RotateCcw className="h-4 w-4" />
+          <RotateCcw
+            className="h-4 w-4 transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]"
+            style={{ transform: `rotate(${-360 * resetSpin}deg)` }}
+          />
         </button>
         {fullscreenButton}
       </div>
@@ -919,10 +977,16 @@ export function Sender({ active = true }: { active?: boolean }) {
         {loopButton}
         {playButton}
         <button
-          onClick={resetPlayback}
+          onClick={() => {
+            setResetSpin((n) => n + 1);
+            resetPlayback();
+          }}
           className="glass flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl py-3 text-sm font-bold transition-transform active:scale-95"
         >
-          <RotateCcw className="h-4 w-4" />
+          <RotateCcw
+            className="h-4 w-4 transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]"
+            style={{ transform: `rotate(${-360 * resetSpin}deg)` }}
+          />
           Reset
         </button>
         {fullscreenButton}
@@ -991,7 +1055,7 @@ export function Sender({ active = true }: { active?: boolean }) {
             aria-label="Fullscreen QR"
           >
             {/* QR area: 1-8 codes, auto-arranged to be as large as the screen allows. */}
-            <div className="row-start-2 min-h-0 min-w-0 p-3 sm:p-5 landscape:col-start-1 landscape:row-span-2 landscape:row-start-1">
+            <div className={cn("row-start-2 min-h-0 min-w-0 landscape:col-start-1 landscape:row-span-2 landscape:row-start-1", activeLanes > 1 ? "p-1.5 sm:p-4" : "p-3 sm:p-5")}>
               <LaneGrid count={activeLanes} refs={fullRefs} live={playing} gap={12} switching={Boolean(switching)} />
             </div>
 
@@ -1013,16 +1077,18 @@ export function Sender({ active = true }: { active?: boolean }) {
                   <Minimize2 className="h-5 w-5" />
                 </button>
               </div>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-nowrap items-center gap-1 overflow-hidden">
                 <PChip icon={<HardDrive className="h-3 w-3" />}>{formatBytes(file.size)}</PChip>
                 <PChip icon={<Layers3 className="h-3 w-3" />}>{plan.total} frames</PChip>
-                <PChip icon={<ZapIcon className="h-3 w-3" />}>{activeLanes}× · {fps} fps</PChip>
-                {savedBytes > 0 && (
-                  <PChip icon={<PackageOpen className="h-3 w-3" />} tone="good">
-                    −{Math.round((savedBytes / file.size) * 100)}% compressed
-                  </PChip>
-                )}
+                <PChip icon={<ZapIcon className="h-3 w-3" />}>{activeLanes}×{color ? "·RGB" : ""} · {fps} fps</PChip>
                 <PChip icon={<Gauge className="h-3 w-3" />}>{preset.label}</PChip>
+                {savedBytes > 0 && (
+                  <span className="hidden sm:contents">
+                    <PChip icon={<PackageOpen className="h-3 w-3" />} tone="good">
+                      −{Math.round((savedBytes / file.size) * 100)}%
+                    </PChip>
+                  </span>
+                )}
               </div>
             </header>
 
@@ -1056,7 +1122,7 @@ export function Sender({ active = true }: { active?: boolean }) {
                     className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/40 transition-transform active:scale-90"
                     aria-label={playing ? "Pause" : "Play"}
                   >
-                    {playing ? <Pause className="h-6 w-6" fill="currentColor" /> : <Play className="ml-0.5 h-6 w-6" fill="currentColor" />}
+                    <PlayPauseIcon playing={playing} className="h-6 w-6" />
                   </button>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline justify-between gap-2">
@@ -1105,6 +1171,20 @@ export function Sender({ active = true }: { active?: boolean }) {
                       sfx.tick();
                     }}
                   />
+                  <button
+                    type="button"
+                    onClick={toggleColor}
+                    aria-pressed={color}
+                    className={cn(
+                      "flex items-center justify-between gap-2 rounded-2xl px-3 py-2 text-[11px] font-bold transition-all active:scale-[0.98]",
+                      color ? "bg-gradient-to-r from-fuchsia-500/80 via-amber-400/80 to-cyan-400/80 text-white" : "bg-white/10 text-white/80",
+                    )}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Palette className="h-3.5 w-3.5" /> Colour ×3 <span className="rounded bg-black/30 px-1 text-[9px]">BETA</span>
+                    </span>
+                    <span>{color ? "On" : "Off"}</span>
+                  </button>
                   <GlideSegment
                     ariaLabel="QR density"
                     tone="dark"
@@ -1130,7 +1210,7 @@ function PChip({ icon, children, tone }: { icon: ReactNode; children: ReactNode;
   return (
     <span
       className={cn(
-        "flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold",
+        "flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-1 text-[10px] font-bold",
         tone === "good" ? "bg-emerald-400/20 text-emerald-300" : "bg-white/10 text-white/80",
       )}
     >

@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { haptics } from "@/lib/haptics";
 
 /**
  * Horizontal pager with finger-following drag.
@@ -43,6 +44,7 @@ export function Pager({
     vx: number;
     axis: "x" | "y" | null;
     width: number;
+    edgeHit: boolean;
   } | null>(null);
 
   lockedRef.current = locked;
@@ -127,6 +129,7 @@ export function Pager({
         vx: 0,
         axis: null,
         width: root.clientWidth || window.innerWidth,
+        edgeHit: false,
       };
     };
 
@@ -155,6 +158,11 @@ export function Pager({
 
       let pos = indexRef.current - dx / d.width;
       // Rubber band past the first/last panel: a short, heavy stretch, never a real move.
+      const overshoot = pos < 0 || pos > count - 1;
+      if (overshoot && !d.edgeHit) {
+        d.edgeHit = true;
+        haptics.edge(); // a little bump when you hit the end
+      }
       if (pos < 0) pos = Math.max(-0.1, pos * 0.16);
       if (pos > count - 1) pos = Math.min(count - 1 + 0.1, count - 1 + (pos - (count - 1)) * 0.16);
       paint(pos, true);
@@ -178,7 +186,10 @@ export function Pager({
       else if (travelled > 0.2 || d.vx > 0.5) next -= 1;
       next = Math.max(0, Math.min(count - 1, next));
       // Never commit a move past either end (that was the rubber band, not a real swipe).
-      if (next !== indexRef.current) onIndexChange(next);
+      if (next !== indexRef.current) {
+        haptics.select();
+        onIndexChange(next);
+      }
       else paint(indexRef.current, false);
     };
 

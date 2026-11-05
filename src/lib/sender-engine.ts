@@ -7,7 +7,7 @@ import {
   type StreamPlan,
 } from "./qr-protocol";
 import { BlobSource } from "./blob-source";
-import { buildFrame, QUIET, type BuiltFrame } from "./frame-core";
+import { buildColorFrame, buildFrame, QUIET, type BuiltFrame } from "./frame-core";
 
 /** Files up to this size are held in memory for instant random access. */
 const IN_MEMORY_LIMIT = 96 * 1024 * 1024;
@@ -187,6 +187,8 @@ export class FramePipeline {
   private wanted = 0;
   private disposed = false;
   private pumpingInline = false;
+  /** Frames consumed per tile: 1 normally, 3 in colour mode. */
+  readonly stride: number;
   /** Set when a frame could not be built; the UI shows it and stops playback. */
   error: Error | null = null;
   onChange: (() => void) | null = null;
@@ -195,8 +197,11 @@ export class FramePipeline {
     private plan: StreamPlan,
     private blob: Blob,
     private ec: "L" | "M" = "M",
+    /** EXPERIMENTAL: one tile = 3 frames (R, G, B channels). */
+    private color = false,
     private lookahead = 120,
   ) {
+    this.stride = color ? 3 : 1;
     this.startWorkers();
   }
 
@@ -208,7 +213,7 @@ export class FramePipeline {
         const worker = new Worker(new URL("./frame-builder.worker.ts", import.meta.url), { type: "module" });
         worker.onmessage = (event: MessageEvent) => this.onWorkerMessage(i, event.data);
         worker.onerror = () => this.fallBackToInline();
-        worker.postMessage({ type: "init", plan: this.plan, blob: this.blob, ec: this.ec });
+        worker.postMessage({ type: "init", plan: this.plan, blob: this.blob, ec: this.ec, color: this.color });
         this.workers.push(worker);
         this.load.push(0);
       }
@@ -271,7 +276,7 @@ export class FramePipeline {
   private pump() {
     if (this.disposed) return;
     if (this.inline) return void this.pumpInline();
-    for (let s = this.wanted; s <= this.wanted + this.lookahead; s++) {
+    for (let s = this.wanted; s <= this.wanted + this.lookahead; s += this.stride) {
       if (this.ready.has(s) || this.inflight.has(s)) continue;
       // Least-loaded worker, capped so we don't buffer unboundedly.
       let best = 0;
@@ -290,14 +295,16 @@ export class FramePipeline {
       let built = 0;
       while (!this.disposed && this.inline) {
         let seq = -1;
-        for (let s = this.wanted; s <= this.wanted + Math.min(this.lookahead, 12); s++) {
+        for (let s = this.wanted; s <= this.wanted + Math.min(this.lookahead, 12 * this.stride); s += this.stride) {
           if (!this.ready.has(s)) {
             seq = s;
             break;
           }
         }
         if (seq < 0) break;
-        const frame = await buildFrame(this.plan, this.inline, seq, this.ec);
+        const frame = this.color
+          ? await buildColorFrame(this.plan, this.inline, seq, this.ec)
+          : await buildFrame(this.plan, this.inline, seq, this.ec);
         if (this.disposed) return;
         if (seq >= this.wanted) this.ready.set(seq, frame);
         this.onChange?.();

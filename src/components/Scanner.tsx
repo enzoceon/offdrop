@@ -35,6 +35,7 @@ import {
 import { saveItem } from "@/lib/history";
 import { MediaViewer, type ViewerItem } from "@/components/MediaViewer";
 import { sfx } from "@/lib/feedback";
+import { haptics } from "@/lib/haptics";
 import { useWakeLock } from "@/lib/wake-lock";
 
 /* ----------------------------------------------------------------------------
@@ -108,7 +109,9 @@ const FRAME_FIT = 0.8; // all codes may fill at most 80% of the zoomed window
 const FRAME_DWELL_MS = 700; // a new zoom level must be wanted this long before we move
 const FRAME_STEP_MS = 90;
 const FRAME_LOST_MS = 2500;
-const MAX_BOXES = 8;
+const MAX_BOXES = 16;
+const LAUNCH_MIN_MS = 750; // the Start button's spinner stays long enough to be seen
+const STOP_MIN_MS = 650; // same for Stop
 const PING_MS = 800;
 
 function sleep(ms: number) {
@@ -375,8 +378,13 @@ export function Scanner({
   const stoppingRef = useRef(false);
   const activeRef = useRef(false);
   const flippingRef = useRef(false);
+  const colorModeRef = useRef(false);
+  const lastColorAtRef = useRef(0);
+  const lastCountRef = useRef(0);
+  const milestoneRef = useRef(0);
 
   const [active, setActive] = useState(false);
+  const [launching, setLaunching] = useState(false);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -420,7 +428,13 @@ export function Scanner({
   }
 
   /** jsQR in a small Web Worker pool; falls back to the main thread if workers are unavailable. */
-  function decodeAsync(ctx: CanvasRenderingContext2D, w: number, h: number, deep: boolean): Promise<ScanResult[]> {
+  function decodeAsync(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    deep: boolean,
+    channels = false,
+  ): Promise<ScanResult[]> {
     if (workersRef.current === undefined) {
       try {
         const pool: Worker[] = [];
@@ -456,7 +470,7 @@ export function Scanner({
         window.clearTimeout(timer);
         resolve(r);
       });
-      pool[id % pool.length].postMessage({ id, data: img.data.buffer, w, h, deep }, [img.data.buffer]);
+      pool[id % pool.length].postMessage({ id, data: img.data.buffer, w, h, deep, channels }, [img.data.buffer]);
     });
   }
 
@@ -506,6 +520,7 @@ export function Scanner({
       const detector = getDetector();
       const canvas = canvasFor(slot);
       decodeFrameRef.current += 1;
+      const frameNo = decodeFrameRef.current;
       const W = video.videoWidth;
       const H = video.videoHeight;
       const v = viewRef.current;
@@ -516,6 +531,8 @@ export function Scanner({
       const expected = expectedRef.current;
       // We have recently seen several codes: if this frame finds fewer, look harder for the missing ones.
       const wantMore = expected.n > 1 && now - expected.t < 2500;
+      // A recent colour (RGB) stream? Then read the channels first.
+      const colorFirst = colorModeRef.current && now - lastColorAtRef.current < 2500;
 
       const collect = (raw: string, pts: Point[] | undefined, map: (p: Point) => Point) => {
         if (!raw || seenValues.has(raw)) return;
@@ -526,48 +543,100 @@ export function Scanner({
 
       if (detector) {
         try {
-          let source: CanvasImageSource = video;
-          let cw = W;
-          let ch = H;
-          if (zoomed) {
-            const scale = Math.min(1, NATIVE_MAX_EDGE / Math.max(cropW, cropH));
-            cw = Math.max(1, Math.round(cropW * scale));
-            ch = Math.max(1, Math.round(cropH * scale));
+          const runMono = async () => {
+            let source: CanvasImageSource = video;
+            let cw = W;
+            let ch = H;
+            if (zoomed) {
+              const scale = Math.min(1, NATIVE_MAX_EDGE / Math.max(cropW, cropH));
+              cw = Math.max(1, Math.round(cropW * scale));
+              ch = Math.max(1, Math.round(cropH * scale));
+              if (canvas.width !== cw) canvas.width = cw;
+              if (canvas.height !== ch) canvas.height = ch;
+              const ctx = canvas.getContext("2d", { willReadFrequently: true });
+              if (!ctx) return;
+              ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cw, ch);
+              source = canvas;
+            }
+            const mapMain = (p: Point): Point =>
+              zoomed ? { x: sx + (p.x * cropW) / cw, y: sy + (p.y * cropH) / ch } : { x: p.x, y: p.y };
+            const found = await detector.detect(source);
+            if (!scanningRef.current) return;
+            for (const item of found) collect(item.rawValue, item.cornerPoints, mapMain);
+
+            // Recovery pass: re-detect on four overlapping, upscaled quarters to catch small/blurred codes.
+            if (wantMore && quads.length < expected.n && frameNo % 2 === 0) {
+              const rw = cropW * 0.6;
+              const rh = cropH * 0.6;
+              const scale = Math.min(1, NATIVE_MAX_EDGE / Math.max(rw, rh));
+              const qw = Math.max(1, Math.round(rw * scale));
+              const qh = Math.max(1, Math.round(rh * scale));
+              for (const [fx, fy] of [[0, 0], [0.4, 0], [0, 0.4], [0.4, 0.4]] as const) {
+                if (!scanningRef.current || quads.length >= expected.n) break;
+                const rx = sx + cropW * fx;
+                const ry = sy + cropH * fy;
+                if (canvas.width !== qw) canvas.width = qw;
+                if (canvas.height !== qh) canvas.height = qh;
+                const ctx = canvas.getContext("2d", { willReadFrequently: true });
+                if (!ctx) break;
+                ctx.drawImage(video, rx, ry, rw, rh, 0, 0, qw, qh);
+                const part = await detector.detect(canvas);
+                for (const item of part) {
+                  collect(item.rawValue, item.cornerPoints, (p) => ({ x: rx + (p.x * rw) / qw, y: ry + (p.y * rh) / qh }));
+                }
+              }
+            }
+          };
+
+          /**
+           * Colour (RGB) streams: three independent QR codes share each tile, one per colour channel.
+           * Split the camera image into R, G and B, stretch the contrast of each (cameras bleed light
+           * between channels), and detect on each as a plain greyscale image.
+           */
+          const runChannels = async () => {
+            const scale = Math.min(1, 1280 / Math.max(cropW, cropH));
+            const cw = Math.max(1, Math.round(cropW * scale));
+            const ch = Math.max(1, Math.round(cropH * scale));
             if (canvas.width !== cw) canvas.width = cw;
             if (canvas.height !== ch) canvas.height = ch;
             const ctx = canvas.getContext("2d", { willReadFrequently: true });
             if (!ctx) return;
             ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cw, ch);
-            source = canvas;
-          }
-          const mapMain = (p: Point): Point =>
-            zoomed ? { x: sx + (p.x * cropW) / cw, y: sy + (p.y * cropH) / ch } : { x: p.x, y: p.y };
-          const found = await detector.detect(source);
-          if (!scanningRef.current) return;
-          for (const item of found) collect(item.rawValue, item.cornerPoints, mapMain);
-
-          // Recovery pass: re-detect on four overlapping, upscaled quarters to catch small/blurred codes.
-          if (wantMore && quads.length < expected.n && decodeFrameRef.current % 2 === 0) {
-            const rw = cropW * 0.6;
-            const rh = cropH * 0.6;
-            const scale = Math.min(1, NATIVE_MAX_EDGE / Math.max(rw, rh));
-            const qw = Math.max(1, Math.round(rw * scale));
-            const qh = Math.max(1, Math.round(rh * scale));
-            for (const [fx, fy] of [[0, 0], [0.4, 0], [0, 0.4], [0.4, 0.4]] as const) {
-              if (!scanningRef.current || quads.length >= expected.n) break;
-              const rx = sx + cropW * fx;
-              const ry = sy + cropH * fy;
-              if (canvas.width !== qw) canvas.width = qw;
-              if (canvas.height !== qh) canvas.height = qh;
-              const ctx = canvas.getContext("2d", { willReadFrequently: true });
-              if (!ctx) break;
-              ctx.drawImage(video, rx, ry, rw, rh, 0, 0, qw, qh);
+            const img = ctx.getImageData(0, 0, cw, ch);
+            const d = img.data;
+            const out = ctx.createImageData(cw, ch);
+            const o = out.data;
+            for (let k = 0; k < 3; k++) {
+              if (!scanningRef.current) return;
+              let mn = 255;
+              let mx = 0;
+              for (let i = k; i < d.length; i += 4 * 37) {
+                const val = d[i];
+                if (val < mn) mn = val;
+                if (val > mx) mx = val;
+              }
+              const gain = 255 / Math.max(32, mx - mn);
+              for (let i = 0; i < d.length; i += 4) {
+                const val = Math.max(0, Math.min(255, (d[i + k] - mn) * gain));
+                o[i] = o[i + 1] = o[i + 2] = val;
+                o[i + 3] = 255;
+              }
+              ctx.putImageData(out, 0, 0);
               const part = await detector.detect(canvas);
               for (const item of part) {
-                collect(item.rawValue, item.cornerPoints, (p) => ({ x: rx + (p.x * rw) / qw, y: ry + (p.y * rh) / qh }));
+                collect(item.rawValue, item.cornerPoints, (p) => ({ x: sx + (p.x * cropW) / cw, y: sy + (p.y * cropH) / ch }));
               }
             }
-          }
+            if (quads.length) {
+              colorModeRef.current = true;
+              lastColorAtRef.current = now;
+            }
+          };
+
+          if (colorFirst) await runChannels();
+          if (quads.length === 0) await runMono();
+          // Nothing readable in greyscale for a moment? Maybe it is a colour stream: try the channels now and then.
+          if (quads.length === 0 && !colorFirst && frameNo % 5 === 2) await runChannels();
         } catch (err) {
           console.warn("Native QR detector failed, falling back to jsQR:", err);
           detectorRef.current = null;
@@ -581,13 +650,26 @@ export function Scanner({
         if (canvas.height !== ch) canvas.height = ch;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) return;
-        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cw, ch);
-        const frameNo = decodeFrameRef.current;
+        const mapJs = (p: Point): Point => ({ x: sx + (p.x * cropW) / cw, y: sy + (p.y * cropH) / ch });
         const deep = (!boxVisibleRef.current ? frameNo % 3 === 0 : frameNo % 14 === 0) || (wantMore && frameNo % 2 === 0);
-        const codes = await decodeAsync(ctx, cw, ch, deep);
-        if (!scanningRef.current) return;
-        for (const code of codes) {
-          collect(code.data, code.corners, (p) => ({ x: sx + (p.x * cropW) / cw, y: sy + (p.y * cropH) / ch }));
+        if (colorFirst) {
+          ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cw, ch);
+          for (const code of await decodeAsync(ctx, cw, ch, true, true)) collect(code.data, code.corners, mapJs);
+          if (quads.length) lastColorAtRef.current = now;
+        }
+        if (quads.length === 0) {
+          ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cw, ch);
+          const codes = await decodeAsync(ctx, cw, ch, deep);
+          if (!scanningRef.current) return;
+          for (const code of codes) collect(code.data, code.corners, mapJs);
+        }
+        if (quads.length === 0 && !colorFirst && frameNo % 5 === 2) {
+          ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cw, ch);
+          for (const code of await decodeAsync(ctx, cw, ch, true, true)) collect(code.data, code.corners, mapJs);
+          if (quads.length) {
+            colorModeRef.current = true;
+            lastColorAtRef.current = now;
+          }
         }
       }
       frameErrorCountRef.current = 0;
@@ -598,6 +680,8 @@ export function Scanner({
       if (n > 0) {
         lastSeenQrRef.current = now;
         boxVisibleRef.current = true;
+        if (lastCountRef.current === 0) haptics.lock(); // first code of this sighting: a little click
+        lastCountRef.current = n;
         // Tracking is applied straight to the DOM (no React render) so the outline follows the code exactly.
         applyDetections(quads, W, H);
         setCodeCount((prev) => (prev === n ? prev : n));
@@ -605,6 +689,7 @@ export function Scanner({
       } else {
         if (boxVisibleRef.current && now - lastSeenQrRef.current > 250) {
           boxVisibleRef.current = false;
+          lastCountRef.current = 0;
           applyDetections(null, W, H);
           setCodeCount(0);
         }
@@ -830,6 +915,11 @@ export function Scanner({
     progressCommitRef.current = now;
     const frac = t.decoder.progress;
     pctRef.current = frac * 100;
+    const step = frac >= 0.75 ? 3 : frac >= 0.5 ? 2 : frac >= 0.25 ? 1 : 0;
+    if (step > milestoneRef.current && frac < 1) {
+      milestoneRef.current = step;
+      haptics.milestone(step as 1 | 2 | 3);
+    }
     const elapsed = (Date.now() - t.startedAt) / 1000;
 
     // Rate is measured over the LAST ~10 seconds of real progress, smoothed: it follows reality
@@ -878,6 +968,7 @@ export function Scanner({
     samplesRef.current = [];
     etaRateRef.current = 0;
     pctRef.current = 0;
+    milestoneRef.current = 0;
     window.clearTimeout(nameTimerRef.current);
     setError(null);
     setPaused(null);
@@ -978,6 +1069,7 @@ export function Scanner({
       const mime = t.mime || "application/octet-stream";
       const blob = new Blob([bytes as BlobPart], { type: mime });
       sfx.success();
+      haptics.success();
 
       // History is best-effort: a full disk must never cost the user the file they just received.
       try {
@@ -1004,7 +1096,7 @@ export function Scanner({
       seenRef.current.clear();
       setScanInfo(null);
       setProgress(EMPTY_PROGRESS);
-      await stop(true);
+      await stop(false); // straight to the result card: no extra waiting
       onSaved();
     } catch (e) {
       transferRef.current = null;
@@ -1042,22 +1134,25 @@ export function Scanner({
     facingRef.current = facingMode;
     setFacing(facingMode);
     setError(null);
+    setLaunching(true); // the Start button's camera icon turns into a spinner
     try {
       // If the previous session is still shutting down, wait for it instead of silently doing nothing.
-      for (let i = 0; i < 60 && stoppingRef.current; i++) await sleep(25);
+      for (let i = 0; i < 80 && stoppingRef.current; i++) await sleep(25);
       if (doneUrlRef.current) {
         URL.revokeObjectURL(doneUrlRef.current);
         doneUrlRef.current = null;
       }
       setDone(null);
-      setStarting(true);
       finishingRef.current = false;
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera permission is unavailable in this browser.");
       setFastDecoder(Boolean(getDetector()));
-      const stream = await openCameraStream(facingMode);
-      // The viewfinder <video> mounts after setStarting(true): wait (generously) for it to exist.
-      for (let i = 0; i < 125 && !videoRef.current; i++) await sleep(16);
-      if (!videoRef.current) throw new Error("The camera view could not be created. Please try again.");
+      // Open the camera while the spinner plays; hold the moment for at least LAUNCH_MIN_MS.
+      const [stream] = await Promise.all([openCameraStream(facingMode), sleep(LAUNCH_MIN_MS)]);
+      // The viewfinder (and its <video>) is always mounted, so there is nothing to wait for.
+      setStarting(true);
+      setLaunching(false);
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      if (!videoRef.current) throw new Error("The camera view is unavailable. Please reload the page.");
       await attachStream(stream);
       await sleep(CAMERA_TRANSITION_MS);
       scanningRef.current = true;
@@ -1067,8 +1162,11 @@ export function Scanner({
       learnedRef.current = 0;
       expectedRef.current = { n: 0, t: 0 };
       smoothRef.current = null;
+      colorModeRef.current = false;
+      lastCountRef.current = 0;
       setActive(true);
       setStarting(false);
+      haptics.start();
       cancelTick();
       tick();
     } catch (e) {
@@ -1076,9 +1174,11 @@ export function Scanner({
       streamRef.current = null;
       scanningRef.current = false;
       activeRef.current = false;
+      setLaunching(false);
       setStarting(false);
       setStopping(false);
       setActive(false);
+      haptics.error();
       setError(e instanceof Error ? e.message : "Camera unavailable. Grant camera permission and retry.");
     } finally {
       busyRef.current = false;
@@ -1086,39 +1186,24 @@ export function Scanner({
   }
 
   async function stop(showStopping = false) {
-    // Take effect IMMEDIATELY (the button must feel instant), then tidy up.
+    // Take effect IMMEDIATELY (the button must feel instant), then show the moment.
+    const wasLive = activeRef.current || Boolean(streamRef.current);
     scanningRef.current = false;
     activeRef.current = false;
     stoppingRef.current = true;
     cancelTick();
-    const shouldShowStopping = showStopping && (active || starting || Boolean(streamRef.current));
+    const shouldShowStopping = showStopping && wasLive;
     if (shouldShowStopping) {
       setStopping(true);
       setStarting(false);
+      haptics.stop();
     }
-    applyDetections(null, 1, 1);
     finishingRef.current = false;
     window.clearTimeout(nameTimerRef.current);
     nameTimerRef.current = 0;
-    // An unfinished transfer is kept in memory so the user can resume without losing progress.
-    const t = transferRef.current;
-    if (t && !t.decoder.complete && t.decoder.count > 0) {
-      setPaused({ name: t.name ?? "Incoming file", size: t.meta.origSize, frac: t.decoder.progress });
-    } else {
-      transferRef.current = null;
-      setPaused(null);
-    }
-    seenRef.current.clear();
-    setActive(false);
-    setStarting(false);
-    setCodeCount(0);
-    setScanInfo(null);
-    setProgress(EMPTY_PROGRESS);
-    setFlipping(false);
-    flippingRef.current = false;
-    commitView({ cx: 0.5, cy: 0.5, z: 1 });
-    boxVisibleRef.current = false;
-    cancelTick();
+    applyDetections(null, 1, 1);
+
+    // Camera off right away (privacy + the LED), then pause the preview.
     const video = videoRef.current;
     if (video) {
       try {
@@ -1136,6 +1221,30 @@ export function Scanner({
       }
     });
     streamRef.current = null;
+
+    // An unfinished transfer is kept in memory so the user can resume without losing progress.
+    const t = transferRef.current;
+    if (t && !t.decoder.complete && t.decoder.count > 0) {
+      setPaused({ name: t.name ?? "Incoming file", size: t.meta.origSize, frac: t.decoder.progress });
+    } else {
+      transferRef.current = null;
+      setPaused(null);
+    }
+    seenRef.current.clear();
+
+    // Hold the spinner long enough to be felt, then switch the UI back.
+    if (shouldShowStopping) await sleep(STOP_MIN_MS);
+    setActive(false);
+    setStarting(false);
+    setCodeCount(0);
+    setScanInfo(null);
+    setProgress(EMPTY_PROGRESS);
+    setFlipping(false);
+    flippingRef.current = false;
+    commitView({ cx: 0.5, cy: 0.5, z: 1 });
+    boxVisibleRef.current = false;
+    lastCountRef.current = 0;
+    milestoneRef.current = 0;
     // Give the OS a moment to release the device so an immediate restart works (desktop webcams).
     await sleep(120);
     setStopping(false);
@@ -1297,7 +1406,7 @@ export function Scanner({
   /* ---------------------------------------------------------------- render */
 
   const pct = progress.total ? Math.min(100, progress.frac * 100) : 0;
-  const live = active || starting;
+  const live = active || starting || stopping;
   const hasProgress = progress.total > 0;
   const named = scanInfo?.named ?? false;
   const speedLabel = progress.rate > 0 ? `${formatBytes(Math.round(progress.rate))}/s` : null;
@@ -1385,12 +1494,25 @@ export function Scanner({
                 sfx.unlock();
                 void start();
               }}
-              disabled={starting}
-              className="group relative mt-7 flex items-center gap-2 overflow-hidden rounded-full bg-gradient-to-br from-primary to-accent px-8 py-4 text-sm font-bold text-primary-foreground shadow-xl shadow-primary/30 transition-transform duration-200 active:scale-95 disabled:opacity-80"
+              disabled={launching || starting}
+              className="group relative mt-7 flex items-center gap-2 overflow-hidden rounded-full bg-gradient-to-br from-primary to-accent px-8 py-4 text-sm font-bold text-primary-foreground shadow-xl shadow-primary/30 transition-transform duration-200 active:scale-95 disabled:opacity-90"
             >
               <span className="btn-sheen absolute inset-0" />
-              {paused ? <RotateCcw className="relative h-4 w-4" /> : <Camera className="relative h-4 w-4" />}
-              <span className="relative">{paused ? "Resume scanning" : "Start camera"}</span>
+              <span className="relative inline-block h-4 w-4" aria-hidden="true">
+                <span
+                  className="absolute inset-0 grid place-items-center transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                  style={{ opacity: launching ? 0 : 1, transform: launching ? "scale(0.2) rotate(120deg)" : "scale(1)" }}
+                >
+                  {paused ? <RotateCcw className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
+                </span>
+                <span
+                  className="absolute inset-0 grid place-items-center transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                  style={{ opacity: launching ? 1 : 0, transform: launching ? "scale(1)" : "scale(0.2) rotate(-120deg)" }}
+                >
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                </span>
+              </span>
+              <span className="relative">{launching ? "Starting camera…" : paused ? "Resume scanning" : "Start camera"}</span>
             </button>
 
             <div className="mt-7 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold text-muted-foreground">
@@ -1412,19 +1534,30 @@ export function Scanner({
       )}
 
       {/* ============================ LIVE: viewfinder + status ============================ */}
-      {live && !done && (
-        <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-2.5 px-4 pb-1 md:px-8 lg:grid lg:grid-cols-[minmax(0,1.5fr)_minmax(21rem,1fr)] lg:items-center lg:gap-8 lg:py-1">
+      {/* Always mounted (hidden when idle): the <video> element can never be "missing" when the camera starts. */}
+      {(
+        <div className={`mx-auto min-h-0 w-full max-w-6xl flex-1 flex-col gap-2.5 px-4 pb-1 md:px-8 lg:grid lg:grid-cols-[minmax(0,1.5fr)_minmax(21rem,1fr)] lg:items-center lg:gap-8 lg:py-1 ${live && !done ? "flex" : "hidden"}`}>
           {/* The viewfinder is a bounded window, never the whole screen. */}
           <div
             ref={stageRef}
             data-no-swipe
-            className={`relative min-h-[12rem] flex-1 overflow-hidden rounded-[1.75rem] bg-black shadow-2xl shadow-black/30 ring-1 ring-white/10 transition-shadow duration-500 lg:h-full lg:max-h-[calc(100dvh-13rem)] lg:min-h-0 lg:flex-none lg:aspect-[4/3] lg:w-full lg:self-center ${
+            onContextMenu={(e) => e.preventDefault()}
+            className={`relative min-h-[12rem] flex-1 select-none [-webkit-touch-callout:none] overflow-hidden rounded-[1.75rem] bg-black shadow-2xl shadow-black/30 ring-1 ring-white/10 transition-shadow duration-500 lg:h-full lg:max-h-[calc(100dvh-13rem)] lg:min-h-0 lg:flex-none lg:aspect-[4/3] lg:w-full lg:self-center ${
               autoAssist ? "autofocus-ring" : ""
             }`}
           >
             {/* Video + exact code outlines share ONE transformed layer so they always stay aligned. */}
             <div className="absolute inset-0 will-change-transform" style={viewTransform(view)}>
-              <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover" />
+              <video
+                ref={videoRef}
+                playsInline
+                muted
+                disablePictureInPicture
+                disableRemotePlayback
+                controlsList="nodownload noplaybackrate noremoteplayback"
+                onContextMenu={(e) => e.preventDefault()}
+                className="pointer-events-none absolute inset-0 h-full w-full select-none object-cover"
+              />
               <svg
                 className="scanner-corners lock-svg pointer-events-none absolute inset-0 h-full w-full"
                 viewBox={`0 0 ${videoSize.w} ${videoSize.h}`}
@@ -1446,6 +1579,12 @@ export function Scanner({
               <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/60 text-white backdrop-blur-sm">
                 <Loader2 className="h-9 w-9 animate-spin" />
                 <span className="text-sm font-semibold">Opening camera…</span>
+              </div>
+            )}
+            {stopping && (
+              <div className="animate-pop-in pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/70 text-white backdrop-blur-md">
+                <Loader2 className="h-10 w-10 animate-spin text-primary" />
+                <span className="text-sm font-bold">Stopping camera…</span>
               </div>
             )}
 
@@ -1485,13 +1624,13 @@ export function Scanner({
                 {/* Auto focus: a focus square where the lens is aimed, and a confirmation toast. */}
                 {focusPing && <span key={focusPing.key} className="focus-ping" style={{ left: `${focusPing.x}%`, top: `${focusPing.y}%` }} />}
                 {assistToast && (
-                  <div className="switch-toast pointer-events-none absolute bottom-4 left-1/2 z-20 flex items-center gap-2 whitespace-nowrap rounded-full bg-black/70 px-3.5 py-2 text-[11px] font-bold text-white shadow-lg backdrop-blur">
+                  <div className="switch-toast pointer-events-none absolute bottom-14 left-1/2 z-20 flex items-center gap-2 whitespace-nowrap rounded-full bg-black/70 px-3.5 py-2 text-[11px] font-bold text-white shadow-lg backdrop-blur">
                     <Focus className="h-3.5 w-3.5 text-primary" />
                     {assistToast}
                   </div>
                 )}
                 {autoAssist && (
-                  <span className="hud-card pointer-events-none absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-extrabold text-white">
+                  <span className="hud-card pointer-events-none absolute inset-x-0 bottom-3 mx-auto flex w-fit items-center gap-1.5 rounded-full px-3 py-1.5 text-[10px] font-extrabold text-white">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
                     AUTO FOCUS{view.z > 1.05 ? ` · ${view.z.toFixed(2)}×` : ""}
                   </span>

@@ -639,8 +639,8 @@ html, body { overscroll-behavior: none; }
 @keyframes indeterminate { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 .chunk-wave { animation: chunk-wave 1.6s ease-in-out infinite; }
 @keyframes chunk-wave { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.9; } }
-@keyframes scan-bob { 0%, 100% { transform: translateY(-3px); } 50% { transform: translateY(3px); } }
-.animate-scan-bob { animation: scan-bob 1s ease-in-out infinite; }
+@keyframes scan-bob { 0%, 100% { transform: translateY(-1px); opacity: 0.85; } 50% { transform: translateY(1px); opacity: 1; } }
+.animate-scan-bob { animation: scan-bob 2.2s ease-in-out infinite; }
 
 /* Auto focus: obvious, felt feedback. */
 .autofocus-ring { box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-primary) 85%, transparent), 0 0 28px color-mix(in oklab, var(--color-primary) 45%, transparent) !important; }
@@ -670,3 +670,6 @@ html, body { overscroll-behavior: none; }
 
 .lock-frame { animation: none; }
 .lock-frame.lock-enter { animation: lock-in 0.5s cubic-bezier(0.2, 0.9, 0.2, 1) backwards; }
+
+/* Camera + QR surfaces: no long-press / right-click image menus, no drag ghosts, no selection. */
+video, canvas { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }

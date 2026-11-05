@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { GlassTabs, TAB_ORDER, type TabKey } from "@/components/GlassTabs";
 import { Pager } from "@/components/Pager";
 import { sfx } from "@/lib/feedback";
+import { haptics } from "@/lib/haptics";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { MuteToggle } from "@/components/MuteToggle";
 import { RefreshButton } from "@/components/RefreshButton";
@@ -89,6 +90,23 @@ function Index() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tab, scannerBusy],
   );
+
+  // Haptics everywhere: every button press gets a crisp tap, sliders get fine ticks.
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      const el = (e.target as Element | null)?.closest?.('button, [role="button"], [role="radio"], a, summary');
+      if (el && !(el as HTMLButtonElement).disabled) haptics.tap();
+    };
+    const onInput = (e: Event) => {
+      if ((e.target as HTMLInputElement | null)?.type === "range") haptics.tick();
+    };
+    document.addEventListener("pointerdown", onDown, { passive: true });
+    document.addEventListener("input", onInput, { passive: true });
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("input", onInput);
+    };
+  }, []);
 
   // iOS/Safari only allow audio after a user gesture: prime it on the first touch.
   useEffect(() => {
