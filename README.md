@@ -1,320 +1,209 @@
+ <div align="center">
+
 # OFFDROP
 
-<div align="center">
+### FILE TRANSFER. WITHOUT THE INTERNET.
 
-<img src="docs/assets/offdrop-logo.svg" width="180" alt="OFFDROP Logo" />
+**Your screen is the sender. Their camera is the receiver.**
 
-<br />
-<br />
-
-# MOVE FILES.<br />NOT THROUGH THE INTERNET.
-
-### A new way to transfer files. Powered by light.
-
-Send files between devices using animated QR codes. No cloud storage. No accounts. No transfer servers. No internet connection between devices.
+No servers. No accounts. No internet connection between devices. Just animated QR codes turning your display into a file-transfer channel.
 
 <br />
 
-<a href="YOUR_LIVE_URL"><img src="https://img.shields.io/badge/EXPLORE_OFFDROP-6366F1?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Explore OFFDROP" /></a>
-<a href="#how-it-works"><img src="https://img.shields.io/badge/HOW_IT_WORKS-111827?style=for-the-badge&logo=readme&logoColor=white" alt="How it works" /></a>
-<a href="#getting-started"><img src="https://img.shields.io/badge/DEVELOPMENT-06B6D4?style=for-the-badge&logo=github&logoColor=white" alt="Development" /></a>
-
-<br />
-<br />
-
-<img src="docs/assets/offdrop-hero.gif" width="100%" alt="OFFDROP animated file transfer demonstration" />
+![Offline](https://img.shields.io/badge/CONNECTION-100%25_OFFLINE-00C9A7?style=for-the-badge&labelColor=101827)
+![QR](https://img.shields.io/badge/TRANSPORT-ANIMATED_QR-7C5CFC?style=for-the-badge&labelColor=101827)
+![Recovery](https://img.shields.io/badge/RECOVERY-FOUNTAIN_STYLE-FF9D42?style=for-the-badge&labelColor=101827)
+![Privacy](https://img.shields.io/badge/PRIVACY-NO_SERVERS-24A1FF?style=for-the-badge&labelColor=101827)
 
 <br />
 
-**YOUR SCREEN IS THE SENDER. YOUR CAMERA IS THE RECEIVER.**
-
-<br />
-
-<img src="https://img.shields.io/badge/100%25-Offline-06B6D4?style=flat-square" />
-<img src="https://img.shields.io/badge/Transfer-Optical-8B5CF6?style=flat-square" />
-<img src="https://img.shields.io/badge/Recovery-Fountain_Code-A855F7?style=flat-square" />
-<img src="https://img.shields.io/badge/Runtime-Browser-22C55E?style=flat-square" />
+**Send anything. Across a screen. Without a network.**
 
 </div>
 
 ---
 
-<div align="center">
+## The idea
 
-# THE INTERNET IS OPTIONAL.
+Most file-transfer tools need something in the middle: a server, a cloud account, a local network, or an internet connection.
 
-**File sharing shouldn't require an intermediary.**
+OFFDROP doesn't.
 
-</div>
+It converts file data into a continuous stream of animated QR codes. One device displays the stream. Another device reads it through its camera and reconstructs the original file.
 
-Traditional file-sharing systems rely on infrastructure: cloud services, accounts, servers, networks and external dependencies.
+No infrastructure. No account creation. No file upload to somebody else's server.
 
-OFFDROP takes a different approach.
+Just light carrying data.
 
-It transforms file data into animated QR codes, transmitting information directly through a display and reconstructing it using another device's camera.
+## How it works
 
-No pairing. No accounts. No transfer infrastructure.
+```mermaid
+flowchart LR
+    A["SELECT FILES"] --> B["ENCODE DATA"]
+    B --> C["GENERATE QR FRAMES"]
+    C --> D["DISPLAY ANIMATION"]
+    D --> E["CAMERA SCANS"]
+    E --> F["RECONSTRUCT FILE"]
+    F --> G["CHECKSUM VERIFY"]
 
-Just light.
+    classDef input fill:#172554,stroke:#3B82F6,color:#DBEAFE,stroke-width:2px
+    classDef process fill:#312E81,stroke:#818CF8,color:#E0E7FF,stroke-width:2px
+    classDef transfer fill:#064E3B,stroke:#10B981,color:#D1FAE5,stroke-width:2px
+    classDef output fill:#78350F,stroke:#F59E0B,color:#FEF3C7,stroke-width:2px
 
-<div align="center">
-
-<img src="docs/assets/offdrop-transmission.gif" width="90%" alt="Visualisation of optical file transmission" />
-
-</div>
-
----
-
-# THE EXPERIENCE
-
-<div align="center">
-
-<table>
-<tr>
-<td align="center" width="50%">
-
-<img src="docs/assets/sender.png" width="100%" alt="OFFDROP sender interface" />
-
-### 01. TRANSMIT
-
-**Choose. Prepare. Play.**
-
-Select one file or bundle multiple files. OFFDROP prepares the data and turns it into an animated QR stream.
-
-</td>
-<td align="center" width="50%">
-
-<img src="docs/assets/receiver.png" width="100%" alt="OFFDROP receiver interface" />
-
-### 02. RECEIVE
-
-**Scan. Reconstruct. Done.**
-
-Point another device's camera at the sender. OFFDROP reconstructs the original data as frames arrive.
-
-</td>
-</tr>
-</table>
-
-</div>
-
----
-
-# ENGINEERED DIFFERENTLY.
-
-Not just another QR generator.
-
-OFFDROP is built around the realities of optical transmission: dropped frames, imperfect cameras, variable lighting and limited bandwidth.
-
-<table>
-<tr>
-<td width="50%" valign="top">
-
-### <img src="docs/assets/icons/qr.svg" width="24" /> MULTI-CODE TRANSMISSION
-
-Display multiple QR codes simultaneously to increase the amount of data transmitted per frame.
-
-</td>
-<td width="50%" valign="top">
-
-### <img src="docs/assets/icons/recovery.svg" width="24" /> FOUNTAIN-STYLE RECOVERY
-
-Recover missing data using repair frames instead of requiring a complete retransmission.
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-### <img src="docs/assets/icons/compression.svg" width="24" /> AUTOMATIC COMPRESSION
-
-Deflate compressible content when doing so reduces the payload.
-
-</td>
-<td width="50%" valign="top">
-
-### <img src="docs/assets/icons/streaming.svg" width="24" /> LARGE FILE STREAMING
-
-Process file data incrementally rather than requiring the entire encoded transfer in memory.
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-### <img src="docs/assets/icons/integrity.svg" width="24" /> INTEGRITY VERIFICATION
-
-Verify reconstructed data using checksums before completing a transfer.
-
-</td>
-<td width="50%" valign="top">
-
-### <img src="docs/assets/icons/bundle.svg" width="24" /> MULTI-FILE BUNDLING
-
-Transfer multiple selected files together in a ZIP archive.
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-### <img src="docs/assets/icons/pause.svg" width="24" /> PAUSE & RESUME
-
-Pause an ongoing transfer and continue when you're ready.
-
-</td>
-<td width="50%" valign="top">
-
-### <img src="docs/assets/icons/wakelock.svg" width="24" /> SCREEN WAKE LOCK
-
-Help prevent the sender's display from sleeping during transmission.
-
-</td>
-</tr>
-</table>
-
----
-
-# HOW IT WORKS
-
-<div align="center">
-
-<img src="docs/assets/architecture.svg" width="100%" alt="OFFDROP optical transfer architecture" />
-
-### FROM FILE TO LIGHT. FROM LIGHT BACK TO FILE.
-
-</div>
-
-The transfer pipeline:
-
-```text
-SENDER
-  |
-  v
-FILE SELECTION
-  |
-  v
-FILE PREPARATION
-  |
-  v
-COMPRESSION
-  |
-  v
-DATA ENCODING
-  |
-  v
-QR GENERATION
-  |
-  v
-ANIMATED TRANSMISSION
-  |
-  v
-========================
-      OPTICAL CHANNEL
-========================
-  |
-  v
-CAMERA CAPTURE
-  |
-  v
-FRAME DECODING
-  |
-  v
-DATA RECONSTRUCTION
-  |
-  v
-LOSS RECOVERY
-  |
-  v
-CHECKSUM VERIFICATION
-  |
-  v
-ORIGINAL FILE
-  |
-  v
-RECEIVER
+    class A,G input
+    class B,C,F process
+    class D,E transfer
 ```
 
-### THE INTERESTING PART: LOST FRAMES.
+### Two devices. One optical connection.
 
-A conventional sequential transfer can fail when required pieces of data never arrive.
+<table>
+<tr>
+<td width="50%" valign="top">
 
-OFFDROP uses fountain-style repair frames to make the transfer more resilient.
+**01 — SENDER**
 
-Instead of depending exclusively on the original sequence, the receiver collects useful encoded data and repair information until reconstruction is possible.
+Select one file or multiple files. Multiple files are automatically bundled into a ZIP archive.
 
-The receiver can also begin listening from the first frame it encounters. It doesn't need to wait for a new transfer to start.
+OFFDROP encodes the data into QR frames and plays them as an animation on the screen.
 
-<div align="center">
+</td>
+<td width="50%" valign="top">
 
-<img src="docs/assets/fountain-recovery.gif" width="85%" alt="Animated explanation of fountain-style recovery" />
+**02 — RECEIVER**
 
-</div>
+Open the receiver and point the camera at the sender's screen.
 
----
+The receiver reads frames, reconstructs the data, repairs dropped frames where possible, and verifies the result.
 
-# PERFORMANCE, VISUALISED.
-
-The optical channel determines throughput.
-
-More payload per QR code and more simultaneous codes increase the theoretical transmission rate.
-
-### Theoretical throughput
-
-| Density | Payload / QR | 1 Code | 4 Codes | 6 Codes |
-|:---|---:|---:|---:|---:|
-| 🟢 Reliable | 500 B | 7.3 KB/s | 29 KB/s | 44 KB/s |
-| 🔵 Balanced | 800 B | 11.7 KB/s | 47 KB/s | 70 KB/s |
-| 🟣 Dense | 1,100 B | 16 KB/s | 64 KB/s | 97 KB/s |
-| 🟠 Max | 1,400 B | 20 KB/s | 82 KB/s | 123 KB/s |
-| 🔴 Ultra | 2,000 B | 29 KB/s | 117 KB/s | 176 KB/s |
-
-<div align="center">
-
-### MORE CODES. MORE DATA. SAME OPTICAL CHANNEL.
-
-</div>
-
-These are theoretical payload estimates at 15 frames per second, not guaranteed real-world speeds.
-
-Actual performance depends on camera resolution, focus, display size, lighting, QR density and decoding reliability.
-
-A 100 MB transfer may take approximately 14–20 minutes under favourable conditions.
-
-OFFDROP also includes compression, multi-code transmission, repair frames and pause/resume to improve the experience.
+</td>
+</tr>
+</table>
 
 ---
 
-# BUILT FOR THE REAL WORLD.
+## Built for transfers that don't fall apart
 
-<div align="center">
+| Capability | What it does |
+|:--|:--|
+| Animated QR streaming | Transfers data through continuously changing QR frames |
+| Multi-file transfer | Bundles multiple selected files into a ZIP archive |
+| Checksum verification | Verifies the reconstructed file's integrity |
+| Fountain-style recovery | Uses repair frames to recover missing data without restarting the entire transfer |
+| Automatic compression | Deflates compressible files automatically |
+| Large-file streaming | Streams data instead of requiring the entire transfer to be handled as one QR code |
+| Pause and resume | Gives you control over an ongoing transfer |
+| Wake lock | Helps prevent the sender's screen from sleeping during transfers |
+| Immediate reception | Receiver can begin with the very first frame it successfully reads |
 
-| Environment | Consideration |
-|:---|:---|
-| Large displays | More room for readable QR codes |
-| Mobile cameras | Autofocus and exposure affect decoding |
-| Bright environments | Screen reflections can reduce readability |
-| Dense QR codes | Require better optical resolution |
-| Long transfers | Both devices must remain available |
-| Large payloads | Streaming reduces memory pressure |
+## The interesting part: recovery
 
-</div>
+QR streaming isn't a perfect channel.
+
+A camera can miss frames. Screens can refresh at inconvenient moments. Lighting, focus, distance, and display quality can affect reception.
+
+OFFDROP accounts for dropped frames with fountain-style repair frames.
+
+Instead of requiring the receiver to replay the entire transfer whenever a frame is missed, repair frames provide additional data that helps reconstruct the original content.
+
+```mermaid
+flowchart TD
+    A["ORIGINAL DATA"] --> B["DATA FRAMES"]
+    A --> C["REPAIR FRAMES"]
+
+    B --> D["OPTICAL STREAM"]
+    C --> D
+
+    D --> E["CAMERA RECEIVER"]
+
+    E --> F["FRAMES RECEIVED"]
+    E --> G["FRAMES MISSED"]
+
+    F --> H["DATA RECONSTRUCTION"]
+    G --> H
+
+    H --> I["CHECKSUM VERIFICATION"]
+    I --> J["RECOVERED FILE"]
+
+    classDef source fill:#172554,stroke:#3B82F6,color:#DBEAFE
+    classDef stream fill:#312E81,stroke:#818CF8,color:#E0E7FF
+    classDef recovery fill:#064E3B,stroke:#10B981,color:#D1FAE5
+    classDef result fill:#78350F,stroke:#F59E0B,color:#FEF3C7
+
+    class A,B,C source
+    class D,E stream
+    class F,G,H,I recovery
+    class J result
+```
+
+The receiver doesn't need to catch every single frame. It needs enough usable information to reconstruct the data.
 
 ---
 
-# DEVELOPMENT
+## Performance
 
-Want to explore the implementation, improve the protocol or build something on top of OFFDROP?
+### Throughput depends on the camera, the screen, and QR density.
 
-You're welcome.
+The effective throughput is determined by:
+
+**Payload per QR × frames per second × number of simultaneous QR codes.**
+
+The following figures represent calculated throughput at 15 FPS.
+
+| Density | Bytes / QR | 1 code | 4 codes | 6 codes |
+|:--|--:|--:|--:|--:|
+| Reliable | 500 | 7.3 KB/s | 29 KB/s | 44 KB/s |
+| Balanced | 800 | 11.7 KB/s | 47 KB/s | 70 KB/s |
+| Dense | 1,100 | 16 KB/s | 64 KB/s | 97 KB/s |
+| Max | 1,400 | 20 KB/s | 82 KB/s | 123 KB/s |
+| Ultra | 2,000 | 29 KB/s | 117 KB/s | 176 KB/s |
+
+### Real-world speed matters more than theoretical speed.
+
+Phone cameras commonly capture at 30 FPS. OFFDROP's speed slider defaults to 15 FPS and stops at 30 FPS, allowing each QR code to remain visible for approximately two camera frames at the default setting.
+
+The bigger throughput multiplier is the number of QR codes displayed simultaneously.
+
+**Available configurations:**
+
+`1×` `2×` `4×` `6×` `8×` `9×` `12×`
+
+Default: `4×`
+
+There is also an experimental **Colour ×3** mode.
+
+> [!IMPORTANT]
+> A 100 MB transfer can take approximately 14–20 minutes in the best realistic conditions. Actual speed depends heavily on screen size, camera resolution, focus, lighting, QR density, and frame capture reliability. OFFDROP prioritises a working transfer over unrealistic speed claims.
+
+---
+
+## Transfer architecture
+
+<div align="center">
+
+| SENDER | OPTICAL CHANNEL | RECEIVER |
+|:---:|:---:|:---:|
+| File selection | Animated QR codes | Camera scanning |
+| ZIP bundling | Screen display | Frame decoding |
+| Compression | Visible light | Data reconstruction |
+| Data encoding | No network required | Integrity verification |
+
+</div>
+
+The transfer happens directly between the two devices through their display and camera. There is no intermediary file-hosting service involved.
+
+---
+
+## Run it locally
 
 ### Requirements
 
-- Bun or Node.js
-- Node.js 22 or later for the test suite
-- A modern browser for camera functionality
+- [Bun](https://bun.sh/) or Node.js with npm
+- Node.js 22 or newer for the test suite
+- A browser with camera access for receiving transfers
 
-### Clone the repository
+### Installation
 
 ```bash
 git clone https://github.com/enzoceon/offdrop.git
@@ -324,17 +213,25 @@ cd offdrop
 bun install
 ```
 
-### Start development
+Using npm instead:
+
+```bash
+npm install
+```
+
+### Development
 
 ```bash
 bun run dev
 ```
 
-### Run the test suite
+### Tests
 
 ```bash
 bun run test
 ```
+
+The test suite covers protocol, loss-recovery, and compression tests.
 
 ### Type checking
 
@@ -350,133 +247,63 @@ bun run build
 
 ---
 
-# DEPLOYMENT
+## Deploy to Vercel
 
-OFFDROP can be deployed through Vercel using the existing Nitro configuration.
+OFFDROP can be deployed through GitHub and Vercel.
 
-1. Import the repository into Vercel.
-2. Keep the repository's deployment configuration.
-3. Use `bun run build` or `npm run build`.
-4. Deploy.
+1. Push the repository to GitHub.
+2. Open [Vercel](https://vercel.com/).
+3. Select **Add New → Project**.
+4. Import the OFFDROP repository.
+5. Keep the default configuration.
+6. Deploy.
 
-Nitro detects Vercel at build time and generates the appropriate deployment output.
+The repository's `vercel.json` configures the project for the appropriate deployment flow. Nitro detects Vercel at build time and generates the Vercel Build Output automatically.
 
-For alternative hosting environments:
+Camera access requires HTTPS, which Vercel provides.
+
+### Deploy somewhere else
+
+Set `NITRO_PRESET` during the build process to target another deployment platform.
+
+For example:
 
 ```bash
-NITRO_PRESET=node-server bun run build
+NITRO_PRESET=cloudflare-module
 ```
+
+Or:
 
 ```bash
-NITRO_PRESET=cloudflare-module bun run build
+NITRO_PRESET=node-server
 ```
 
-Camera access requires a secure context, typically HTTPS or localhost.
-
 ---
 
-# UNDER THE HOOD
+## Design philosophy
 
-OFFDROP is built using modern web technologies.
+OFFDROP is built around a simple idea:
 
-| Technology | Purpose |
-|:---|:---|
-| TypeScript | Application and protocol implementation |
-| React | User interface |
-| TanStack Start | Application framework |
-| Vite | Development and build tooling |
-| Nitro | Deployment infrastructure |
-| IndexedDB | Browser-side persistent storage |
+**A file should not need the internet to move from one device to another.**
 
-The architecture separates the transfer protocol from the user interface, allowing encoding, decoding, compression, recovery and reconstruction to be tested independently.
+The project explores an unconventional use of hardware that already exists on almost every modern device: a screen and a camera.
 
----
+No special transfer hardware. No dedicated cables. No accounts. No cloud storage dependency.
 
-# DESIGN PHILOSOPHY
-
-**No unnecessary infrastructure.**
-
-Transfers should not depend on a remote service.
-
-**Resilience over assumptions.**
-
-Frames will be missed. Cameras will struggle. The protocol must account for it.
-
-**Privacy by architecture.**
-
-The transfer does not require uploading file contents to a cloud server.
-
-**Engineering over marketing.**
-
-Realistic benchmarks, explicit limitations and reproducible tests matter.
-
-**Simple on the surface. Powerful underneath.**
-
-The user should never need to understand fountain codes to send a file.
-
----
-
-# LIMITATIONS
-
-OFFDROP uses optical transmission, which has inherent constraints.
-
-- Throughput is lower than typical local network transfers.
-- Camera focus and display resolution affect performance.
-- High-density QR configurations require suitable hardware.
-- Lighting, glare and movement can interfere with capture.
-- Large transfers may take considerable time.
-- Browser support and camera permissions vary.
-
-OFFDROP is designed for situations where direct, infrastructure-free transfer is more important than maximum throughput.
-
----
-
-# CONTRIBUTE
-
-OFFDROP is open source, and there's plenty of room to make it better.
-
-Areas where contributions can make a difference:
-
-- QR encoding and decoding performance.
-- Fountain-code recovery efficiency.
-- Camera compatibility.
-- Memory efficiency for large transfers.
-- Compression and protocol optimisations.
-- Browser compatibility.
-- Accessibility and interface improvements.
-- Automated testing across devices.
-
-Open an issue to discuss substantial changes before submitting a pull request.
-
-Every improvement to reliability makes OFFDROP more useful.
-
----
-
-# LICENSE
-
-OFFDROP is distributed under the MIT License. See [LICENSE](LICENSE) for details.
+Just an optical data channel.
 
 ---
 
 <div align="center">
 
-<img src="docs/assets/offdrop-logo.svg" width="120" alt="OFFDROP" />
+### NO CLOUD. NO CABLES. NO MIDDLEMAN.
+
+**JUST DROP IT.**
 
 <br />
 
-# THE WORLD IS CONNECTED.<br />YOUR FILES DON'T HAVE TO BE.
+[GitHub Repository](https://github.com/enzoceon/offdrop)
 
-**OFFDROP**
-
-Transfer through light.
-
-<br />
-
-<a href="#offdrop">BACK TO TOP ↑</a>
-
-<br />
-<br />
-
-<sub>Built with curiosity. Engineered for independence.</sub>
+<sub>Built by <a href="https://github.com/enzoceon">enzoceon</a></sub>
 
 </div>
