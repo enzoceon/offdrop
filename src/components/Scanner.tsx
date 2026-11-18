@@ -1654,7 +1654,7 @@ export function Scanner({
       {/* ============================ LIVE: viewfinder + status ============================ */}
       {/* Always mounted (hidden when idle): the <video> element can never be "missing" when the camera starts. */}
       {(
-        <div className={`mx-auto min-h-0 w-full max-w-6xl flex-1 flex-col gap-2.5 px-4 pb-1 md:px-8 lg:grid lg:grid-cols-[minmax(0,1.5fr)_minmax(21rem,1fr)] lg:items-center lg:gap-8 lg:py-1 ${live && !done ? "flex" : "hidden"}`}>
+        <div className={`mx-auto min-h-0 w-full max-w-6xl flex-1 flex-col gap-2.5 px-4 pb-1 md:px-8 lg:grid-cols-[minmax(0,1.5fr)_minmax(21rem,1fr)] lg:items-center lg:gap-8 lg:py-1 ${live && !done ? "flex lg:grid" : "hidden"}`}>
           {/* The viewfinder is a bounded window, never the whole screen. */}
           <div
             ref={stageRef}
