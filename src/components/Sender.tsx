@@ -117,17 +117,21 @@ function readDensity(): DensityKey {
 
 /** Play <-> Pause: both glyphs are always mounted and cross-rotate/scale into each other. */
 function PlayPauseIcon({ playing, className }: { playing: boolean; className?: string }) {
-  const base = "absolute inset-0 transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]";
+  const base = "absolute inset-0 block h-full w-full origin-center transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]";
   return (
-    <span className={cn("relative inline-block", className ?? "h-4 w-4")} aria-hidden="true">
+    <span className={cn("relative inline-block shrink-0", className ?? "h-4 w-4")} aria-hidden="true">
       <Play
         className={base}
         fill="currentColor"
+        strokeWidth={2}
+        strokeLinejoin="round"
         style={{ opacity: playing ? 0 : 1, transform: playing ? "rotate(90deg) scale(0.3)" : "rotate(0deg) scale(1)" }}
       />
       <Pause
         className={base}
         fill="currentColor"
+        strokeWidth={2}
+        strokeLinejoin="round"
         style={{ opacity: playing ? 1 : 0, transform: playing ? "rotate(0deg) scale(1)" : "rotate(-90deg) scale(0.3)" }}
       />
     </span>
@@ -187,6 +191,8 @@ export function Sender({ active = true }: { active?: boolean }) {
   const switchingRef = useRef(false);
   const isLg = useMediaQuery("(min-width: 1024px)");
   const inputRef = useRef<HTMLInputElement>(null);
+  const [picking, setPicking] = useState(false);
+  const [tapFlash, setTapFlash] = useState<"play" | "pause" | null>(null);
   const mainRefs = useRef<Array<HTMLCanvasElement | null>>([]);
   const fullRefs = useRef<Array<HTMLCanvasElement | null>>([]);
   const pipelineRef = useRef<FramePipeline | null>(null);
@@ -647,14 +653,26 @@ export function Sender({ active = true }: { active?: boolean }) {
                 Pick one file or a whole batch — photos, videos, documents. Offline, private, no accounts.
               </p>
               <button
+                disabled={picking}
                 onClick={() => {
                   sfx.unlock();
-                  inputRef.current?.click();
+                  setPicking(true);
+                  const done = () => {
+                    window.removeEventListener("focus", onFocus);
+                    setPicking(false);
+                  };
+                  // The OS picker blurs the window; when focus returns without a change event the picker was cancelled.
+                  const onFocus = () => window.setTimeout(done, 600);
+                  window.addEventListener("focus", onFocus);
+                  inputRef.current?.addEventListener("cancel", done, { once: true });
+                  inputRef.current?.addEventListener("change", done, { once: true });
+                  window.setTimeout(done, 60000);
+                  inputRef.current?.click(); // must stay synchronous (iOS/Safari need the user gesture)
                 }}
                 className="group relative mt-7 flex items-center gap-2 overflow-hidden rounded-full bg-gradient-to-br from-primary to-accent px-8 py-4 text-sm font-bold text-primary-foreground shadow-xl shadow-primary/30 transition-transform duration-200 active:scale-95"
               >
                 <span className="btn-sheen absolute inset-0" />
-                <Upload className="relative h-4 w-4" />
+                {picking ? <Loader2 className="relative h-4 w-4 animate-spin" /> : <Upload className="relative h-4 w-4" />}
                 <span className="relative">Choose files</span>
               </button>
               <input
@@ -824,14 +842,29 @@ export function Sender({ active = true }: { active?: boolean }) {
             {busyLabel ?? "Building frames…"}
           </div>
         )}
-        {ready && qrReady && !playing && (
+        {ready && qrReady && (
           <button
-            onClick={togglePlaying}
-            className="group absolute inset-0 grid place-items-center rounded-[1.5rem] opacity-0 transition-opacity duration-300 hover:opacity-100 focus-visible:opacity-100"
-            aria-label="Play"
+            onClick={() => {
+              setTapFlash(playing ? "pause" : "play");
+              window.setTimeout(() => setTapFlash(null), 700);
+              togglePlaying();
+            }}
+            className={cn(
+              "group absolute inset-0 grid place-items-center rounded-[1.5rem] transition-opacity duration-300 focus-visible:opacity-100",
+              !playing || tapFlash ? "opacity-100" : "opacity-0 hover:opacity-100",
+              !playing ? "" : "bg-transparent",
+            )}
+            aria-label={playing ? "Pause" : "Play"}
           >
-            <span className="grid h-16 w-16 place-items-center rounded-full bg-black/55 shadow-xl backdrop-blur">
-              <Play className="ml-1 h-7 w-7 text-white" fill="currentColor" />
+            <span
+              className={cn(
+                "grid h-16 w-16 place-items-center rounded-full bg-black/55 text-white shadow-xl backdrop-blur transition-all duration-300",
+                !playing ? "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" : "",
+                !playing && tapFlash ? "opacity-100" : "",
+                playing && !tapFlash ? "scale-90 opacity-0 group-hover:scale-100 group-hover:opacity-100" : "",
+              )}
+            >
+              <PlayPauseIcon playing={playing} className="h-7 w-7" />
             </span>
           </button>
         )}
