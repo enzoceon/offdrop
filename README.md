@@ -37,6 +37,7 @@ payload per code x frames/s x codes on screen at once.
 | Balanced | 800        | 11.7 KB/s       | 47 KB/s          | 70 KB/s          |
 | Dense    | 1100       | 16 KB/s         | 64 KB/s          | 97 KB/s          |
 | Max      | 1400       | 20 KB/s         | 82 KB/s          | 123 KB/s         |
+| Ultra    | 2000       | 29 KB/s         | 117 KB/s         | 176 KB/s         |
 
 Phone cameras usually capture 30 fps, so the speed slider stops at 30 and defaults to 15 (each code stays on
 screen for about two camera frames); adding *codes per frame* (1x / 2x / 4x / 6x / 8x / 9x / 12x; default 4x, plus an experimental Colour x3 mode) is what scales. A 100 MB file
@@ -45,3 +46,11 @@ seconds. The app helps: compression, multi-file bundling, screen wake-lock, paus
 receiver that starts from the very first frame it sees.
 
 See `CHANGES.md` for the technical history.
+
+## Credits and inspiration
+
+Round 8 was informed by reading the documentation of
+[Decimen Optical Transfer](https://github.com/bashalarmistalt/decimen-optical-transfer), an AGPL-3.0 project that
+reports 418 KB/s from a large monitor to a high-resolution phone camera. Only ideas were taken (tracked region
+decoding, camera-capability awareness, measuring sustained/peak throughput, user guidance when nothing is detected);
+no code was copied, and OFFDROP's implementation is independent.

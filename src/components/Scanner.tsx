@@ -23,6 +23,9 @@ import {
   WifiOff,
   Zap,
   Layers3,
+  Sun,
+  Gauge,
+  Timer,
 } from "lucide-react";
 import {
   FountainDecoder,
@@ -36,6 +39,8 @@ import { saveItem } from "@/lib/history";
 import { MediaViewer, type ViewerItem } from "@/components/MediaViewer";
 import { sfx } from "@/lib/feedback";
 import { haptics } from "@/lib/haptics";
+import { roiFromQuads, type Rect } from "@/lib/roi";
+import { RateMeter, type RateReport } from "@/lib/rate-meter";
 import { useWakeLock } from "@/lib/wake-lock";
 
 /* ----------------------------------------------------------------------------
@@ -71,7 +76,8 @@ type QrBox = { w: number; h: number; quads: Quad[] };
 type ScanResult = { data: string; corners: Quad };
 /** Auto-framing view: centre in normalised video coordinates plus a digital zoom factor. */
 type View = { cx: number; cy: number; z: number };
-type DonePreview = { name: string; mime: string; size: number; blob: Blob; url?: string };
+type DonePreview = { name: string; mime: string; size: number; blob: Blob; url?: string; report?: RateReport };
+type CamQuality = "hd" | "4k";
 type PausedTransfer = { name: string; size: number; frac: number };
 
 type ScannerProps = {
@@ -113,6 +119,9 @@ const MAX_BOXES = 16;
 const LAUNCH_MIN_MS = 750; // the Start button's spinner stays long enough to be seen
 const STOP_MIN_MS = 650; // same for Stop
 const PING_MS = 800;
+const ROI_REACQUIRE = 8; // every Nth frame scans the WHOLE frame again (new codes, moved screen)
+const CAMQ_KEY = "offdrop:camq";
+const HINT_AFTER_MS = 8000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -168,8 +177,21 @@ function waitForUsableVideo(video: HTMLVideoElement) {
   });
 }
 
-async function openCameraOnce(facingMode: "environment" | "user") {
+async function openCameraOnce(facingMode: "environment" | "user", quality: CamQuality) {
   const attempts: MediaStreamConstraints[] = [
+    ...(quality === "4k"
+      ? [
+          {
+            video: {
+              facingMode: { exact: facingMode },
+              width: { ideal: 3840 },
+              height: { ideal: 2160 },
+              frameRate: { ideal: 30, max: 60 },
+            },
+            audio: false,
+          } as MediaStreamConstraints,
+        ]
+      : []),
     {
       video: {
         facingMode: { exact: facingMode },
@@ -205,11 +227,11 @@ async function openCameraOnce(facingMode: "environment" | "user") {
  * Open the camera, retrying briefly when the device is still being released by a previous session
  * (Windows/Chrome webcams report "NotReadableError" if you re-open them right after stopping).
  */
-async function openCameraStream(facingMode: "environment" | "user") {
+async function openCameraStream(facingMode: "environment" | "user", quality: CamQuality) {
   let lastError: unknown;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      return await openCameraOnce(facingMode);
+      return await openCameraOnce(facingMode, quality);
     } catch (error) {
       lastError = error;
       const name = (error as { name?: string })?.name ?? "";
@@ -379,12 +401,19 @@ export function Scanner({
   const activeRef = useRef(false);
   const flippingRef = useRef(false);
   const colorModeRef = useRef(false);
+  const roiRef = useRef<(Rect & { t: number; misses: number }) | null>(null);
+  const meterRef = useRef(new RateMeter());
+  const camQualityRef = useRef<CamQuality>("hd");
+  const hintDismissedRef = useRef(false);
   const lastColorAtRef = useRef(0);
   const lastCountRef = useRef(0);
   const milestoneRef = useRef(0);
 
   const [active, setActive] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [camQuality, setCamQuality] = useState<CamQuality>("hd");
+  const [camInfo, setCamInfo] = useState<{ w: number; h: number; fps: number } | null>(null);
+  const [hintVisible, setHintVisible] = useState(false);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -524,8 +553,18 @@ export function Scanner({
       const W = video.videoWidth;
       const H = video.videoHeight;
       const v = viewRef.current;
-      const zoomed = v.z > 1.02;
-      const { sx, sy, cropW, cropH } = cropOf(W, H, v);
+      // TRACKED FAST PATH: once codes are located, decode only a window around them (cut from the
+      // full-resolution frame, so the codes also get more pixels per module). Every ROI_REACQUIRE-th
+      // frame scans the whole frame again to notice new codes or a moved screen.
+      const roi = roiRef.current;
+      const useRoi = Boolean(roi) && now - (roi as { t: number }).t < 1500 && frameNo % ROI_REACQUIRE !== 0;
+      const viewCrop = cropOf(W, H, v);
+      const sx = useRoi ? (roi as Rect).sx : viewCrop.sx;
+      const sy = useRoi ? (roi as Rect).sy : viewCrop.sy;
+      const cropW = useRoi ? (roi as Rect).w : viewCrop.cropW;
+      const cropH = useRoi ? (roi as Rect).h : viewCrop.cropH;
+      // Frames bigger than the detector's sweet spot (e.g. 4K) are always passed through a downscaled canvas.
+      const zoomed = useRoi || v.z > 1.02 || Math.max(W, H) > NATIVE_MAX_EDGE;
       const quads: Quad[] = []; // video pixel space
       const seenValues = new Set<string>();
       const expected = expectedRef.current;
@@ -686,7 +725,19 @@ export function Scanner({
         applyDetections(quads, W, H);
         setCodeCount((prev) => (prev === n ? prev : n));
         stepAutoFrame(quads, W, H, now);
+        // Follow the codes. A tracked frame that found fewer codes than expected keeps its window
+        // (the missing ones are probably just outside it); the next full-frame pass widens it again.
+        if (!useRoi || n >= expected.n) {
+          const next = roiFromQuads(quads, W, H);
+          if (next) roiRef.current = { ...next, t: now, misses: 0 };
+        } else if (roiRef.current) {
+          roiRef.current.t = now;
+        }
       } else {
+        if (useRoi && roiRef.current) {
+          roiRef.current.misses += 1;
+          if (roiRef.current.misses >= 2) roiRef.current = null; // lost them: back to full-frame search
+        }
         if (boxVisibleRef.current && now - lastSeenQrRef.current > 250) {
           boxVisibleRef.current = false;
           lastCountRef.current = 0;
@@ -915,6 +966,7 @@ export function Scanner({
     progressCommitRef.current = now;
     const frac = t.decoder.progress;
     pctRef.current = frac * 100;
+    meterRef.current.add(now, frac * t.meta.size);
     const step = frac >= 0.75 ? 3 : frac >= 0.5 ? 2 : frac >= 0.25 ? 1 : 0;
     if (step > milestoneRef.current && frac < 1) {
       milestoneRef.current = step;
@@ -969,6 +1021,7 @@ export function Scanner({
     etaRateRef.current = 0;
     pctRef.current = 0;
     milestoneRef.current = 0;
+    meterRef.current.reset();
     window.clearTimeout(nameTimerRef.current);
     setError(null);
     setPaused(null);
@@ -1091,7 +1144,8 @@ export function Scanner({
       const previewUrl = URL.createObjectURL(blob);
       doneUrlRef.current = previewUrl;
       setCelebrate((n) => n + 1);
-      setDone({ name, mime, size: t.meta.origSize, blob, url: previewUrl });
+      const report = meterRef.current.report(t.meta.size, performance.now());
+      setDone({ name, mime, size: t.meta.origSize, blob, url: previewUrl, report });
       transferRef.current = null; // lets the (possibly huge) decode buffer be freed
       seenRef.current.clear();
       setScanInfo(null);
@@ -1125,6 +1179,9 @@ export function Scanner({
       await waitForUsableVideo(video);
       setVideoSize({ w: video.videoWidth, h: video.videoHeight });
       videoSizeRef.current = { w: video.videoWidth, h: video.videoHeight };
+      // Report what the camera REALLY delivered (a request for 4K may be refused).
+      const st = stream.getVideoTracks()[0]?.getSettings?.() ?? {};
+      setCamInfo({ w: st.width || video.videoWidth, h: st.height || video.videoHeight, fps: Math.round(st.frameRate || 0) });
     }
   }
 
@@ -1147,7 +1204,7 @@ export function Scanner({
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera permission is unavailable in this browser.");
       setFastDecoder(Boolean(getDetector()));
       // Open the camera while the spinner plays; hold the moment for at least LAUNCH_MIN_MS.
-      const [stream] = await Promise.all([openCameraStream(facingMode), sleep(LAUNCH_MIN_MS)]);
+      const [stream] = await Promise.all([openCameraStream(facingMode, camQualityRef.current), sleep(LAUNCH_MIN_MS)]);
       // The viewfinder (and its <video>) is always mounted, so there is nothing to wait for.
       setStarting(true);
       setLaunching(false);
@@ -1163,6 +1220,8 @@ export function Scanner({
       expectedRef.current = { n: 0, t: 0 };
       smoothRef.current = null;
       colorModeRef.current = false;
+      roiRef.current = null;
+      hintDismissedRef.current = false;
       lastCountRef.current = 0;
       setActive(true);
       setStarting(false);
@@ -1245,6 +1304,7 @@ export function Scanner({
     boxVisibleRef.current = false;
     lastCountRef.current = 0;
     milestoneRef.current = 0;
+    roiRef.current = null;
     // Give the OS a moment to release the device so an immediate restart works (desktop webcams).
     await sleep(120);
     setStopping(false);
@@ -1261,7 +1321,7 @@ export function Scanner({
       scanningRef.current = false;
       cancelTick();
       streamRef.current?.getTracks().forEach((track) => track.stop());
-      await attachStream(await openCameraStream(next));
+      await attachStream(await openCameraStream(next, camQualityRef.current));
       facingRef.current = next;
       setFacing(next);
       scanningRef.current = true;
@@ -1292,6 +1352,40 @@ export function Scanner({
     } else {
       commitView({ cx: 0.5, cy: 0.5, z: 1 });
       sfx.toggleOff();
+    }
+  }
+
+  /** Switch between HD (1080p) and 4K capture without leaving the screen. */
+  async function toggleQuality() {
+    if (!activeRef.current || flippingRef.current || stoppingRef.current) return;
+    const next: CamQuality = camQualityRef.current === "hd" ? "4k" : "hd";
+    camQualityRef.current = next;
+    setCamQuality(next);
+    try {
+      localStorage.setItem(CAMQ_KEY, next);
+    } catch {
+      /* ignore */
+    }
+    setAssistToast(next === "4k" ? "4K capture · more pixels per module" : "HD capture · faster, lighter");
+    window.setTimeout(() => setAssistToast(null), 1600);
+    flippingRef.current = true;
+    setFlipping(true);
+    haptics.toggle(next === "4k");
+    try {
+      scanningRef.current = false;
+      cancelTick();
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      roiRef.current = null;
+      await attachStream(await openCameraStream(facingRef.current, next));
+      scanningRef.current = true;
+      lastDecodeRef.current = 0;
+      tick();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not change the camera quality.");
+    } finally {
+      await sleep(160);
+      setFlipping(false);
+      flippingRef.current = false;
     }
   }
 
@@ -1366,6 +1460,30 @@ export function Scanner({
     }, 1000);
     return () => window.clearInterval(id);
   }, [active]);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(CAMQ_KEY);
+      if (saved === "4k" || saved === "hd") {
+        camQualityRef.current = saved;
+        setCamQuality(saved);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // "Nothing happening?" hint: after a few seconds of searching with no code at all, offer concrete help.
+  const sawAnything = codeCount > 0 || progress.total > 0;
+  useEffect(() => {
+    if (!active || sawAnything) {
+      setHintVisible(false);
+      return;
+    }
+    if (hintDismissedRef.current) return;
+    const id = window.setTimeout(() => setHintVisible(true), HINT_AFTER_MS);
+    return () => window.clearTimeout(id);
+  }, [active, sawAnything]);
 
   // Keep the viewfinder size in a ref (reading clientWidth during render forced a layout each frame).
   const liveNow = active || starting;
@@ -1707,15 +1825,45 @@ export function Scanner({
             </div>
 
             <div className="flex items-center justify-center gap-2 text-[10px] font-semibold text-muted-foreground">
-              <span className="glass flex items-center gap-1 rounded-full px-2.5 py-1">
-                <Video className="h-3 w-3 text-primary" /> Camera {stats.cam} fps
-              </span>
+              <button
+                type="button"
+                onClick={() => void toggleQuality()}
+                disabled={flipping || stopping || starting}
+                aria-label="Switch camera quality between HD and 4K"
+                className="glass flex items-center gap-1 rounded-full px-2.5 py-1 transition-transform active:scale-95 disabled:opacity-60"
+              >
+                <Video className="h-3 w-3 text-primary" />
+                <span className="rounded bg-primary/15 px-1 text-[9px] font-extrabold text-primary">{camQuality === "4k" ? "4K" : "HD"}</span>
+                {camInfo ? `${camInfo.w}×${camInfo.h}` : ""} · {stats.cam} fps
+              </button>
               <span className="glass flex items-center gap-1 rounded-full px-2.5 py-1">
                 <Activity className="h-3 w-3 text-primary" /> {stats.rx} new codes/s
               </span>
             </div>
 
             {errorBanner}
+
+            {hintVisible && (
+              <div className="glass animate-pop-in relative rounded-2xl p-3 text-left">
+                <button
+                  onClick={() => {
+                    hintDismissedRef.current = true;
+                    setHintVisible(false);
+                  }}
+                  aria-label="Dismiss hints"
+                  className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full text-muted-foreground active:scale-90"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+                <p className="pr-8 text-xs font-extrabold">Nothing yet? Try this:</p>
+                <ul className="mt-1.5 space-y-1 text-[11px] font-medium text-muted-foreground">
+                  <li className="flex items-center gap-2"><Sun className="h-3.5 w-3.5 shrink-0 text-primary" /> Turn the sender's screen brightness all the way up</li>
+                  <li className="flex items-center gap-2"><Maximize2 className="h-3.5 w-3.5 shrink-0 text-primary" /> Move closer or back until the codes fill most of the view</li>
+                  <li className="flex items-center gap-2"><Focus className="h-3.5 w-3.5 shrink-0 text-primary" /> Hold steady; turn on Auto focus if the codes look soft</li>
+                  <li className="flex items-center gap-2"><Gauge className="h-3.5 w-3.5 shrink-0 text-primary" /> On the sender pick a lower density or fewer codes</li>
+                </ul>
+              </div>
+            )}
 
             <div className="flex items-center gap-2">
               <button
@@ -1800,6 +1948,31 @@ export function Scanner({
             </div>
             <CheckCircle2 className="h-6 w-6 shrink-0 text-emerald-500" />
           </div>
+
+          {done.report && (
+            <div className="grid grid-cols-3 gap-2">
+              <div className="glass min-w-0 rounded-2xl px-3 py-2">
+                <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  <Timer className="h-3 w-3 text-primary" /> Time
+                </span>
+                <span className="block truncate text-sm font-extrabold tabular-nums">
+                  {done.report.seconds < 60 ? `${done.report.seconds.toFixed(1)}s` : `${Math.floor(done.report.seconds / 60)}m ${Math.round(done.report.seconds % 60)}s`}
+                </span>
+              </div>
+              <div className="glass min-w-0 rounded-2xl px-3 py-2">
+                <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  <Activity className="h-3 w-3 text-primary" /> Sustained
+                </span>
+                <span className="block truncate text-sm font-extrabold tabular-nums">{formatBytes(Math.round(done.report.sustained))}/s</span>
+              </div>
+              <div className="glass min-w-0 rounded-2xl px-3 py-2">
+                <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  <Zap className="h-3 w-3 text-primary" /> Peak
+                </span>
+                <span className="block truncate text-sm font-extrabold tabular-nums">{formatBytes(Math.round(done.report.peak))}/s</span>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-3 gap-2">
             <button

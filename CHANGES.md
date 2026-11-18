@@ -190,3 +190,26 @@
   first/last tab, code lock-on, progress milestones at 25/50/75%, success flourish, warning, error). Android uses
   shaped vibration pulses; iOS 17.4+ uses the native switch haptic. A global listener gives every button a tap and
   every slider fine ticks. Tied to the mute button.
+
+
+---
+
+# Round 8: lessons from Decimen Optical Transfer
+
+Studied its protocol, architecture and sending docs. Much of the design already matched ours (self-describing frames,
+pinned mask pattern, EC level L, same-version tiled codes, repair-style coding, frame-dropping worker pool). Their
+headline speed comes from camera resolution and a cheaper per-code decode, so that is what changed here:
+
+- **Tracked fast path.** Once codes are found, decoding runs on a window around them cut from the *full-resolution*
+  frame (fewer pixels to search, more pixels per module). Every 8th frame re-scans the whole frame to notice new codes
+  or a moved screen; two consecutive misses drop back to full-frame search. (`src/lib/roi.ts`, unit-tested.)
+- **HD / 4K capture** switch on the Receive screen, remembered between visits. 4K frames always pass through a
+  downscaled canvas for acquisition, then tracking crops at full resolution. The chip shows the resolution and frame
+  rate the camera ACTUALLY delivered (a 4K request can be refused).
+- **Ultra density** (2000 B per code) for 4K + large bright screens.
+- **Transfer report**: time, sustained and peak speed shown on the result card (`src/lib/rate-meter.ts`, unit-tested).
+- **"Nothing yet?" guidance** after 8 s without a code: brightness, distance, auto focus, lower density.
+
+Not adopted, on purpose: their custom zxing-cpp WASM decoder (AGPL: copying it would force this whole product under
+AGPL; building a decoder blind is also risky). A permissively licensed option, `zxing-wasm`, would be the next
+real step for iOS speed, but needs verifying with a real build, so it is not shipped unverified.

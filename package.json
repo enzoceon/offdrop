@@ -12,7 +12,7 @@
     "format": "prettier --write .",
     "test:protocol": "node --experimental-strip-types scripts/protocol-test.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types scripts/protocol-test.ts && node --experimental-strip-types scripts/compress-test.ts",
+    "test": "node --experimental-strip-types scripts/protocol-test.ts && node --experimental-strip-types scripts/compress-test.ts && node --experimental-strip-types scripts/receiver-helpers-test.ts",
     "test:compress": "node --experimental-strip-types scripts/compress-test.ts"
   },
   "dependencies": {

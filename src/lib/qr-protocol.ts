@@ -667,7 +667,7 @@ export const RECEIVE_LIMIT_BYTES = 768 * 1024 * 1024;
 // Density presets
 // ---------------------------------------------------------------------------
 
-export type DensityKey = "reliable" | "balanced" | "dense" | "max";
+export type DensityKey = "reliable" | "balanced" | "dense" | "max" | "ultra";
 
 export interface DensityPreset {
   key: DensityKey;
@@ -684,6 +684,7 @@ export const DENSITY_PRESETS: DensityPreset[] = [
   { key: "balanced", label: "Balanced", chunk: 800, ec: "M", hint: "Good on most phones" },
   { key: "dense", label: "Dense", chunk: 1100, ec: "L", hint: "~1.4× faster, needs a sharp camera" },
   { key: "max", label: "Max", chunk: 1400, ec: "L", hint: "~1.75× faster, best phones + steady hands" },
+  { key: "ultra", label: "Ultra", chunk: 2000, ec: "L", hint: "~2.5× faster: receiver should use 4K capture + a big, bright screen" },
 ];
 
 export function presetFor(key: DensityKey): DensityPreset {
