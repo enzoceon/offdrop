@@ -12,7 +12,7 @@ import { createClientOnlyFn } from "@tanstack/react-start";
 import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
-import { reportLovableError } from "../lib/lovable-error-reporting";
+import { reportAppError } from "../lib/app-error-reporting";
 
 
 const themeInitScript = `
@@ -58,7 +58,7 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
   const normalizedError = error instanceof Error ? error : new Error(String(error));
 
   useEffect(() => {
-    reportLovableError(normalizedError, { boundary: "tanstack_root_error_component" });
+    reportAppError(normalizedError, { boundary: "tanstack_root_error_component" });
   }, [error]);
 
   return (
@@ -128,16 +128,6 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         name: "twitter:description",
         content:
           "Share photos, videos, audio, and files offline with animated QR transfer streams.",
-      },
-      {
-        property: "og:image",
-        content:
-          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5deb9b38-7eb8-451b-a2c5-b1b5a113b32f/id-preview-ccd62582--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781891913071.png",
-      },
-      {
-        name: "twitter:image",
-        content:
-          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/5deb9b38-7eb8-451b-a2c5-b1b5a113b32f/id-preview-ccd62582--c4d46c8c-76c3-48d9-8c3c-9ca2c0b5b1f0.lovable.app-1781891913071.png",
       },
       { name: "description", content: "OFFDROP converts images and videos into shareable QR codes, enabling offline content sharing across devices." },
       { property: "og:description", content: "OFFDROP converts images and videos into shareable QR codes, enabling offline content sharing across devices." },

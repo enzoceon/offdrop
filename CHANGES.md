@@ -194,11 +194,9 @@
 
 ---
 
-# Round 8: lessons from Decimen Optical Transfer
+# Round 8: receiver speed (camera resolution and cheaper per-code decode)
 
-Studied its protocol, architecture and sending docs. Much of the design already matched ours (self-describing frames,
-pinned mask pattern, EC level L, same-version tiled codes, repair-style coding, frame-dropping worker pool). Their
-headline speed comes from camera resolution and a cheaper per-code decode, so that is what changed here:
+The receiver's headline speed comes from camera resolution and a cheaper per-code decode, so that is what changed here:
 
 - **Tracked fast path.** Once codes are found, decoding runs on a window around them cut from the *full-resolution*
   frame (fewer pixels to search, more pixels per module). Every 8th frame re-scans the whole frame to notice new codes
@@ -210,6 +208,5 @@ headline speed comes from camera resolution and a cheaper per-code decode, so th
 - **Transfer report**: time, sustained and peak speed shown on the result card (`src/lib/rate-meter.ts`, unit-tested).
 - **"Nothing yet?" guidance** after 8 s without a code: brightness, distance, auto focus, lower density.
 
-Not adopted, on purpose: their custom zxing-cpp WASM decoder (AGPL: copying it would force this whole product under
-AGPL; building a decoder blind is also risky). A permissively licensed option, `zxing-wasm`, would be the next
-real step for iOS speed, but needs verifying with a real build, so it is not shipped unverified.
+Not shipped: a custom WASM decoder. A permissively licensed option, `zxing-wasm`, would be the next real step for
+iOS speed, but needs verifying with a real build, so it is not shipped unverified.
