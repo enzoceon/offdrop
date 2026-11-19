@@ -390,11 +390,15 @@ async function streamToDataChannel(
     }
 
     bytesSent += chunkBytes.byteLength;
-    if (i % 128 === 0 || i === plan.total - 1) {
+    if (i % 256 === 0 || i === plan.total - 1) {
       const elapsed = Math.max(0.05, (performance.now() - startTime) / 1000);
       onProgress?.(i + 1, plan.total, bytesSent, bytesSent / elapsed);
-      // Yield smoothly every 128 chunks
-      await new Promise((r) => setTimeout(r, 0));
+      // Fast non-clamping cooperative scheduling: microtask tick, macrotask every 1024
+      if (i % 1024 === 0) {
+        await new Promise((r) => setTimeout(r, 0));
+      } else {
+        await Promise.resolve();
+      }
     }
   }
 }

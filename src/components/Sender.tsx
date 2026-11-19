@@ -197,21 +197,6 @@ export function Sender({ active = true }: { active?: boolean }) {
   const isLg = useMediaQuery("(min-width: 1024px)");
   const inputRef = useRef<HTMLInputElement>(null);
   const [picking, setPicking] = useState(false);
-  const [tapFlash, setTapFlash] = useState<"play" | "pause" | null>(null);
-  const [overlayActive, setOverlayActive] = useState(false);
-  const overlayTimerRef = useRef<number | null>(null);
-
-  const triggerOverlay = useCallback(() => {
-    setOverlayActive(true);
-    if (overlayTimerRef.current !== null) {
-      clearTimeout(overlayTimerRef.current);
-    }
-    overlayTimerRef.current = window.setTimeout(() => {
-      setOverlayActive(false);
-      overlayTimerRef.current = null;
-    }, 1000);
-  }, []);
-
   const [turboStats, setTurboStats] = useState<{
     active: boolean;
     sentChunks: number;
@@ -239,28 +224,6 @@ export function Sender({ active = true }: { active?: boolean }) {
     setFps(readFps());
   }, []);
 
-  const handleStageMouseMove = useCallback(() => {
-    if (plan && qrReady) {
-      triggerOverlay();
-    }
-  }, [plan, qrReady, triggerOverlay]);
-
-  const handleStageMouseLeave = useCallback(() => {
-    if (overlayTimerRef.current !== null) {
-      clearTimeout(overlayTimerRef.current);
-      overlayTimerRef.current = null;
-    }
-    setOverlayActive(false);
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (overlayTimerRef.current !== null) {
-        clearTimeout(overlayTimerRef.current);
-      }
-    };
-  }, []);
-
   function disposePipeline() {
     pipelineRef.current?.dispose();
     pipelineRef.current = null;
@@ -280,11 +243,6 @@ export function Sender({ active = true }: { active?: boolean }) {
   ) {
     disposePipeline();
     setTurboStats(null);
-    setOverlayActive(false);
-    if (overlayTimerRef.current !== null) {
-      clearTimeout(overlayTimerRef.current);
-      overlayTimerRef.current = null;
-    }
     const pipeline = new FramePipeline(prepared.plan, prepared.blob, ec, colorMode);
     pipeline.onChange = () => {
       if (pipeline.error) {
@@ -316,11 +274,6 @@ export function Sender({ active = true }: { active?: boolean }) {
   function resetForNewPick() {
     disposePipeline();
     setTurboStats(null);
-    setOverlayActive(false);
-    if (overlayTimerRef.current !== null) {
-      clearTimeout(overlayTimerRef.current);
-      overlayTimerRef.current = null;
-    }
     preparedRef.current = null;
     setPlan(null);
     setSeq(0);
@@ -393,8 +346,8 @@ export function Sender({ active = true }: { active?: boolean }) {
       if (token !== pickTokenRef.current) return;
       preparedRef.current = prepared;
       setSavedBytes(prepared.savedBytes);
+      setBusy({ f: 1, phase: "hash" });
       installPipeline(prepared, preset.ec, color);
-      setBusy(null);
       sfx.fileFound();
       void saveItem({
         id: prepared.plan.idHex + "-sent-" + Date.now(),
@@ -538,6 +491,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       if (paintedRef.current !== seqRef.current) {
         if (paint(seqRef.current)) {
           setQrReady(true);
+          setBusy(null);
           nextAt = Math.max(nextAt, now);
         } else {
           pipeline.want(seqRef.current);
@@ -625,11 +579,6 @@ export function Sender({ active = true }: { active?: boolean }) {
     pipelineRef.current?.reset(0);
     setSeq(0);
     setTurboStats(null);
-    setOverlayActive(false);
-    if (overlayTimerRef.current !== null) {
-      clearTimeout(overlayTimerRef.current);
-      overlayTimerRef.current = null;
-    }
     setPlaying(false);
     sfx.reset();
   }
@@ -724,11 +673,13 @@ export function Sender({ active = true }: { active?: boolean }) {
       ? "—"
       : turboStats?.complete
         ? "Transfer complete"
-        : playing || isTurboActive
-          ? inFirstPass || isTurboActive
-            ? `${formatDuration(effectiveRemainingSeconds)} left`
-            : "Sending repair frames"
-          : `${formatDuration(passSeconds)} to send`);
+        : isTurboActive
+          ? `${formatBytes(turboStats!.rate)}/s · ${formatDuration(effectiveRemainingSeconds)} left`
+          : playing
+            ? inFirstPass
+              ? `${formatBytes(throughput)}/s · ${formatDuration(remainingSeconds)} left`
+              : "Sending repair frames"
+            : "Ready to transfer");
 
   /* ---------------------------------------------------------------- empty / busy state */
   if (!file) {
@@ -968,10 +919,15 @@ export function Sender({ active = true }: { active?: boolean }) {
   const stage = (
     <div className="relative flex h-full w-full min-h-0 flex-col">
       <div
-        className="relative min-h-0 flex-1 overflow-hidden rounded-[1.75rem]"
-        onMouseMove={handleStageMouseMove}
-        onMouseEnter={handleStageMouseMove}
-        onMouseLeave={handleStageMouseLeave}
+        className={cn(
+          "relative min-h-0 flex-1 overflow-hidden rounded-[1.75rem]",
+          ready && qrReady ? "cursor-pointer select-none" : "",
+        )}
+        onClick={() => {
+          if (ready && qrReady) {
+            togglePlaying();
+          }
+        }}
       >
         <LaneGrid
           count={activeLanes}
@@ -981,7 +937,7 @@ export function Sender({ active = true }: { active?: boolean }) {
           switching={Boolean(switching)}
           forceCols={activeLanes === 8 ? 4 : undefined}
         />
-        {(!qrReady || !ready) && !qrError && (
+        {(!qrReady || !ready || busy !== null) && !qrError && (
           <div className="absolute inset-0 z-20 flex flex-col items-center justify-center p-6 text-center animate-in fade-in-50 zoom-in-95 duration-300">
             {/* Ambient liquid backdrop glow */}
             <div className="pointer-events-none absolute inset-0 -z-10 flex items-center justify-center overflow-hidden rounded-[2rem]">
@@ -1009,19 +965,19 @@ export function Sender({ active = true }: { active?: boolean }) {
               {/* Status pill badge */}
               <div className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3.5 py-1 text-[11px] font-extrabold uppercase tracking-wider text-primary">
                 <span className="h-1.5 w-1.5 rounded-full bg-primary animate-ping" />
-                {busy?.phase === "compress"
-                  ? "Optimizing Payload"
-                  : busy?.phase === "bundle"
-                    ? "Archiving Bundle"
-                    : busy?.phase === "hash"
-                      ? "Generating Stream"
-                      : "Synthesizing Frames"}
+                {busy && busy.f >= 1
+                  ? "Stream Ready"
+                  : busy?.phase === "compress"
+                    ? "Optimizing Payload"
+                    : busy?.phase === "bundle"
+                      ? "Archiving Bundle"
+                      : "Generating Stream"}
               </div>
 
               {/* Big bold liquid percentage */}
               <div className="mt-3.5 flex items-baseline justify-center gap-1">
                 <span className="text-5xl font-black tracking-tight tabular-nums sm:text-6xl text-foreground">
-                  {busy ? Math.round(busy.f * 100) : 98}
+                  {busy ? Math.round(busy.f * 100) : 100}
                 </span>
                 <span className="text-3xl font-bold text-primary">%</span>
               </div>
@@ -1036,7 +992,7 @@ export function Sender({ active = true }: { active?: boolean }) {
               <div className="relative mt-4 h-2.5 w-full overflow-hidden rounded-full bg-secondary/80 p-[1px] ring-1 ring-border/50">
                 <div
                   className="h-full rounded-full bg-gradient-to-r from-primary via-accent to-primary transition-all duration-300 ease-out shadow-[0_0_14px_rgba(var(--primary-rgb),0.55)]"
-                  style={{ width: `${Math.max(4, (busy?.f ?? 0.98) * 100)}%` }}
+                  style={{ width: `${Math.max(4, (busy?.f ?? 1) * 100)}%` }}
                 />
               </div>
 
@@ -1051,39 +1007,6 @@ export function Sender({ active = true }: { active?: boolean }) {
                 </span>
               </div>
             </div>
-          </div>
-        )}
-        {ready && qrReady && (
-          <div
-            className={cn(
-              "absolute inset-0 z-20 grid place-items-center transition-all duration-300 ease-out select-none",
-              overlayActive ? "opacity-100 scale-100 pointer-events-auto" : "opacity-0 scale-95 pointer-events-none",
-            )}
-          >
-            <button
-              onClick={() => {
-                triggerOverlay();
-                setTapFlash(playing ? "pause" : "play");
-                window.setTimeout(() => setTapFlash(null), 1000);
-                togglePlaying();
-              }}
-              className={cn(
-                "relative grid h-20 w-20 place-items-center rounded-full transition-all duration-300",
-                // Ultra liquid glassmorphic disk: see-through so QR codes are readable underneath
-                "bg-white/[0.08] dark:bg-white/[0.05]",
-                "backdrop-blur-md backdrop-saturate-200",
-                "border border-white/40 dark:border-white/20",
-                "shadow-[0_8px_32px_0_rgba(0,0,0,0.15),inset_0_1px_1px_0_rgba(255,255,255,0.4)]",
-                "ring-1 ring-black/10 dark:ring-white/10",
-                "text-foreground hover:scale-105 active:scale-95",
-                "overflow-hidden group/btn cursor-pointer",
-              )}
-              aria-label={playing ? "Pause" : "Play"}
-            >
-              {/* Liquid watery reflection */}
-              <span className="absolute inset-0 rounded-full bg-gradient-to-b from-white/30 via-transparent to-transparent pointer-events-none" />
-              <PlayPauseIcon playing={playing} className="relative h-8 w-8 text-foreground drop-shadow-[0_2px_6px_rgba(0,0,0,0.35)] transition-transform duration-300" />
-            </button>
           </div>
         )}
         {switching && (
@@ -1254,7 +1177,7 @@ export function Sender({ active = true }: { active?: boolean }) {
           <span>
             {fps} fps · ≈ {formatBytes(throughput)}/s
           </span>
-          <span>{formatDuration(payloadBytes / (preset.chunk * fps))} total</span>
+          <span>{formatDuration(payloadBytes / throughput)} optical pass</span>
         </p>
       </div>
       <div className="glass flex flex-col gap-2 rounded-3xl p-2.5">
@@ -1297,7 +1220,13 @@ export function Sender({ active = true }: { active?: boolean }) {
             aria-label="Fullscreen QR"
           >
             {/* QR area: 1-8 codes, auto-arranged to be as large as the screen allows. */}
-            <div className={cn("row-start-2 min-h-0 min-w-0 landscape:col-start-1 landscape:row-span-2 landscape:row-start-1", activeLanes > 1 ? "p-1.5 sm:p-4" : "p-3 sm:p-5")}>
+            <div
+              onClick={togglePlaying}
+              className={cn(
+                "row-start-2 min-h-0 min-w-0 cursor-pointer select-none landscape:col-start-1 landscape:row-span-2 landscape:row-start-1",
+                activeLanes > 1 ? "p-1.5 sm:p-4" : "p-3 sm:p-5",
+              )}
+            >
               <LaneGrid count={activeLanes} refs={fullRefs} live={playing} gap={12} switching={Boolean(switching)} />
             </div>
 

@@ -444,7 +444,7 @@ export function Scanner({
   const doneUrlRef = useRef<string | null>(null);
   const progressCommitRef = useRef(0);
   const viewRef = useRef<View>({ cx: 0.5, cy: 0.5, z: 1 });
-  const autoAssistRef = useRef(true); // Active hardware autofocus by default
+  const autoAssistRef = useRef(false); // Autofocus off by default
   const stopRef = useRef<(showStopping?: boolean) => Promise<void>>(async () => {});
   const polyRefs = useRef<Array<SVGPolygonElement | null>>([]);
   const lockRef = useRef<HTMLDivElement>(null);
@@ -494,7 +494,7 @@ export function Scanner({
   const [viewer, setViewer] = useState<ViewerItem | null>(null);
   const [paused, setPaused] = useState<PausedTransfer | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const [autoAssist, setAutoAssist] = useState(true);
+  const [autoAssist, setAutoAssist] = useState(false);
   const [stats, setStats] = useState({ cam: 0, rx: 0 });
 
   useWakeLock(active);
@@ -1091,7 +1091,8 @@ export function Scanner({
 
   function updateProgress(t: Transfer, isTurbo = false) {
     const now = performance.now();
-    if (!isTurbo && now - progressCommitRef.current < PROGRESS_COMMIT_MS) return;
+    const minInterval = isTurbo ? 50 : PROGRESS_COMMIT_MS;
+    if (t.decoder.count < t.meta.total && now - progressCommitRef.current < minInterval) return;
     progressCommitRef.current = now;
     const frac = t.decoder.progress;
     pctRef.current = frac * 100;
@@ -1118,32 +1119,32 @@ export function Scanner({
       return;
     }
 
-    const rollingRate = meterRef.current.currentRate(now, 1200);
+    const activeElapsed = Math.max(0.05, (Date.now() - t.startedAt) / 1000);
+    const sustainedRate = completedBytes / activeElapsed;
+    const rollingRate = meterRef.current.currentRate(now, 1000);
+
+    // Dynamic real-time rate: use the rolling window rate if available, backed by overall sustained rate
+    let activeRate = 0;
     if (rollingRate > 0) {
-      if (etaRateRef.current <= 0 || isTurbo) {
-        etaRateRef.current = rollingRate;
-      } else {
-        // Smooth changes so rate and ETA do not wildly jitter
-        etaRateRef.current = etaRateRef.current * 0.7 + rollingRate * 0.3;
-      }
+      activeRate = isTurbo
+        ? rollingRate
+        : etaRateRef.current > 0
+          ? etaRateRef.current * 0.7 + rollingRate * 0.3
+          : rollingRate;
+    } else if (sustainedRate > 0 && (activeElapsed >= 0.2 || isTurbo)) {
+      activeRate = sustainedRate;
+    }
+
+    if (activeRate > 0) {
+      etaRateRef.current = activeRate;
     }
 
     const remainingBytes = Math.max(0, t.meta.size - completedBytes);
     let eta: number | null = null;
 
-    if (t.decoder.count >= 1 && remainingBytes > 0) {
-      const activeElapsed = Math.max(0.1, (Date.now() - t.startedAt) / 1000);
-      const overallRate = completedBytes / activeElapsed;
-      // Real-time effective rate: prioritize rolling rate, backed by overall sustained rate
-      const effectiveRate = Math.max(etaRateRef.current, overallRate * 0.75);
-
-      if (effectiveRate > 0) {
-        eta = Math.max(0.5, remainingBytes / effectiveRate);
-      } else {
-        // Realistic initial baseline matching sender's optical stream (25-35 KB/s)
-        const baselineRate = Math.max(t.meta.chunk * 22, 25000);
-        eta = Math.max(0.5, remainingBytes / baselineRate);
-      }
+    // Only compute ETA when we have genuine measured throughput (> 50 B/s)
+    if (etaRateRef.current > 50 && remainingBytes > 0) {
+      eta = Math.max(0.5, remainingBytes / etaRateRef.current);
     }
 
     setProgress({
@@ -1456,7 +1457,7 @@ export function Scanner({
 
       if (!videoRef.current) throw new Error("The camera view is unavailable. Please reload the page.");
       await attachStream(stream);
-      void applyCameraFocus(stream);
+      if (autoAssistRef.current) void applyCameraFocus(stream);
       await sleep(CAMERA_TRANSITION_MS);
 
       scanningRef.current = true;

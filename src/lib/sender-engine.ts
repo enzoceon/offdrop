@@ -130,6 +130,7 @@ export async function prepareFile(
       await nextTick();
       check();
     }
+    opts.onProgress?.(1, "hash");
     payloadBlob = new Blob([bytes as BlobPart]);
   } else if (file.size <= IN_MEMORY_LIMIT) {
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -140,6 +141,7 @@ export async function prepareFile(
       await nextTick();
       check();
     }
+    opts.onProgress?.(1, "hash");
     payloadBlob = file;
   } else {
     // Large files (> 256 MB): stream directly via native reader without allocating repetitive slices
