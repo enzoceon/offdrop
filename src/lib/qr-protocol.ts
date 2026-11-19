@@ -519,6 +519,8 @@ export class FountainDecoder {
   private unknownInBlock: Uint16Array;
   private eqs: Equation[][];
   private seenSeeds = new Set<number>();
+  private turboHandle: { dispose: () => void } | null = null;
+  onTurboHeader?: (name: string, mime: string) => void;
   count = 0;
 
   constructor(meta: FrameMeta) {
@@ -535,6 +537,50 @@ export class FountainDecoder {
       this.unknownInBlock[b] = Math.min(BLOCK_CHUNKS, meta.total - b * BLOCK_CHUNKS);
     }
     this.eqs = Array.from({ length: blocks }, () => []);
+
+    if (typeof window !== "undefined") {
+      import("./turbo-transport")
+        .then(({ registerTurboReceiver }) => {
+          if (!this.complete) {
+            this.turboHandle = registerTurboReceiver(
+              meta,
+              (idx, payload) => {
+                this.addDirectChunk(idx, payload);
+              },
+              (name, mime) => {
+                this.onTurboHeader?.(name, mime);
+              },
+            );
+          }
+        })
+        .catch(() => {});
+    }
+  }
+
+  dispose() {
+    this.turboHandle?.dispose();
+    this.turboHandle = null;
+  }
+
+  /** Ingests an incoming raw chunk directly (e.g. from local turbo data channel). */
+  addDirectChunk(index: number, payload: Uint8Array): boolean {
+    if (
+      this.complete ||
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= this.total ||
+      this.have[index] ||
+      payload.length !== Math.min(this.chunk, this.size - index * this.chunk)
+    ) {
+      return false;
+    }
+    const chunkData = new Uint8Array(this.chunk);
+    chunkData.set(payload);
+    this.setChunk(index, chunkData);
+    if (this.complete) {
+      this.dispose();
+    }
+    return true;
   }
 
   get complete() {
@@ -656,6 +702,7 @@ export class FountainDecoder {
 
   /** Final file bytes once complete. */
   result(): Uint8Array {
+    this.dispose();
     return this.buffer.subarray(0, this.size);
   }
 }

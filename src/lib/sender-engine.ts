@@ -8,6 +8,7 @@ import {
 } from "./qr-protocol";
 import { BlobSource } from "./blob-source";
 import { buildColorFrame, buildFrame, QUIET, type BuiltFrame } from "./frame-core";
+import { registerTurboSender, type TurboSenderHandle } from "./turbo-transport";
 
 /** Files up to this size are held in memory for instant random access. */
 const IN_MEMORY_LIMIT = 96 * 1024 * 1024;
@@ -192,6 +193,7 @@ export class FramePipeline {
   /** Set when a frame could not be built; the UI shows it and stops playback. */
   error: Error | null = null;
   onChange: (() => void) | null = null;
+  private turboHandle: TurboSenderHandle | null = null;
 
   constructor(
     private plan: StreamPlan,
@@ -203,6 +205,9 @@ export class FramePipeline {
   ) {
     this.stride = color ? 3 : 1;
     this.startWorkers();
+    if (typeof window !== "undefined") {
+      this.turboHandle = registerTurboSender(this.plan, this.blob);
+    }
   }
 
   private startWorkers() {
@@ -271,6 +276,8 @@ export class FramePipeline {
     this.workers = [];
     this.ready.clear();
     this.onChange = null;
+    this.turboHandle?.dispose();
+    this.turboHandle = null;
   }
 
   private pump() {

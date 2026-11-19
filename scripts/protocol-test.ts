@@ -116,3 +116,23 @@ console.log("ALL PASS");
   console.log("OK instant start from a mid-stream repair frame; junk payloads rejected");
 }
 console.log("ALL PASS 2");
+
+{
+  const bytes = new Uint8Array(101).map((_, index) => index);
+  const plan = createPlan({
+    name: "direct.bin",
+    type: "application/octet-stream",
+    size: bytes.length,
+    crc: crc32(bytes),
+    chunk: 100,
+  });
+  const meta = (parseFrame(plan.headerFrame) as ParsedHeader).meta;
+  const dec = new FountainDecoder(meta);
+  if (dec.addDirectChunk(-1, bytes.subarray(0, 100))) throw new Error("negative direct chunk index accepted");
+  if (dec.addDirectChunk(meta.total, bytes.subarray(0, 1))) throw new Error("out-of-range direct chunk accepted");
+  if (dec.addDirectChunk(0, bytes.subarray(0, 99))) throw new Error("short direct chunk accepted");
+  if (!dec.addDirectChunk(1, bytes.subarray(100))) throw new Error("valid final direct chunk rejected");
+  if (!dec.addDirectChunk(0, bytes.subarray(0, 100))) throw new Error("valid direct chunk rejected");
+  if (crc32(dec.result()) !== plan.crc) throw new Error("direct chunks did not reconstruct payload");
+  console.log("OK direct chunks: index and payload validation");
+}
