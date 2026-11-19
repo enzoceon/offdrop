@@ -592,7 +592,8 @@ export class FountainDecoder {
       return false;
     }
     this.setChunk(index, payload);
-    const shouldReport = this.count % 128 === 0 || this.count === this.total;
+    const reportInterval = Math.min(1024, Math.max(64, Math.floor(this.total / 500)));
+    const shouldReport = this.count % reportInterval === 0 || this.count === this.total;
     if (shouldReport) {
       this.onChunk?.(this.count, this.total, true);
     }

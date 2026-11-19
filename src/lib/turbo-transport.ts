@@ -340,11 +340,29 @@ async function streamToBroadcast(
   const startTime = performance.now();
   const rawBytes = blob.size <= 256 * 1024 * 1024 ? new Uint8Array(await blob.arrayBuffer()) : null;
 
+  // For large files (> 256 MB up to 1 GB+), read in 32 MB sliding window blocks to avoid millions of disk reads
+  const WINDOW_SIZE = 32 * 1024 * 1024;
+  let windowStart = -1;
+  let windowEnd = -1;
+  let windowBytes: Uint8Array | null = null;
+
   for (let i = 0; i < plan.total; i++) {
     if (isCancelled()) break;
     const start = i * plan.chunk;
     const end = Math.min(plan.size, (i + 1) * plan.chunk);
-    const chunkBytes = rawBytes ? rawBytes.subarray(start, end) : new Uint8Array(await blob.slice(start, end).arrayBuffer());
+
+    let chunkBytes: Uint8Array;
+    if (rawBytes) {
+      chunkBytes = rawBytes.subarray(start, end);
+    } else {
+      if (!windowBytes || start < windowStart || start >= windowEnd) {
+        windowStart = start;
+        windowEnd = Math.min(plan.size, start + WINDOW_SIZE);
+        windowBytes = new Uint8Array(await blob.slice(windowStart, windowEnd).arrayBuffer());
+      }
+      chunkBytes = windowBytes.subarray(start - windowStart, end - windowStart);
+    }
+
     bc.postMessage({
       type: "chunk",
       id: plan.id,
@@ -353,11 +371,11 @@ async function streamToBroadcast(
     });
     bytesSent += chunkBytes.byteLength;
     if (i % 64 === 0 || i === plan.total - 1) {
-      const elapsed = Math.max(0.05, (performance.now() - startTime) / 1000);
+      const elapsed = Math.max(0.01, (performance.now() - startTime) / 1000);
       onProgress?.(i + 1, plan.total, bytesSent, bytesSent / elapsed);
     }
-    // Yield smoothly every 128 chunks
-    if (i % 128 === 0) await new Promise((r) => setTimeout(r, 0));
+    // Yield smoothly every 256 chunks
+    if (i % 256 === 0) await new Promise((r) => setTimeout(r, 0));
   }
 }
 
@@ -371,6 +389,12 @@ async function streamToDataChannel(
   let bytesSent = 0;
   const startTime = performance.now();
   const rawBytes = blob.size <= 256 * 1024 * 1024 ? new Uint8Array(await blob.arrayBuffer()) : null;
+
+  // For large files (> 256 MB up to 1 GB+), read in 32 MB sliding window blocks to eliminate I/O stall
+  const WINDOW_SIZE = 32 * 1024 * 1024;
+  let windowStart = -1;
+  let windowEnd = -1;
+  let windowBytes: Uint8Array | null = null;
 
   for (let i = 0; i < plan.total; i++) {
     if (isCancelled() || dc.readyState !== "open") break;
@@ -388,7 +412,18 @@ async function streamToDataChannel(
 
     const start = i * plan.chunk;
     const end = Math.min(plan.size, (i + 1) * plan.chunk);
-    const chunkBytes = rawBytes ? rawBytes.subarray(start, end) : new Uint8Array(await blob.slice(start, end).arrayBuffer());
+
+    let chunkBytes: Uint8Array;
+    if (rawBytes) {
+      chunkBytes = rawBytes.subarray(start, end);
+    } else {
+      if (!windowBytes || start < windowStart || start >= windowEnd) {
+        windowStart = start;
+        windowEnd = Math.min(plan.size, start + WINDOW_SIZE);
+        windowBytes = new Uint8Array(await blob.slice(windowStart, windowEnd).arrayBuffer());
+      }
+      chunkBytes = windowBytes.subarray(start - windowStart, end - windowStart);
+    }
 
     const packet = new Uint8Array(4 + chunkBytes.byteLength);
     new DataView(packet.buffer).setUint32(0, i, true);
@@ -402,9 +437,9 @@ async function streamToDataChannel(
 
     bytesSent += chunkBytes.byteLength;
     if (i % 256 === 0 || i === plan.total - 1) {
-      const elapsed = Math.max(0.05, (performance.now() - startTime) / 1000);
+      const elapsed = Math.max(0.01, (performance.now() - startTime) / 1000);
       onProgress?.(i + 1, plan.total, bytesSent, bytesSent / elapsed);
-      // Fast non-clamping cooperative scheduling: microtask tick, macrotask every 1024
+      // Fast non-clamping cooperative scheduling: macrotask every 1024 chunks
       if (i % 1024 === 0) {
         await new Promise((r) => setTimeout(r, 0));
       } else {

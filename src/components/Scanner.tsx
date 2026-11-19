@@ -1448,18 +1448,15 @@ export function Scanner({
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera permission is unavailable in this browser.");
       setFastDecoder(Boolean(getDetector()));
 
-      // Open the camera while the spinner plays; hold the moment for at least LAUNCH_MIN_MS.
-      const [stream] = await Promise.all([openCameraStream(facingMode, camQualityRef.current), sleep(LAUNCH_MIN_MS)]);
+      // Open the camera and start scanning immediately without artificial sleep delays
+      const stream = await openCameraStream(facingMode, camQualityRef.current);
 
       setStarting(true);
       setLaunching(false);
-      await new Promise<void>((r) => requestAnimationFrame(() => r()));
-      await sleep(40);
 
       if (!videoRef.current) throw new Error("The camera view is unavailable. Please reload the page.");
       await attachStream(stream);
       if (autoAssistRef.current) void applyCameraFocus(stream);
-      await sleep(CAMERA_TRANSITION_MS);
 
       scanningRef.current = true;
       activeRef.current = true;
