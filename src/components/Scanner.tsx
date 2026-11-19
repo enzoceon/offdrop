@@ -128,7 +128,7 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function formatEta(seconds: number | null, stalled = false) {
+function formatEta(seconds: number | null, stalled = false, isAirGap = false) {
   if (stalled) return "Paused · hold steady";
   if (seconds === null || !Number.isFinite(seconds)) return "";
   if (seconds <= 0.8) return "< 1s left";
@@ -137,9 +137,8 @@ function formatEta(seconds: number | null, stalled = false) {
   const hours = Math.floor(whole / 3600);
   const mins = Math.floor((whole % 3600) / 60);
   const secs = whole % 60;
-  if (hours > 0) return `≈ ${hours}h ${mins.toString().padStart(2, "0")}m left`;
-  if (mins > 0) return `≈ ${mins}m ${secs.toString().padStart(2, "0")}s left`;
-  return `≈ ${secs}s left`;
+  const timeStr = hours > 0 ? `≈ ${hours}h ${mins.toString().padStart(2, "0")}m left` : mins > 0 ? `≈ ${mins}m ${secs.toString().padStart(2, "0")}s left` : `≈ ${secs}s left`;
+  return isAirGap ? `Optical (${timeStr})` : timeStr;
 }
 
 function mediaLabel(mime?: string | null) {
@@ -1125,13 +1124,11 @@ export function Scanner({
 
     // Dynamic real-time rate: use the rolling window rate if available, backed by overall sustained rate
     let activeRate = 0;
-    if (rollingRate > 0) {
-      activeRate = isTurbo
-        ? rollingRate
-        : etaRateRef.current > 0
-          ? etaRateRef.current * 0.7 + rollingRate * 0.3
-          : rollingRate;
-    } else if (sustainedRate > 0 && (activeElapsed >= 0.2 || isTurbo)) {
+    if (isTurbo) {
+      activeRate = rollingRate > 0 ? rollingRate : sustainedRate;
+    } else if (rollingRate > 0) {
+      activeRate = etaRateRef.current > 0 ? etaRateRef.current * 0.7 + rollingRate * 0.3 : rollingRate;
+    } else if (sustainedRate > 0 && activeElapsed >= 0.2) {
       activeRate = sustainedRate;
     }
 
@@ -1142,8 +1139,12 @@ export function Scanner({
     const remainingBytes = Math.max(0, t.meta.size - completedBytes);
     let eta: number | null = null;
 
+    // For large files (> 5 MB), don't show an optical 50-minute estimate during initial WebRTC negotiation (first 2.5s)
+    const isLarge = t.meta.size > 5 * 1024 * 1024;
+    const isTurboNegotiating = isLarge && activeElapsed < 2.5 && etaRateRef.current < 250_000;
+
     // Only compute ETA when we have genuine measured throughput (> 50 B/s)
-    if (etaRateRef.current > 50 && remainingBytes > 0) {
+    if (!isTurboNegotiating && etaRateRef.current > 50 && remainingBytes > 0) {
       eta = Math.max(0.5, remainingBytes / etaRateRef.current);
     }
 
@@ -1820,8 +1821,11 @@ export function Scanner({
   const live = active || starting || stopping;
   const hasProgress = progress.total > 0;
   const named = scanInfo?.named ?? false;
-  const speedLabel = progress.rate > 0 ? `${formatBytes(Math.round(progress.rate))}/s` : null;
-  const etaLabel = formatEta(progress.eta, progress.stalled);
+  const isLarge = (scanInfo?.size ?? progress.total * 1000) > 5 * 1024 * 1024;
+  const isTurboActive = progress.rate > 400_000;
+  const isAirGap = isLarge && !isTurboActive && progress.rate > 0 && progress.rate < 200_000;
+  const speedLabel = progress.rate > 0 ? (isTurboActive ? `${formatBytes(Math.round(progress.rate))}/s (Turbo)` : `${formatBytes(Math.round(progress.rate))}/s`) : null;
+  const etaLabel = progress.eta === null && isLarge && !isTurboActive ? "Turbo P2P connecting…" : formatEta(progress.eta, progress.stalled, isAirGap);
   const phase: "searching" | "locked" | "receiving" = hasProgress ? "receiving" : codeCount > 0 ? "locked" : "searching";
 
   const errorBanner = error ? (

@@ -105,13 +105,13 @@ export function registerTurboSender(
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        // Rapid ICE gathering: host candidates are ready almost immediately (< 100ms)
+        // Allow up to 600ms for gathering local ICE candidates (host, srflx)
         await new Promise<void>((resolve) => {
           if (!pc || pc.iceGatheringState === "complete") {
             resolve();
             return;
           }
-          const timer = setTimeout(resolve, 350); // fast 350ms cap so local transfer starts immediately
+          const timer = setTimeout(resolve, 600);
           const check = () => {
             if (pc?.iceGatheringState === "complete") {
               pc.removeEventListener("icegatheringstatechange", check);
@@ -122,13 +122,19 @@ export function registerTurboSender(
           pc.addEventListener("icegatheringstatechange", check);
         });
 
-        if (disposed) return;
+        if (disposed || !pc.localDescription) return;
+
+        // Ensure clean plain object serialization for cross-browser safety
+        const sdpPayload = {
+          type: pc.localDescription.type,
+          sdp: pc.localDescription.sdp,
+        };
 
         // Post offer to signaling endpoint
         await fetch("/api/signal", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: plan.id, type: "offer", sdp: pc.localDescription }),
+          body: JSON.stringify({ id: plan.id, type: "offer", sdp: sdpPayload }),
         }).catch(() => {});
 
         // Continually poll for answer while sender is active (rapid 150ms initial polling)
@@ -215,7 +221,7 @@ export function registerTurboReceiver(
       try {
         // Poll for offer from signaling endpoint (rapid initial polling)
         let offerSdp: RTCSessionDescriptionInit | null = null;
-        for (let i = 0; i < 40 && !disposed; i++) {
+        for (let i = 0; i < 120 && !disposed; i++) {
           try {
             const res = await fetch(`/api/signal?id=${meta.id}&type=offer`);
             if (res.ok) {
@@ -226,7 +232,7 @@ export function registerTurboReceiver(
               }
             }
           } catch {}
-          const delay = i < 8 ? 150 : 500;
+          const delay = i < 10 ? 150 : 400;
           await new Promise((r) => setTimeout(r, delay));
         }
 
@@ -263,13 +269,13 @@ export function registerTurboReceiver(
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
-        // Gather all local candidates quickly before sending answer (350ms cap)
+        // Allow up to 600ms for gathering local candidates before sending answer
         await new Promise<void>((resolve) => {
           if (!pc || pc.iceGatheringState === "complete") {
             resolve();
             return;
           }
-          const timer = setTimeout(resolve, 350);
+          const timer = setTimeout(resolve, 600);
           const check = () => {
             if (pc?.iceGatheringState === "complete") {
               pc.removeEventListener("icegatheringstatechange", check);
@@ -280,12 +286,17 @@ export function registerTurboReceiver(
           pc.addEventListener("icegatheringstatechange", check);
         });
 
-        if (disposed) return;
+        if (disposed || !pc.localDescription) return;
+
+        const sdpPayload = {
+          type: pc.localDescription.type,
+          sdp: pc.localDescription.sdp,
+        };
 
         await fetch("/api/signal", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: meta.id, type: "answer", sdp: pc.localDescription }),
+          body: JSON.stringify({ id: meta.id, type: "answer", sdp: sdpPayload }),
         }).catch(() => {});
       } catch {
         // WebRTC unavailable

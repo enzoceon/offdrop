@@ -677,9 +677,11 @@ export function Sender({ active = true }: { active?: boolean }) {
           ? `${formatBytes(turboStats!.rate)}/s · ${formatDuration(effectiveRemainingSeconds)} left`
           : playing
             ? inFirstPass
-              ? `${formatBytes(throughput)}/s · ${formatDuration(remainingSeconds)} left`
+              ? isLarge
+                ? `${formatBytes(throughput)}/s · Optical air-gap (${formatDuration(remainingSeconds)})`
+                : `${formatBytes(throughput)}/s · ${formatDuration(remainingSeconds)} left`
               : "Sending repair frames"
-            : "Ready to transfer");
+            : "Optical stream ready · Turbo P2P enabled");
 
   /* ---------------------------------------------------------------- empty / busy state */
   if (!file) {
@@ -1282,8 +1284,8 @@ export function Sender({ active = true }: { active?: boolean }) {
               <div className="hidden grid-cols-2 gap-2 lg:landscape:grid">
                 <PStat icon={<HardDrive className="h-3.5 w-3.5" />} label="Size" value={formatBytes(payloadBytes)} />
                 <PStat icon={<Layers3 className="h-3.5 w-3.5" />} label="Frames" value={`${effectiveShownFrames}/${plan.total}`} />
-                <PStat icon={<Timer className="h-3.5 w-3.5" />} label="Time left" value={turboStats?.complete ? "Complete" : inFirstPass || isTurboActive ? formatDuration(effectiveRemainingSeconds) : "Repair"} />
-                <PStat icon={<Activity className="h-3.5 w-3.5" />} label="Rate" value={`${formatBytes(Math.round(effectiveThroughput))}/s`} />
+                <PStat icon={<Timer className="h-3.5 w-3.5" />} label="Time left" value={turboStats?.complete ? "Complete" : isTurboActive ? (turboStats!.rate > 0 ? formatDuration(effectiveRemainingSeconds) : "Connecting…") : isLarge ? "Turbo P2P ready" : inFirstPass ? formatDuration(remainingSeconds) : "Repair"} />
+                <PStat icon={<Activity className="h-3.5 w-3.5" />} label="Rate" value={isTurboActive && turboStats!.rate > 0 ? `${formatBytes(Math.round(turboStats!.rate))}/s (Turbo)` : isTurboActive ? "Connecting…" : `${formatBytes(Math.round(throughput))}/s (Optical)`} />
               </div>
 
               <div className="hud-card min-w-0 rounded-3xl p-3.5">
@@ -1299,7 +1301,7 @@ export function Sender({ active = true }: { active?: boolean }) {
                     <div className="flex items-baseline justify-between gap-2">
                       <span className="text-lg font-extrabold tabular-nums">{Math.floor(effectiveProgress)}%</span>
                       <span className="truncate text-[11px] font-semibold text-white/70">
-                        {turboStats?.complete ? "Transfer complete" : inFirstPass || isTurboActive ? `${formatDuration(effectiveRemainingSeconds)} left` : "Repair frames"}
+                        {turboStats?.complete ? "Transfer complete" : isTurboActive ? `${formatDuration(effectiveRemainingSeconds)} left` : isLarge && !playing ? "Turbo P2P ready" : inFirstPass ? `${formatDuration(remainingSeconds)} left` : "Repair frames"}
                       </span>
                     </div>
                     <div className="mt-1 h-2 overflow-hidden rounded-full bg-white/15">
