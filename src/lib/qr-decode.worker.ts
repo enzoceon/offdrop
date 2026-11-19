@@ -118,6 +118,31 @@ function decodeChannels(buf: Uint8ClampedArray, w: number, h: number): Found[] {
   return all;
 }
 
+function autoContrast(buf: Uint8ClampedArray): Uint8ClampedArray {
+  let min = 255;
+  let max = 0;
+  // Sample every 16th pixel for speed
+  for (let i = 0; i < buf.length; i += 64) {
+    const l = (buf[i] * 77 + buf[i + 1] * 150 + buf[i + 2] * 29) >> 8;
+    if (l < min) min = l;
+    if (l > max) max = l;
+  }
+  if (max - min < 120 || min > 35) {
+    const out = new Uint8ClampedArray(buf.length);
+    const range = Math.max(1, max - min);
+    for (let i = 0; i < buf.length; i += 4) {
+      const l = (buf[i] * 77 + buf[i + 1] * 150 + buf[i + 2] * 29) >> 8;
+      const v = Math.max(0, Math.min(255, Math.round(((l - min) * 255) / range)));
+      out[i] = v;
+      out[i + 1] = v;
+      out[i + 2] = v;
+      out[i + 3] = 255;
+    }
+    return out;
+  }
+  return buf;
+}
+
 self.onmessage = async (event: MessageEvent<In>) => {
   const { id, data, w, h, deep, channels } = event.data;
   let results: Found[] = [];
@@ -128,6 +153,13 @@ self.onmessage = async (event: MessageEvent<In>) => {
     } else {
       // Primary: C++ WebAssembly reader (processes up to 12 codes simultaneously at 60 FPS)
       results = await decodeZxing(buf, w, h);
+      // Glare & monitor overexposure pass: adaptive luminance contrast stretch
+      if (results.length === 0) {
+        const stretched = autoContrast(buf);
+        if (stretched !== buf) {
+          results = await decodeZxing(stretched, w, h);
+        }
+      }
       // Fallback: If WASM found none and deep search is enabled, run jsQR
       if (results.length === 0) {
         results = decodeAll(buf, w, h, deep);

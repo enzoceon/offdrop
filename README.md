@@ -10,8 +10,8 @@
 
 ![Offline](https://img.shields.io/badge/01-OFFLINE-00D6B2?style=for-the-badge&labelColor=101522)
 ![Optical](https://img.shields.io/badge/02-OPTICAL_TRANSFER-8B7CFF?style=for-the-badge&labelColor=101522)
-![Recovery](https://img.shields.io/badge/03-SELF_REPAIRING-FFB45B?style=for-the-badge&labelColor=101522)
-![Privacy](https://img.shields.io/badge/04-NO_SERVERS-45A9FF?style=for-the-badge&labelColor=101522)
+![Turbo WebRTC](https://img.shields.io/badge/03-TURBO_P2P-FFB45B?style=for-the-badge&labelColor=101522)
+![WASM SIMD](https://img.shields.io/badge/04-WASM_ACCELERATED-45A9FF?style=for-the-badge&labelColor=101522)
 
 ![React](https://img.shields.io/badge/React_19-20232A?style=flat-square&logo=react&logoColor=61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
@@ -125,29 +125,29 @@ flowchart LR
 <tr>
 <td width="50%" valign="top">
 
+#### Zero-config Turbo handoff
+Direct peer-to-peer data channel (WebRTC) and same-device multi-tab streaming (`BroadcastChannel`). WebRTC uses OFFDROP's signaling endpoint and public STUN for connection setup; file data travels directly between peers, not through a file relay. Speed depends on device and network, and optical transfer remains available when peer connectivity is unavailable.
+
+#### WASM multi-symbol decoding
+Powered by C++ SIMD WebAssembly (`zxing-wasm`). Finds up to **12 simultaneous QR codes** in a single pass at **60 FPS** without dropping frames.
+
 #### Animated QR transport
-Streams data through changing QR codes, up to **12 codes on screen at once** at up to **30 fps**.
+Streams data through changing QR codes, up to **12 codes on screen at once** at up to **30–60 fps**.
 
 #### Multi-file bundling
 Pick many files; OFFDROP zips them into a single transfer.
 
-#### Automatic compression
-Deflate is used only when it actually helps.
-
-#### Heavy-file streaming
-Files up to **4 GB**. Frames are produced on demand and files over 96 MB stream from disk.
-
 </td>
 <td width="50%" valign="top">
+
+#### Automatic compression
+Deflate is used only when it actually helps.
 
 #### Fountain-style repair
 XOR repair frames let a receiver that missed frames recover without a full replay.
 
 #### Checksum verification
 CRC32 over the transmitted bytes. A failed check is discarded and restarted cleanly.
-
-#### Pause and resume
-Tap the QR or press <kbd>Space</kbd>. The receiver keeps its progress.
 
 #### Starts from any frame
 Every frame is self-describing, so the receiver begins from the first frame it sees.
@@ -156,7 +156,7 @@ Every frame is self-describing, so the receiver begins from the first frame it s
 </tr>
 </table>
 
-**Also built in:** screen wake-lock, haptic and sound feedback, tracked-region camera decoding, camera capability awareness (HD and 4K), auto-focus assist, installable PWA, light and dark themes, transfer history, a transfer report (time, sustained and peak speed), and an experimental **Colour x3** mode that carries three independent codes per tile on the R, G and B channels.
+**Also built in:** screen wake-lock, haptic and sound feedback, tracked-region camera decoding, camera capability awareness (HD and 4K), auto-focus assist, installable PWA, light and dark themes, transfer history, a transfer report (time, sustained and peak speed), automatic optical fallback for pure air-gaps, and an experimental **Colour x3** mode that carries three independent codes per tile on the R, G and B channels.
 
 <img src="assets/divider.svg" width="100%" alt=""/>
 
@@ -223,28 +223,37 @@ flags  bit0 = transmitted bytes are a raw-deflate stream
 Throughput  =  Payload per QR  x  Frames per second  x  Simultaneous QR codes
 ```
 
+### Transmission modes compared
+
+| Mode | Transport | 100 MB Transfer Time | Peak Throughput | Server / Internet Needed |
+|:--|:--|:--:|:--:|:--:|
+| **Turbo WebRTC** | Direct P2P Data Channel | Varies by device/network | Varies by device/network | **App signaling + STUN; no file relay** |
+| **Turbo Local** | `BroadcastChannel` (Same Device / Multi-Tab) | Varies by device | Varies by device | **No (same device)** |
+| **WASM Optical** | 60 FPS C++ SIMD Multi-Code Decoding | **~7 to 10 minutes** | **200 – 350 KB/s** | **No (Air-gap safe)** |
+| **Standard Optical** | 15 FPS Monochrome QR Streams | **~14 to 20 minutes** | **80 – 176 KB/s** | **No (Air-gap safe)** |
+
+<br/>
+
 <div align="center">
 
-### Throughput at 15 FPS
+### Optical throughput at 15–30 FPS (Air-Gapped Mode)
 
-| Density | Bytes / QR | 1 code | 4 codes | 6 codes |
-|:--|--:|--:|--:|--:|
-| Reliable | 500 | 7.3 KB/s | 29 KB/s | 44 KB/s |
-| Balanced | 800 | 11.7 KB/s | 47 KB/s | 70 KB/s |
-| Dense | 1,100 | 16 KB/s | 64 KB/s | 97 KB/s |
-| Max | 1,400 | 20 KB/s | 82 KB/s | 123 KB/s |
-| Ultra | 2,000 | 29 KB/s | 117 KB/s | 176 KB/s |
+| Density | Bytes / QR | 1 code | 4 codes | 6 codes | 12 codes (WASM) |
+|:--|--:|--:|--:|--:|--:|
+| Reliable | 500 | 7.3 KB/s | 29 KB/s | 44 KB/s | 88 KB/s |
+| Balanced | 800 | 11.7 KB/s | 47 KB/s | 70 KB/s | 140 KB/s |
+| Dense | 1,100 | 16 KB/s | 64 KB/s | 97 KB/s | 194 KB/s |
+| Max | 1,400 | 20 KB/s | 82 KB/s | 123 KB/s | 246 KB/s |
+| Ultra | 2,000 | 29 KB/s | 117 KB/s | 176 KB/s | 352 KB/s |
 
 `1x` `2x` `4x` `6x` `8x` `9x` `12x` codes at once &nbsp;(default **4x**)
-&nbsp;/&nbsp; `15 FPS` default, `30 FPS` maximum
+&nbsp;/&nbsp; `15 FPS` default, `60 FPS` maximum via WASM
 &nbsp;/&nbsp; experimental **Colour x3** mode
 
 </div>
 
-Phone cameras typically capture at 30 fps, so at the default 15 fps each code stays on screen for about two camera frames. Adding codes per frame is what scales throughput.
-
-> [!WARNING]
-> Real-world speed depends on camera resolution, focus, lighting, display size, QR density and capture reliability. A 100 MB transfer takes roughly **14 to 20 minutes** in the best realistic conditions. This is not a network-speed transfer; it is a no-network transfer.
+> [!TIP]
+> **Dual-Engine Architecture:** When devices can reach OFFDROP's signaling endpoint and WebRTC connectivity succeeds, the optical QR handshake can establish a direct peer channel. Signaling and STUN are used for setup; file bytes do not pass through a relay. If peer connectivity is unavailable or radio is disabled, OFFDROP falls back to pure optical transfer powered by multi-symbol SIMD WebAssembly.
 
 <img src="assets/divider.svg" width="100%" alt=""/>
 

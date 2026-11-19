@@ -6,6 +6,7 @@ import { sfx } from "@/lib/feedback";
 import { haptics } from "@/lib/haptics";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { MuteToggle } from "@/components/MuteToggle";
+import { TipsSheet } from "@/components/TipsSheet";
 import { RefreshButton } from "@/components/RefreshButton";
 import { Sender } from "@/components/Sender";
 import { Scanner } from "@/components/Scanner";
@@ -184,6 +185,7 @@ function Index() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <TipsSheet />
           <MuteToggle />
           <ThemeToggle />
           <RefreshButton />

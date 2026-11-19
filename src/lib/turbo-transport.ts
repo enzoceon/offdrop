@@ -13,6 +13,11 @@ export interface TurboReceiverHandle {
 
 const activeSenders = new Map<number, { plan: StreamPlan; blob: Blob }>();
 
+const ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+];
+
 /**
  * Registers an active sender. Listens for local BroadcastChannel pulls and
  * establishes zero-config local WebRTC peer data channels via /api/signal.
@@ -55,14 +60,13 @@ export function registerTurboSender(plan: StreamPlan, blob: Blob): TurboSenderHa
   if (typeof RTCPeerConnection !== "undefined") {
     void (async () => {
       try {
-        pc = new RTCPeerConnection({ iceServers: [] });
+        pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
         const dc = pc.createDataChannel("offdrop_turbo", { ordered: true });
         dc.binaryType = "arraybuffer";
         dc.bufferedAmountLowThreshold = 512 * 1024;
 
         dc.onopen = async () => {
           if (disposed) return;
-          // Send metadata
           dc.send(
             JSON.stringify({
               type: "meta",
@@ -71,42 +75,42 @@ export function registerTurboSender(plan: StreamPlan, blob: Blob): TurboSenderHa
               mime: plan.mime,
             }),
           );
-          // Stream chunks with backpressure
           await streamToDataChannel(dc, plan, blob, () => disposed);
         };
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        // Wait up to 1 second for local ICE candidates
+        // Gather all ICE candidates (host + STUN)
         await new Promise<void>((resolve) => {
           if (!pc || pc.iceGatheringState === "complete") {
             resolve();
             return;
           }
+          const timer = setTimeout(resolve, 1500);
           const check = () => {
             if (pc?.iceGatheringState === "complete") {
               pc.removeEventListener("icegatheringstatechange", check);
+              clearTimeout(timer);
               resolve();
             }
           };
           pc.addEventListener("icegatheringstatechange", check);
-          setTimeout(resolve, 1000);
         });
 
         if (disposed) return;
 
-        // Post offer to local signaling endpoint
+        // Post offer to signaling endpoint
         await fetch("/api/signal", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: plan.id, type: "offer", sdp: pc.localDescription }),
         }).catch(() => {});
 
-        // Poll for answer
+        // Continually poll for answer while sender is active (up to 15 minutes)
         let attempts = 0;
         const pollAnswer = async () => {
-          if (disposed || !pc || pc.connectionState === "connected" || attempts++ > 60) return;
+          if (disposed || !pc || pc.connectionState === "connected" || attempts++ > 900) return;
           try {
             const res = await fetch(`/api/signal?id=${plan.id}&type=answer`);
             if (res.ok) {
@@ -125,7 +129,7 @@ export function registerTurboSender(plan: StreamPlan, blob: Blob): TurboSenderHa
         };
         pollTimer = window.setTimeout(pollAnswer, 500);
       } catch {
-        // WebRTC failed or not supported in this environment
+        // WebRTC unavailable
       }
     })();
   }
@@ -172,7 +176,6 @@ export function registerTurboReceiver(
           onChunk(data.index, new Uint8Array(data.payload));
         }
       };
-      // Request chunks from any local sender
       bc.postMessage({ type: "pull", id: meta.id });
     } catch {
       bc = null;
@@ -183,9 +186,9 @@ export function registerTurboReceiver(
   if (typeof RTCPeerConnection !== "undefined") {
     void (async () => {
       try {
-        // Fetch offer from signaling endpoint
+        // Poll for offer from signaling endpoint (up to 30 seconds)
         let offerSdp: RTCSessionDescriptionInit | null = null;
-        for (let i = 0; i < 5 && !disposed; i++) {
+        for (let i = 0; i < 40 && !disposed; i++) {
           try {
             const res = await fetch(`/api/signal?id=${meta.id}&type=offer`);
             if (res.ok) {
@@ -196,12 +199,12 @@ export function registerTurboReceiver(
               }
             }
           } catch {}
-          await new Promise((r) => setTimeout(r, 600));
+          await new Promise((r) => setTimeout(r, 750));
         }
 
         if (disposed || !offerSdp) return;
 
-        pc = new RTCPeerConnection({ iceServers: [] });
+        pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
         pc.ondatachannel = (e) => {
           const dc = e.channel;
@@ -231,20 +234,21 @@ export function registerTurboReceiver(
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
-        // Wait up to 1 second for local candidates
+        // Gather all local candidates before sending answer
         await new Promise<void>((resolve) => {
           if (!pc || pc.iceGatheringState === "complete") {
             resolve();
             return;
           }
+          const timer = setTimeout(resolve, 1500);
           const check = () => {
             if (pc?.iceGatheringState === "complete") {
               pc.removeEventListener("icegatheringstatechange", check);
+              clearTimeout(timer);
               resolve();
             }
           };
           pc.addEventListener("icegatheringstatechange", check);
-          setTimeout(resolve, 1000);
         });
 
         if (disposed) return;

@@ -23,8 +23,6 @@ import {
   WifiOff,
   Zap,
   Layers3,
-  Sun,
-  Gauge,
   Timer,
 } from "lucide-react";
 import {
@@ -109,19 +107,15 @@ const SEEN_MS = 150; // ignore the same frame seen again within this window
 const SWITCH_AFTER = 4; // frames of a different transfer before we abandon the current one
 const NAME_WAIT_MS = 3500; // finish without a header frame after this long
 
-// Auto-framing: calm, stepped and dwell-based (it used to chase every jitter and zoom constantly).
-const FRAME_STEPS = [1, 1.25, 1.5, 2, 2.5];
-const FRAME_FIT = 0.8; // all codes may fill at most 80% of the zoomed window
-const FRAME_DWELL_MS = 700; // a new zoom level must be wanted this long before we move
-const FRAME_STEP_MS = 90;
-const FRAME_LOST_MS = 2500;
+// Hardware autofocus & lens tracking timing
+const FOCUS_THROTTLE_MS = 250;
+const FOCUS_HUNT_INTERVAL_MS = 2500;
 const MAX_BOXES = 16;
 const LAUNCH_MIN_MS = 750; // the Start button's spinner stays long enough to be seen
 const STOP_MIN_MS = 650; // same for Stop
 const PING_MS = 800;
 const ROI_REACQUIRE = 8; // every Nth frame scans the WHOLE frame again (new codes, moved screen)
 const CAMQ_KEY = "offdrop:camq";
-const HINT_AFTER_MS = 8000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -183,7 +177,7 @@ async function openCameraOnce(facingMode: "environment" | "user", quality: CamQu
       ? [
           {
             video: {
-              facingMode: { exact: facingMode },
+              facingMode: { ideal: facingMode },
               width: { ideal: 3840 },
               height: { ideal: 2160 },
               frameRate: { ideal: 30, max: 60 },
@@ -194,7 +188,7 @@ async function openCameraOnce(facingMode: "environment" | "user", quality: CamQu
       : []),
     {
       video: {
-        facingMode: { exact: facingMode },
+        facingMode: { ideal: facingMode },
         width: { ideal: 1920 },
         height: { ideal: 1080 },
         frameRate: { ideal: 60, max: 60 },
@@ -210,6 +204,7 @@ async function openCameraOnce(facingMode: "environment" | "user", quality: CamQu
       },
       audio: false,
     },
+    { video: { facingMode: { ideal: facingMode } }, audio: false },
     { video: true, audio: false },
   ];
   let lastError: unknown;
@@ -242,27 +237,68 @@ async function openCameraStream(facingMode: "environment" | "user", quality: Cam
   throw lastError instanceof Error ? lastError : new Error("Camera permission is unavailable in this browser.");
 }
 
-/** Continuous autofocus, optionally steered at a point of interest (the QR codes). */
-async function applyCameraFocus(stream: MediaStream | null, point?: Point) {
+/** High-performance hardware autofocus with point-of-interest lens steering and focus sweep pulsing. */
+async function applyCameraFocus(stream: MediaStream | null, point?: Point, pulse = false) {
   const track = stream?.getVideoTracks()[0] as CameraControlTrack | undefined;
   if (!track || track.readyState !== "live") return false;
-  const available = (track.getCapabilities?.() as CameraControlCapabilities | undefined)?.focusMode ?? [];
-  const modes: FocusMode[] = (["continuous", "single-shot"] as FocusMode[]).filter(
-    (m) => !available.length || available.includes(m),
-  );
-  for (const mode of modes) {
+  const caps = (track.getCapabilities?.() || {}) as CameraControlCapabilities & {
+    pointsOfInterest?: boolean;
+    exposureMode?: string[];
+    whiteBalanceMode?: string[];
+  };
+  const available = caps.focusMode ?? [];
+  const pt = point ? { x: clamp(point.x, 0.05, 0.95), y: clamp(point.y, 0.05, 0.95) } : undefined;
+
+  // Pulse: trigger a fast single-shot focus sweep on point then resume continuous tracking
+  if (pulse && available.includes("single-shot")) {
     try {
-      await track.applyConstraints({
-        advanced: [
-          {
-            focusMode: mode,
-            ...(point ? { pointsOfInterest: [{ x: clamp(point.x, 0, 1), y: clamp(point.y, 0, 1) }] } : {}),
-          } as MediaTrackConstraintSet,
-        ],
-      });
+      const singleAdv: Record<string, unknown> = { focusMode: "single-shot" };
+      if (pt) singleAdv.pointsOfInterest = [pt];
+      await track.applyConstraints({ advanced: [singleAdv as MediaTrackConstraintSet] });
+      if (available.includes("continuous")) {
+        window.setTimeout(() => {
+          if (track.readyState === "live") {
+            const contAdv: Record<string, unknown> = { focusMode: "continuous" };
+            if (pt) contAdv.pointsOfInterest = [pt];
+            void track.applyConstraints({ advanced: [contAdv as MediaTrackConstraintSet] }).catch(() => {});
+          }
+        }, 300);
+      }
       return true;
     } catch {
-      /* try the next supported mode */
+      /* continue to standard attempts */
+    }
+  }
+
+  const attempts: MediaTrackConstraintSet[] = [];
+  if (pt) {
+    attempts.push({
+      focusMode: available.includes("continuous") ? "continuous" : "single-shot",
+      pointsOfInterest: [pt],
+      ...(caps.exposureMode?.includes("continuous") ? { exposureMode: "continuous" } : {}),
+      ...(caps.whiteBalanceMode?.includes("continuous") ? { whiteBalanceMode: "continuous" } : {}),
+    } as MediaTrackConstraintSet);
+    if (available.includes("single-shot")) {
+      attempts.push({
+        focusMode: "single-shot",
+        pointsOfInterest: [pt],
+      } as MediaTrackConstraintSet);
+    }
+  }
+
+  if (available.includes("continuous") || available.length === 0) {
+    attempts.push({
+      focusMode: "continuous",
+      ...(caps.exposureMode?.includes("continuous") ? { exposureMode: "continuous" } : {}),
+    } as MediaTrackConstraintSet);
+  }
+
+  for (const adv of attempts) {
+    try {
+      await track.applyConstraints({ advanced: [adv] });
+      return true;
+    } catch {
+      /* try next constraint */
     }
   }
   return false;
@@ -315,24 +351,19 @@ async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array> {
 }
 
 /**
- * Where video-normalised coordinates land inside a cover-fitted element, after the
- * auto-framing zoom/pan. Returns screen-normalised (0..1) coordinates.
+ * Where video-normalised coordinates land inside a cover-fitted element.
+ * Returns screen-normalised (0..1) coordinates.
  */
-function makeScreenMapper(videoW: number, videoH: number, boxW: number, boxH: number, v: View) {
+function makeScreenMapper(videoW: number, videoH: number, boxW: number, boxH: number, _v?: View) {
   const ea = boxH ? boxW / boxH : videoW / videoH;
   const va = videoW / videoH;
   const toElement = (vx: number, vy: number): Point =>
     va > ea ? { x: (vx - 0.5) / (ea / va) + 0.5, y: vy } : { x: vx, y: (vy - 0.5) / (va / ea) + 0.5 };
-  const half = 0.5 / v.z;
-  const c = toElement(v.cx, v.cy);
-  const exc = clamp(c.x, half, 1 - half);
-  const eyc = clamp(c.y, half, 1 - half);
   return {
-    exc,
-    eyc,
+    exc: 0.5,
+    eyc: 0.5,
     map(vx: number, vy: number): Point {
-      const e = toElement(vx, vy);
-      return { x: 0.5 + (e.x - exc) * v.z, y: 0.5 + (e.y - eyc) * v.z };
+      return toElement(vx, vy);
     },
   };
 }
@@ -381,7 +412,7 @@ export function Scanner({
   const doneUrlRef = useRef<string | null>(null);
   const progressCommitRef = useRef(0);
   const viewRef = useRef<View>({ cx: 0.5, cy: 0.5, z: 1 });
-  const autoAssistRef = useRef(false); // OFF by default: a plain camera until the user asks for help
+  const autoAssistRef = useRef(true); // Active hardware autofocus by default
   const stopRef = useRef<(showStopping?: boolean) => Promise<void>>(async () => {});
   const polyRefs = useRef<Array<SVGPolygonElement | null>>([]);
   const lockRef = useRef<HTMLDivElement>(null);
@@ -391,7 +422,6 @@ export function Scanner({
   const videoSizeRef = useRef({ w: 16, h: 9 });
   const pctRef = useRef(0);
   const expectedRef = useRef({ n: 0, t: 0 });
-  const stableRef = useRef<{ z: number; since: number }>({ z: 1, since: 0 });
   const smoothRef = useRef<{ minX: number; maxX: number; minY: number; maxY: number } | null>(null);
   const lastPingRef = useRef(0);
   const samplesRef = useRef<Array<{ t: number; f: number }>>([]);
@@ -404,7 +434,6 @@ export function Scanner({
   const roiRef = useRef<(Rect & { t: number; misses: number }) | null>(null);
   const meterRef = useRef(new RateMeter());
   const camQualityRef = useRef<CamQuality>("hd");
-  const hintDismissedRef = useRef(false);
   const lastColorAtRef = useRef(0);
   const lastCountRef = useRef(0);
   const milestoneRef = useRef(0);
@@ -413,7 +442,6 @@ export function Scanner({
   const [launching, setLaunching] = useState(false);
   const [camQuality, setCamQuality] = useState<CamQuality>("hd");
   const [camInfo, setCamInfo] = useState<{ w: number; h: number; fps: number } | null>(null);
-  const [hintVisible, setHintVisible] = useState(false);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -432,7 +460,7 @@ export function Scanner({
   const [celebrate, setCelebrate] = useState(0);
   const [viewer, setViewer] = useState<ViewerItem | null>(null);
   const [paused, setPaused] = useState<PausedTransfer | null>(null);
-  const [autoAssist, setAutoAssist] = useState(false);
+  const [autoAssist, setAutoAssist] = useState(true);
   const [stats, setStats] = useState({ cam: 0, rx: 0 });
 
   useWakeLock(active);
@@ -676,6 +704,23 @@ export function Scanner({
           if (quads.length === 0) await runMono();
           // Nothing readable in greyscale for a moment? Maybe it is a colour stream: try the channels now and then.
           if (quads.length === 0 && !colorFirst && frameNo % 5 === 2) await runChannels();
+          // Instant capture: if native detector missed (common on LCD monitor glare/moiré), run WASM worker
+          if (quads.length === 0) {
+            const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(cropW, cropH));
+            const cw = Math.max(1, Math.round(cropW * scale));
+            const ch = Math.max(1, Math.round(cropH * scale));
+            if (canvas.width !== cw) canvas.width = cw;
+            if (canvas.height !== ch) canvas.height = ch;
+            const ctx = canvas.getContext("2d", { willReadFrequently: true });
+            if (ctx) {
+              ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cw, ch);
+              const mapJs = (p: Point): Point => ({ x: sx + (p.x * cropW) / cw, y: sy + (p.y * cropH) / ch });
+              const codes = await decodeAsync(ctx, cw, ch, true);
+              if (scanningRef.current) {
+                for (const code of codes) collect(code.data, code.corners, mapJs);
+              }
+            }
+          }
         } catch (err) {
           console.warn("Native QR detector failed, falling back to jsQR:", err);
           detectorRef.current = null;
@@ -744,8 +789,8 @@ export function Scanner({
           applyDetections(null, W, H);
           setCodeCount(0);
         }
-        // Lost every code for a while: ease back out so they can be re-acquired.
-        if (autoAssistRef.current && now - lastSeenQrRef.current > FRAME_LOST_MS && viewRef.current.z > 1.01) {
+        // Lost every code for a while: sweep lens back to center to re-acquire.
+        if (autoAssistRef.current && now - lastSeenQrRef.current > FOCUS_HUNT_INTERVAL_MS) {
           relaxAutoFrame(now);
         }
       }
@@ -844,117 +889,86 @@ export function Scanner({
   }
 
   /**
-   * Calm auto-framing. Zoom moves in discrete steps and only after the same step has been wanted for
-   * ~0.7 s (so it never "breathes"); it zooms out immediately only if a code is about to leave the
-   * window; and it targets ALL visible codes together, using a smoothed bounding box.
+   * Hardware lens tracking: steers the physical camera lens at the centroid of detected QR codes.
+   * Viewfinder stays rock-solid at native 1x resolution with zero digital zooming jitter.
    */
   function stepAutoFrame(quads: Quad[], W: number, H: number, now: number) {
     if (!autoAssistRef.current || flippingRef.current) return;
-    if (now - lastFrameStepRef.current < FRAME_STEP_MS) return;
+    if (now - lastFrameStepRef.current < FOCUS_THROTTLE_MS) return;
     lastFrameStepRef.current = now;
 
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
+    let sumX = 0;
+    let sumY = 0;
+    let count = 0;
     for (const q of quads) {
       for (const pt of q) {
-        minX = Math.min(minX, pt.x / W);
-        maxX = Math.max(maxX, pt.x / W);
-        minY = Math.min(minY, pt.y / H);
-        maxY = Math.max(maxY, pt.y / H);
+        sumX += pt.x / W;
+        sumY += pt.y / H;
+        count++;
       }
     }
-    const raw = { minX, maxX, minY, maxY };
+    if (count === 0) return;
+    const cx = sumX / count;
+    const cy = sumY / count;
+
     const prev = smoothRef.current;
-    const a = 0.25; // heavy smoothing: ignore hand jitter
-    const sm = prev
-      ? {
-          minX: prev.minX + (raw.minX - prev.minX) * a,
-          maxX: prev.maxX + (raw.maxX - prev.maxX) * a,
-          minY: prev.minY + (raw.minY - prev.minY) * a,
-          maxY: prev.maxY + (raw.maxY - prev.maxY) * a,
-        }
-      : raw;
-    smoothRef.current = sm;
-
-    const v = viewRef.current;
-    const bw = sm.maxX - sm.minX;
-    const bh = sm.maxY - sm.minY;
-    const cx = (sm.minX + sm.maxX) / 2;
-    const cy = (sm.minY + sm.maxY) / 2;
-
-    // Largest step at which every code still fits inside the window with margin.
-    let desired = 1;
-    for (const z of FRAME_STEPS) if (bw * z <= FRAME_FIT && bh * z <= FRAME_FIT) desired = z;
-
-    const half = 0.5 / v.z;
-    const m = 0.012;
-    const inside =
-      sm.minX >= v.cx - half + m && sm.maxX <= v.cx + half - m && sm.minY >= v.cy - half + m && sm.maxY <= v.cy + half - m;
-
-    let z = v.z;
-    if (v.z > 1 && !inside) {
-      // A code is touching the edge of the zoomed window: step out right away so it is never lost.
-      const idx = FRAME_STEPS.findIndex((s) => s >= v.z - 0.001);
-      z = FRAME_STEPS[Math.max(0, idx - 1)];
-      stableRef.current = { z, since: now };
-    } else if (desired !== v.z) {
-      if (stableRef.current.z !== desired) stableRef.current = { z: desired, since: now };
-      else if (now - stableRef.current.since >= FRAME_DWELL_MS) z = desired;
-    } else {
-      stableRef.current = { z: v.z, since: now };
-    }
-
-    // Re-centre only once zoomed, and only for a noticeable offset (dead-band).
-    let ncx = v.cx;
-    let ncy = v.cy;
-    if (z > 1) {
-      const offX = cx - v.cx;
-      const offY = cy - v.cy;
-      const pull = inside ? 0.25 : 0.6;
-      if (Math.abs(offX) > 0.05 || !inside) ncx = v.cx + offX * pull;
-      if (Math.abs(offY) > 0.05 || !inside) ncy = v.cy + offY * pull;
-    } else {
-      ncx = 0.5;
-      ncy = 0.5;
-    }
-    const h2 = 0.5 / z;
-    ncx = clamp(ncx, h2, 1 - h2);
-    ncy = clamp(ncy, h2, 1 - h2);
-
-    if (z !== v.z || Math.abs(ncx - v.cx) > 0.004 || Math.abs(ncy - v.cy) > 0.004) {
-      commitView({ z, cx: ncx, cy: ncy });
-    }
-    // Real autofocus: aim the lens at the middle of the codes, and show it.
-    if (now - lastFocusRef.current > 1500) {
+    const moved = prev ? Math.hypot(cx - prev.minX, cy - prev.minY) > 0.08 : true;
+    if (moved || now - lastFocusRef.current > 1200) {
       lastFocusRef.current = now;
+      smoothRef.current = { minX: cx, maxX: cx, minY: cy, maxY: cy };
       void applyCameraFocus(streamRef.current, { x: cx, y: cy });
-      pingFocus(cx, cy, W, H, now, true);
+      pingFocus(cx, cy, W, H, now, false);
     }
   }
 
   function relaxAutoFrame(now: number) {
-    if (now - lastFrameStepRef.current < 600) return;
-    lastFrameStepRef.current = now;
+    if (!autoAssistRef.current || flippingRef.current) return;
+    if (now - lastFocusRef.current < FOCUS_HUNT_INTERVAL_MS) return;
+    lastFocusRef.current = now;
     smoothRef.current = null;
-    const v = viewRef.current;
-    const idx = FRAME_STEPS.findIndex((s) => s >= v.z - 0.001);
-    const z = FRAME_STEPS[Math.max(0, idx - 1)];
-    const half = 0.5 / z;
-    commitView({
-      z,
-      cx: clamp(v.cx + (0.5 - v.cx) * 0.5, half, 1 - half),
-      cy: clamp(v.cy + (0.5 - v.cy) * 0.5, half, 1 - half),
-    });
+    void applyCameraFocus(streamRef.current, { x: 0.5, y: 0.5 }, true);
+    pingFocus(0.5, 0.5, videoSizeRef.current.w, videoSizeRef.current.h, now, false);
   }
 
-  /** CSS transform that makes the (cover-fitted) video show the same region the decoder crops. */
-  function viewTransform(v: View): CSSProperties {
-    const g = makeScreenMapper(videoSize.w, videoSize.h, stageSize.current.w, stageSize.current.h, v);
+  /** Tap on viewfinder to focus: steers hardware lens directly to the tapped coordinate. */
+  function handleStageClick(e: React.MouseEvent<HTMLDivElement>) {
+    if (!activeRef.current || !streamRef.current) return;
+    const stage = stageRef.current;
+    if (!stage) return;
+    const rect = stage.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const clickX = (e.clientX - rect.left) / rect.width;
+    const clickY = (e.clientY - rect.top) / rect.height;
+
+    const W = videoSizeRef.current.w;
+    const H = videoSizeRef.current.h;
+    const ea = rect.width / rect.height;
+    const va = W / H;
+    let vx = clickX;
+    let vy = clickY;
+    if (va > ea) {
+      vx = (clickX - 0.5) * (ea / va) + 0.5;
+    } else {
+      vy = (clickY - 0.5) * (va / ea) + 0.5;
+    }
+    vx = clamp(vx, 0.05, 0.95);
+    vy = clamp(vy, 0.05, 0.95);
+
+    const now = performance.now();
+    lastFocusRef.current = now;
+    void applyCameraFocus(streamRef.current, { x: vx, y: vy }, true);
+    pingFocus(vx, vy, W, H, now, true);
+    haptics.lock();
+    sfx.tick();
+    setAssistToast("Focus locked");
+    window.setTimeout(() => setAssistToast(null), 1200);
+  }
+
+  /** View transform: keeps the preview 100% stable at native 1x (no digital zoom jitter). */
+  function viewTransform(_v?: View): CSSProperties {
     return {
-      transform: `translate3d(${(-(g.exc - 0.5) * v.z * 100).toFixed(3)}%, ${(-(g.eyc - 0.5) * v.z * 100).toFixed(3)}%, 0) scale(${v.z.toFixed(4)})`,
-      transition: flipping ? "opacity 0.16s ease" : "transform 0.45s cubic-bezier(0.22, 1, 0.36, 1)",
+      transform: "none",
+      transition: flipping ? "opacity 0.16s ease" : undefined,
     };
   }
 
@@ -1169,32 +1183,75 @@ export function Scanner({
     streamRef.current = stream;
     commitView({ cx: 0.5, cy: 0.5, z: 1 });
     const video = videoRef.current;
-    if (video) {
-      video.muted = true;
-      video.playsInline = true;
-      video.setAttribute("playsinline", "true");
-      video.srcObject = stream;
-      await waitForVideoMetadata(video);
-      await video.play();
-      await waitForUsableVideo(video);
-      setVideoSize({ w: video.videoWidth, h: video.videoHeight });
-      videoSizeRef.current = { w: video.videoWidth, h: video.videoHeight };
-      // Report what the camera REALLY delivered (a request for 4K may be refused).
-      const st = stream.getVideoTracks()[0]?.getSettings?.() ?? {};
-      setCamInfo({ w: st.width || video.videoWidth, h: st.height || video.videoHeight, fps: Math.round(st.frameRate || 0) });
+    if (!video) return;
+
+    video.muted = true;
+    video.playsInline = true;
+    video.setAttribute("playsinline", "true");
+    video.setAttribute("autoplay", "true");
+    video.srcObject = stream;
+
+    // Listen for OS or browser revoking track
+    const track = stream.getVideoTracks()[0];
+    if (track) {
+      track.onended = () => {
+        console.warn("Camera track ended by system/OS");
+        void stopRef.current(false);
+      };
     }
+
+    // Start playback immediately
+    try {
+      await video.play();
+    } catch (err) {
+      console.warn("video.play() initial call error:", err);
+    }
+
+    // Safely wait for metadata & usable frame without hanging or crashing
+    await Promise.race([waitForVideoMetadata(video), sleep(1200)]);
+    await Promise.race([waitForUsableVideo(video), sleep(1200)]);
+
+    const vw = video.videoWidth || 1280;
+    const vh = video.videoHeight || 720;
+    setVideoSize({ w: vw, h: vh });
+    videoSizeRef.current = { w: vw, h: vh };
+
+    const st = track?.getSettings?.() ?? {};
+    setCamInfo({
+      w: st.width || vw,
+      h: st.height || vh,
+      fps: Math.round(st.frameRate || 30),
+    });
   }
 
   async function start(facingMode: "environment" | "user" = facingRef.current) {
-    if (busyRef.current || activeRef.current) return;
+    if (busyRef.current) return;
+    if (activeRef.current) {
+      const hasLiveTrack = streamRef.current?.getVideoTracks().some((t) => t.readyState === "live");
+      if (hasLiveTrack) return;
+      await stop(false);
+    }
     busyRef.current = true;
     facingRef.current = facingMode;
     setFacing(facingMode);
     setError(null);
     setLaunching(true); // the Start button's camera icon turns into a spinner
+
     try {
+      // Release any lingering tracks before requesting a new stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {
+            /* ignore */
+          }
+        });
+        streamRef.current = null;
+      }
+
       // If the previous session is still shutting down, wait for it instead of silently doing nothing.
-      for (let i = 0; i < 80 && stoppingRef.current; i++) await sleep(25);
+      for (let i = 0; i < 40 && stoppingRef.current; i++) await sleep(25);
       if (doneUrlRef.current) {
         URL.revokeObjectURL(doneUrlRef.current);
         doneUrlRef.current = null;
@@ -1203,15 +1260,20 @@ export function Scanner({
       finishingRef.current = false;
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera permission is unavailable in this browser.");
       setFastDecoder(Boolean(getDetector()));
+
       // Open the camera while the spinner plays; hold the moment for at least LAUNCH_MIN_MS.
       const [stream] = await Promise.all([openCameraStream(facingMode, camQualityRef.current), sleep(LAUNCH_MIN_MS)]);
-      // The viewfinder (and its <video>) is always mounted, so there is nothing to wait for.
+
       setStarting(true);
       setLaunching(false);
       await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      await sleep(40);
+
       if (!videoRef.current) throw new Error("The camera view is unavailable. Please reload the page.");
       await attachStream(stream);
+      void applyCameraFocus(stream);
       await sleep(CAMERA_TRANSITION_MS);
+
       scanningRef.current = true;
       activeRef.current = true;
       lastSeenQrRef.current = performance.now();
@@ -1221,7 +1283,6 @@ export function Scanner({
       smoothRef.current = null;
       colorModeRef.current = false;
       roiRef.current = null;
-      hintDismissedRef.current = false;
       lastCountRef.current = 0;
       setActive(true);
       setStarting(false);
@@ -1229,8 +1290,17 @@ export function Scanner({
       cancelTick();
       tick();
     } catch (e) {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
+      console.error("Camera start error:", e);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {
+            /* ignore */
+          }
+        });
+        streamRef.current = null;
+      }
       scanningRef.current = false;
       activeRef.current = false;
       setLaunching(false);
@@ -1272,14 +1342,16 @@ export function Scanner({
       }
       video.srcObject = null;
     }
-    streamRef.current?.getTracks().forEach((track) => {
-      try {
-        track.stop();
-      } catch {
-        /* ignore */
-      }
-    });
-    streamRef.current = null;
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          /* ignore */
+        }
+      });
+      streamRef.current = null;
+    }
 
     // An unfinished transfer is kept in memory so the user can resume without losing progress.
     const t = transferRef.current;
@@ -1306,7 +1378,7 @@ export function Scanner({
     milestoneRef.current = 0;
     roiRef.current = null;
     // Give the OS a moment to release the device so an immediate restart works (desktop webcams).
-    await sleep(120);
+    await sleep(100);
     setStopping(false);
     stoppingRef.current = false;
   }
@@ -1336,21 +1408,19 @@ export function Scanner({
     }
   }
 
-  /** Auto focus: ON = lens steers at the codes and the view eases in; OFF = plain camera. */
+  /** Auto focus: ON = hardware lens steers at the codes; OFF = manual focus. */
   function toggleAutoAssist() {
     const next = !autoAssistRef.current;
     autoAssistRef.current = next;
     setAutoAssist(next);
     smoothRef.current = null;
-    stableRef.current = { z: 1, since: performance.now() };
-    setAssistToast(next ? "Auto focus on · tracking codes" : "Auto focus off · plain camera");
+    setAssistToast(next ? "Autofocus active · lens tracking" : "Autofocus paused · manual");
     window.setTimeout(() => setAssistToast(null), 1600);
     if (next) {
-      void applyCameraFocus(streamRef.current);
+      void applyCameraFocus(streamRef.current, { x: 0.5, y: 0.5 }, true);
       pingFocus(0.5, 0.5, videoSizeRef.current.w, videoSizeRef.current.h, performance.now(), true);
       sfx.toggleOn();
     } else {
-      commitView({ cx: 0.5, cy: 0.5, z: 1 });
       sfx.toggleOff();
     }
   }
@@ -1443,8 +1513,25 @@ export function Scanner({
     if (stopRequestKey > 0) void stopRef.current(true).then(() => onStopRequestComplete?.());
   }, [stopRequestKey, onStopRequestComplete]);
 
+  // When the app or tab is backgrounded (user switches apps, locks screen), release the camera
+  // so the OS doesn't kill it or leave the device in a locked/glitched state.
   useEffect(() => {
-    if (!visible) clearDonePreview();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden" && activeRef.current) {
+        void stopRef.current(false);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+
+  useEffect(() => {
+    if (!visible) {
+      clearDonePreview();
+      if (activeRef.current) {
+        void stopRef.current(false);
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
@@ -1472,18 +1559,6 @@ export function Scanner({
       /* ignore */
     }
   }, []);
-
-  // "Nothing happening?" hint: after a few seconds of searching with no code at all, offer concrete help.
-  const sawAnything = codeCount > 0 || progress.total > 0;
-  useEffect(() => {
-    if (!active || sawAnything) {
-      setHintVisible(false);
-      return;
-    }
-    if (hintDismissedRef.current) return;
-    const id = window.setTimeout(() => setHintVisible(true), HINT_AFTER_MS);
-    return () => window.clearTimeout(id);
-  }, [active, sawAnything]);
 
   // Keep the viewfinder size in a ref (reading clientWidth during render forced a layout each frame).
   const liveNow = active || starting;
@@ -1612,7 +1687,7 @@ export function Scanner({
                 sfx.unlock();
                 void start();
               }}
-              disabled={launching || starting}
+              disabled={launching || starting || stopping}
               className="group relative mt-7 flex items-center gap-2 overflow-hidden rounded-full bg-gradient-to-br from-primary to-accent px-8 py-4 text-sm font-bold text-primary-foreground shadow-xl shadow-primary/30 transition-transform duration-200 active:scale-95 disabled:opacity-90"
             >
               <span className="btn-sheen absolute inset-0" />
@@ -1654,13 +1729,14 @@ export function Scanner({
       {/* ============================ LIVE: viewfinder + status ============================ */}
       {/* Always mounted (hidden when idle): the <video> element can never be "missing" when the camera starts. */}
       {(
-        <div className={`mx-auto min-h-0 w-full max-w-6xl flex-1 flex-col gap-2.5 px-4 pb-1 md:px-8 lg:grid-cols-[minmax(0,1.5fr)_minmax(21rem,1fr)] lg:items-center lg:gap-8 lg:py-1 ${live && !done ? "flex lg:grid" : "hidden"}`}>
+        <div className={`mx-auto min-h-0 w-full max-w-6xl flex-1 flex-col gap-2.5 px-4 pb-1 md:px-8 lg:grid-cols-[minmax(0,1.5fr)_minmax(21rem,1fr)] lg:items-center lg:gap-8 lg:py-1 ${live && !done ? "flex lg:grid" : "invisible absolute inset-0 pointer-events-none -z-10"}`}>
           {/* The viewfinder is a bounded window, never the whole screen. */}
           <div
             ref={stageRef}
             data-no-swipe
+            onClick={handleStageClick}
             onContextMenu={(e) => e.preventDefault()}
-            className={`relative min-h-[12rem] flex-1 select-none [-webkit-touch-callout:none] overflow-hidden rounded-[1.75rem] bg-black shadow-2xl shadow-black/30 ring-1 ring-white/10 transition-shadow duration-500 lg:h-full lg:max-h-[calc(100dvh-13rem)] lg:min-h-0 lg:flex-none lg:aspect-[4/3] lg:w-full lg:self-center ${
+            className={`relative min-h-[12rem] flex-1 select-none [-webkit-touch-callout:none] overflow-hidden rounded-[1.75rem] bg-black shadow-2xl shadow-black/30 ring-1 ring-white/10 transition-shadow duration-500 lg:h-full lg:max-h-[calc(100dvh-13rem)] lg:min-h-0 lg:flex-none lg:aspect-[4/3] lg:w-full lg:self-center cursor-pointer ${
               autoAssist ? "autofocus-ring" : ""
             }`}
           >
@@ -1750,7 +1826,7 @@ export function Scanner({
                 {autoAssist && (
                   <span className="hud-card pointer-events-none absolute inset-x-0 bottom-3 mx-auto flex w-fit items-center gap-1.5 rounded-full px-3 py-1.5 text-[10px] font-extrabold text-white">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-                    AUTO FOCUS{view.z > 1.05 ? ` · ${view.z.toFixed(2)}×` : ""}
+                    AUTOFOCUS
                   </span>
                 )}
 
@@ -1842,28 +1918,6 @@ export function Scanner({
             </div>
 
             {errorBanner}
-
-            {hintVisible && (
-              <div className="glass animate-pop-in relative rounded-2xl p-3 text-left">
-                <button
-                  onClick={() => {
-                    hintDismissedRef.current = true;
-                    setHintVisible(false);
-                  }}
-                  aria-label="Dismiss hints"
-                  className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full text-muted-foreground active:scale-90"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-                <p className="pr-8 text-xs font-extrabold">Nothing yet? Try this:</p>
-                <ul className="mt-1.5 space-y-1 text-[11px] font-medium text-muted-foreground">
-                  <li className="flex items-center gap-2"><Sun className="h-3.5 w-3.5 shrink-0 text-primary" /> Turn the sender's screen brightness all the way up</li>
-                  <li className="flex items-center gap-2"><Maximize2 className="h-3.5 w-3.5 shrink-0 text-primary" /> Move closer or back until the codes fill most of the view</li>
-                  <li className="flex items-center gap-2"><Focus className="h-3.5 w-3.5 shrink-0 text-primary" /> Hold steady; turn on Auto focus if the codes look soft</li>
-                  <li className="flex items-center gap-2"><Gauge className="h-3.5 w-3.5 shrink-0 text-primary" /> On the sender pick a lower density or fewer codes</li>
-                </ul>
-              </div>
-            )}
 
             <div className="flex items-center gap-2">
               <button
