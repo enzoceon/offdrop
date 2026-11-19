@@ -59,7 +59,22 @@ export const CRC_INIT = 0xffffffff;
 /** Feed bytes into a running CRC state. Start from CRC_INIT, finish with crc32Final. */
 export function crc32Update(state: number, bytes: Uint8Array): number {
   let c = state;
-  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  const len = bytes.length;
+  let i = 0;
+  const limit = len - 7;
+  while (i < limit) {
+    c = CRC_TABLE[(c ^ bytes[i++]) & 0xff] ^ (c >>> 8);
+    c = CRC_TABLE[(c ^ bytes[i++]) & 0xff] ^ (c >>> 8);
+    c = CRC_TABLE[(c ^ bytes[i++]) & 0xff] ^ (c >>> 8);
+    c = CRC_TABLE[(c ^ bytes[i++]) & 0xff] ^ (c >>> 8);
+    c = CRC_TABLE[(c ^ bytes[i++]) & 0xff] ^ (c >>> 8);
+    c = CRC_TABLE[(c ^ bytes[i++]) & 0xff] ^ (c >>> 8);
+    c = CRC_TABLE[(c ^ bytes[i++]) & 0xff] ^ (c >>> 8);
+    c = CRC_TABLE[(c ^ bytes[i++]) & 0xff] ^ (c >>> 8);
+  }
+  while (i < len) {
+    c = CRC_TABLE[(c ^ bytes[i++]) & 0xff] ^ (c >>> 8);
+  }
   return c >>> 0;
 }
 
@@ -519,8 +534,10 @@ export class FountainDecoder {
   private unknownInBlock: Uint16Array;
   private eqs: Equation[][];
   private seenSeeds = new Set<number>();
-  private turboHandle: { dispose: () => void } | null = null;
+  private turboHandle: { dispose: () => void; sendAck?: () => void } | null = null;
   onTurboHeader?: (name: string, mime: string) => void;
+  onChunk?: (count: number, total: number, isTurbo: boolean) => void;
+  onComplete?: () => void;
   count = 0;
 
   constructor(meta: FrameMeta) {
@@ -574,11 +591,14 @@ export class FountainDecoder {
     ) {
       return false;
     }
-    const chunkData = new Uint8Array(this.chunk);
-    chunkData.set(payload);
-    this.setChunk(index, chunkData);
+    this.setChunk(index, payload);
+    const shouldReport = this.count % 32 === 0 || this.count === this.total;
+    if (shouldReport) {
+      this.onChunk?.(this.count, this.total, true);
+    }
     if (this.complete) {
-      this.dispose();
+      this.turboHandle?.sendAck?.();
+      this.onComplete?.();
     }
     return true;
   }
@@ -614,6 +634,55 @@ export class FountainDecoder {
     return out;
   }
 
+  /**
+   * Seamlessly adapt to a new chunk size (e.g. sender changed density from Balanced to Dense/Ultra)
+   * while preserving all already-decoded bytes and valid chunks.
+   */
+  adaptChunkSize(newMeta: FrameMeta): FountainDecoder {
+    if (newMeta.chunk === this.chunk && newMeta.total === this.total) return this;
+    const newDecoder = new FountainDecoder(newMeta);
+    if (this.onTurboHeader) newDecoder.onTurboHeader = this.onTurboHeader;
+    if (this.onChunk) newDecoder.onChunk = this.onChunk;
+    if (this.onComplete) newDecoder.onComplete = this.onComplete;
+
+    // Port over all chunks in the new chunk grid that are completely covered by
+    // already-decoded chunks from this decoder.
+    for (let k = 0; k < newDecoder.total; k++) {
+      const newStart = k * newDecoder.chunk;
+      const newEnd = Math.min(newDecoder.size, (k + 1) * newDecoder.chunk);
+
+      const oldStartChunk = Math.floor(newStart / this.chunk);
+      const oldEndChunk = Math.floor((newEnd - 1) / this.chunk);
+
+      let allCovered = true;
+      for (let c = oldStartChunk; c <= oldEndChunk; c++) {
+        if (!this.have[c]) {
+          allCovered = false;
+          break;
+        }
+      }
+
+      if (allCovered) {
+        const slice = this.buffer.subarray(newStart, newEnd);
+        newDecoder.buffer.set(slice, newStart);
+        newDecoder.have[k] = 1;
+        newDecoder.count++;
+        const block = Math.floor(k / BLOCK_CHUNKS);
+        if (newDecoder.unknownInBlock[block] > 0) {
+          newDecoder.unknownInBlock[block]--;
+        }
+      }
+    }
+
+    if (newDecoder.complete) {
+      newDecoder.turboHandle?.sendAck?.();
+      newDecoder.onComplete?.();
+    }
+
+    this.dispose();
+    return newDecoder;
+  }
+
   /** Returns true if this frame taught the decoder something new. */
   add(frame: ParsedData | ParsedRepair): boolean {
     if (frame.id !== this.id || this.complete) return false;
@@ -621,6 +690,11 @@ export class FountainDecoder {
       if (frame.index >= this.total || this.have[frame.index]) return false;
       if (frame.payload.length !== this.chunk) return false;
       this.setChunk(frame.index, frame.payload);
+      this.onChunk?.(this.count, this.total, false);
+      if (this.complete) {
+        this.turboHandle?.sendAck?.();
+        this.onComplete?.();
+      }
       return true;
     }
     if (frame.payload.length !== this.chunk || this.seenSeeds.has(frame.seed)) return false;
@@ -631,6 +705,11 @@ export class FountainDecoder {
     if (list.length >= MAX_EQ_PER_BLOCK) return false;
     list.push({ bits: spec.bits, payload: frame.payload.slice() });
     if (list.length >= this.unknownInBlock[spec.block]) this.solveBlock(spec.block);
+    this.onChunk?.(this.count, this.total, false);
+    if (this.complete) {
+      this.turboHandle?.sendAck?.();
+      this.onComplete?.();
+    }
     return true;
   }
 

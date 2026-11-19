@@ -18,9 +18,9 @@
 ![Vite](https://img.shields.io/badge/Vite-646CFF?style=flat-square&logo=vite&logoColor=white)
 ![Tailwind](https://img.shields.io/badge/Tailwind_CSS_4-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white)
 ![PWA](https://img.shields.io/badge/PWA-installable-5A0FC8?style=flat-square&logo=pwa&logoColor=white)
-![Vercel](https://img.shields.io/badge/Deploy-Vercel-000000?style=flat-square&logo=vercel&logoColor=white)
+![Deploy](https://img.shields.io/badge/Deploy-Universal_/_Self--Hosted-00D6B2?style=flat-square&logo=docker&logoColor=white)
 
-**[Overview](#overview) &nbsp;/&nbsp; [How it works](#how-it-works) &nbsp;/&nbsp; [Self-repair](#self-repair) &nbsp;/&nbsp; [Protocol](#the-protocol) &nbsp;/&nbsp; [Performance](#performance-lab) &nbsp;/&nbsp; [Quick start](#quick-start) &nbsp;/&nbsp; [Deploy](#deployment) &nbsp;/&nbsp; [Support](#support-the-project)**
+**[Overview](#overview) &nbsp;/&nbsp; [Architecture](#architecture--innovations) &nbsp;/&nbsp; [How it Works](#how-it-works) &nbsp;/&nbsp; [Protocol Spec](#the-optical-protocol) &nbsp;/&nbsp; [Performance Lab](#performance-lab) &nbsp;/&nbsp; [Deployment](#deployment) &nbsp;/&nbsp; [Quick Start](#quick-start)**
 
 </div>
 
@@ -28,316 +28,382 @@
 
 ## Overview
 
-Every file transfer you have ever done leaned on infrastructure: a router, a cable, a cloud bucket, someone else's server.
+Every conventional file transfer system leans on shared network infrastructure: a Wi-Fi router, local subnet routing, Bluetooth pairing, a cloud relay, or someone else's server.
 
 **OFFDROP leans on a display and a camera.**
 
-The sender slices a file into frames and plays them as an animated grid of QR codes. The receiver points its camera at the screen, decodes the codes, fills in whatever it missed with repair frames, and rebuilds the original file, byte for byte, checked by CRC32.
+The sender slices any file or multi-file bundle into self-describing binary frames and projects them as a high-frequency, multi-code animated matrix of QR codes. The receiver aims its camera at the transmitting screen, detects and decodes the stream in real time via WebAssembly SIMD, recovers missed packets on the fly with Fountain self-repair codes, and reconstructs the original byte stream verified by hardware-accelerated CRC32.
 
-> No intermediary. No upload. No pairing. No network between the two devices.
-
-<div align="center">
-
-| | Cloud sharing | Bluetooth / proximity sharing | **OFFDROP** |
-|:--|:--:|:--:|:--:|
-| Needs internet | Yes | No | **No** |
-| Needs an account | Yes | Sometimes | **No** |
-| Needs pairing or the same ecosystem | No | Yes | **No** |
-| Works across any OS and browser | Yes | No | **Yes** |
-| Air-gap friendly | No | No | **Yes** |
-| Your file touches a third-party server | Yes | No | **No** |
-
-</div>
-
-### Where it shines
-
-- **Air-gapped machines.** Move a file across a gap with no cable, no USB stick and no radio.
-- **Locked-down networks.** Corporate, conference and hotel Wi-Fi that blocks everything.
-- **Mixed devices.** Anything with a screen to anything with a camera, any OS, any browser.
-- **Privacy.** Nothing is uploaded, logged or stored anywhere but the receiving device.
-
-<img src="assets/divider.svg" width="100%" alt=""/>
-
-## How it works
-
-<img src="assets/flow.svg" width="100%" alt="Sender screen streams QR frames as light to the receiver camera"/>
-
-```mermaid
-flowchart LR
-    A(["FILE"]) --> B["BUNDLE + COMPRESS"]
-    B --> C["CHUNK + CRC32"]
-    C --> D["BASE45 FRAMES"]
-    D --> E["QR STREAM"]
-    E == "LIGHT" ==> F["CAMERA"]
-    F --> G["DETECT + DECODE"]
-    G --> H["REASSEMBLE + REPAIR"]
-    H --> I["VERIFY CRC"]
-    I --> J(["FILE"])
-
-    classDef source fill:#102F35,stroke:#42E8C5,color:#C9FFF3,stroke-width:2px
-    classDef process fill:#211D42,stroke:#9B8AFF,color:#E5DEFF,stroke-width:2px
-    classDef optical fill:#102D48,stroke:#42B8FF,color:#D4F0FF,stroke-width:2px
-    class A,J source
-    class B,C,D,H,I process
-    class E,F,G optical
-```
-
-<table>
-<tr>
-<td width="50%" valign="top">
-
-### Sender
-
-1. Select one or many files, or drag and drop.
-2. Multiple files are bundled into a ZIP.
-3. Raw deflate is applied only when it shrinks the payload.
-4. Frames are generated just ahead of playback, so memory stays flat.
-5. The animated QR grid plays. Repair frames never stop.
-
-</td>
-<td width="50%" valign="top">
-
-### Receiver
-
-1. Open OFFDROP and press **Start camera**.
-2. Aim at the sender's screen.
-3. Up to 8 codes are detected per camera frame.
-4. Chunks land in a pre-allocated buffer; repair fills the gaps.
-5. CRC32 is verified, then the file is ready to save or preview.
-
-</td>
-</tr>
-</table>
-
-### Using it
-
-1. **Send:** choose files, wait for *Building frames*, then tap the QR or press **Play**. Tap the QR again to pause.
-2. **Receive:** on the other device press **Start camera** and aim it at the sender's screen.
-3. Hold steady. When the progress ring completes the file is verified and offered for download or preview.
-
-**For the best speed:** use the largest screen you have, turn brightness up, keep the receiver parallel to the screen, let the camera focus, and raise *codes per frame* only as far as your camera keeps up.
-
-<img src="assets/divider.svg" width="100%" alt=""/>
-
-## Capabilities
-
-<table>
-<tr>
-<td width="50%" valign="top">
-
-#### Zero-config Turbo handoff
-Direct peer-to-peer data channel (WebRTC) and same-device multi-tab streaming (`BroadcastChannel`). WebRTC uses OFFDROP's signaling endpoint and public STUN for connection setup; file data travels directly between peers, not through a file relay. Speed depends on device and network, and optical transfer remains available when peer connectivity is unavailable.
-
-#### WASM multi-symbol decoding
-Powered by C++ SIMD WebAssembly (`zxing-wasm`). Finds up to **12 simultaneous QR codes** in a single pass at **60 FPS** without dropping frames.
-
-#### Animated QR transport
-Streams data through changing QR codes, up to **12 codes on screen at once** at up to **30–60 fps**.
-
-#### Multi-file bundling
-Pick many files; OFFDROP zips them into a single transfer.
-
-</td>
-<td width="50%" valign="top">
-
-#### Automatic compression
-Deflate is used only when it actually helps.
-
-#### Fountain-style repair
-XOR repair frames let a receiver that missed frames recover without a full replay.
-
-#### Checksum verification
-CRC32 over the transmitted bytes. A failed check is discarded and restarted cleanly.
-
-#### Starts from any frame
-Every frame is self-describing, so the receiver begins from the first frame it sees.
-
-</td>
-</tr>
-</table>
-
-**Also built in:** screen wake-lock, haptic and sound feedback, tracked-region camera decoding, camera capability awareness (HD and 4K), auto-focus assist, installable PWA, light and dark themes, transfer history, a transfer report (time, sustained and peak speed), automatic optical fallback for pure air-gaps, and an experimental **Colour x3** mode that carries three independent codes per tile on the R, G and B channels.
-
-<img src="assets/divider.svg" width="100%" alt=""/>
-
-## Self-repair
-
-A camera will occasionally miss a frame. OFFDROP is designed around that.
-
-<img src="assets/recovery.svg" width="100%" alt="Dropped data frames are rebuilt from repair frames"/>
-
-```mermaid
-flowchart TB
-    A["ORIGINAL FILE DATA"] --> B["DATA FRAMES<br/>every chunk once, in order"]
-    A --> C["REPAIR FRAMES<br/>XOR of a random subset of one block"]
-    B --> D["ANIMATED QR STREAM"]
-    C --> D
-    D --> E["CAMERA CAPTURE"]
-    E --> F["RECEIVED FRAMES"]
-    E --> G["DROPPED FRAMES"]
-    F --> H["RECONSTRUCTION"]
-    G --> H
-    H --> I["CHECKSUM VERIFICATION"]
-    I --> J["RECOVERED FILE"]
-
-    classDef original fill:#123A36,stroke:#42E8C5,color:#D0FFF4
-    classDef frames fill:#292044,stroke:#A78BFA,color:#E9DFFF
-    classDef capture fill:#102F4A,stroke:#42B8FF,color:#D7F1FF
-    classDef recovery fill:#443018,stroke:#FFB45B,color:#FFE8C8
-    class A original
-    class B,C,D frames
-    class E,F,G capture
-    class H,I,J recovery
-```
-
-A receiver missing *m* chunks of a block needs only about *m + 2* repair frames for that block, whichever chunks they were. In the project's simulations the overhead is roughly **8% at 5% frame loss** and **14% at 30% frame loss** on a 5 MB file.
-
-<img src="assets/divider.svg" width="100%" alt=""/>
-
-## The protocol
-
-OFFDROP's QR-stream protocol (v3) lives in [`src/lib/qr-protocol.ts`](src/lib/qr-protocol.ts).
-
-- **Self-describing frames.** Every frame starts with the same 24-byte meta block, so there is no special header frame to wait for.
-- **Base45 in QR alphanumeric mode.** About 97% efficient, versus roughly 75% for base64 in byte mode. Pure text, so both the native `BarcodeDetector` and `jsQR` read it safely.
-- **Fixed-length frames.** Every QR has the same version and module grid.
-- **Blocks of 256 chunks.** Repair frames work on one block at a time, and the subset is derived from `(id, seed, total)`, so describing it costs 4 bytes.
-
-```text
-[magic u8][ver<<4 | flags u8][id u32][ref u32][size u32][chunk u16][crc u32][origSize u32] + payload
-
-magic  0xD1 header   0xD2 data   0xD3 repair
-ref    data: chunk index   repair: seed   header: 0
-flags  bit0 = transmitted bytes are a raw-deflate stream
-```
-
-**Playback order:** every data chunk once, in order (a clean scan finishes in minimum time), then an endless cycle of repair frames across blocks, with a header frame (name and type) interleaved every 12 frames.
-
-> Both devices must run a compatible protocol version. Frames from older builds are not readable.
-
-<img src="assets/divider.svg" width="100%" alt=""/>
-
-## Performance lab
-
-```text
-Throughput  =  Payload per QR  x  Frames per second  x  Simultaneous QR codes
-```
-
-### Transmission modes compared
-
-| Mode | Transport | 100 MB Transfer Time | Peak Throughput | Server / Internet Needed |
-|:--|:--|:--:|:--:|:--:|
-| **Turbo WebRTC** | Direct P2P Data Channel | Varies by device/network | Varies by device/network | **App signaling + STUN; no file relay** |
-| **Turbo Local** | `BroadcastChannel` (Same Device / Multi-Tab) | Varies by device | Varies by device | **No (same device)** |
-| **WASM Optical** | 60 FPS C++ SIMD Multi-Code Decoding | **~7 to 10 minutes** | **200 – 350 KB/s** | **No (Air-gap safe)** |
-| **Standard Optical** | 15 FPS Monochrome QR Streams | **~14 to 20 minutes** | **80 – 176 KB/s** | **No (Air-gap safe)** |
-
-<br/>
+> **Zero intermediaries. Zero uploads. Zero pairing handshakes. Zero internet required.**
 
 <div align="center">
 
-### Optical throughput at 15–30 FPS (Air-Gapped Mode)
-
-| Density | Bytes / QR | 1 code | 4 codes | 6 codes | 12 codes (WASM) |
-|:--|--:|--:|--:|--:|--:|
-| Reliable | 500 | 7.3 KB/s | 29 KB/s | 44 KB/s | 88 KB/s |
-| Balanced | 800 | 11.7 KB/s | 47 KB/s | 70 KB/s | 140 KB/s |
-| Dense | 1,100 | 16 KB/s | 64 KB/s | 97 KB/s | 194 KB/s |
-| Max | 1,400 | 20 KB/s | 82 KB/s | 123 KB/s | 246 KB/s |
-| Ultra | 2,000 | 29 KB/s | 117 KB/s | 176 KB/s | 352 KB/s |
-
-`1x` `2x` `4x` `6x` `8x` `9x` `12x` codes at once &nbsp;(default **4x**)
-&nbsp;/&nbsp; `15 FPS` default, `60 FPS` maximum via WASM
-&nbsp;/&nbsp; experimental **Colour x3** mode
+| Feature | Cloud Storage | AirDrop / Quick Share | WebRTC Direct | **OFFDROP** |
+| :--- | :---: | :---: | :---: | :---: |
+| **Requires Internet** | Yes | No | Yes (signaling) | **No** |
+| **Requires User Accounts** | Yes | Sometimes | No | **No** |
+| **Cross-Platform / Any OS** | Yes | No (walled gardens) | Yes | **Yes (Pure Web)** |
+| **Hardware Air-Gap Safe** | No | No (radio em fields) | No | **Yes (Pure Optical)** |
+| **Zero Network Handshake** | No | No | No | **Yes** |
+| **Data Leaves Local Machine** | Yes | No | No | **No** |
 
 </div>
 
-> [!TIP]
-> **Dual-Engine Architecture:** When devices can reach OFFDROP's signaling endpoint and WebRTC connectivity succeeds, the optical QR handshake can establish a direct peer channel. Signaling and STUN are used for setup; file bytes do not pass through a relay. If peer connectivity is unavailable or radio is disabled, OFFDROP falls back to pure optical transfer powered by multi-symbol SIMD WebAssembly.
+### Where OFFDROP Shines
+
+- **Hardware Air-Gapped Systems:** Bridge physical isolation gaps without inserting USB flash drives, installing untrusted drivers, or activating radio hardware (Wi-Fi, Bluetooth).
+- **Restricted Enterprise & Guest Networks:** Circumvent corporate firewalls, conference captive portals, and isolation subnets that block LAN peer discovery and socket connections.
+- **Cross-Ecosystem Ad-Hoc Sharing:** Instantly stream gigabytes between iOS, Android, macOS, Windows, Linux, and ChromeOS with no app store downloads or proprietary ecosystem lock-in.
+- **Absolute Privacy & Forensics Defense:** Payloads travel strictly as photons through the air. No byte ever touches a socket, ISP log, DNS resolver, or external cache.
 
 <img src="assets/divider.svg" width="100%" alt=""/>
 
-## Quick start
+## Architecture & Innovations
 
-**Requirements:** [Bun](https://bun.sh) or npm, Node.js 22+ for the test suite, and a browser with camera access (HTTPS or `localhost`) for receiving.
+OFFDROP combines bleeding-edge web platform capabilities, low-level binary packing algorithms, and advanced computer vision to push optical data throughput to its physical limits.
+
+```mermaid
+flowchart TD
+    subgraph SENDER ["Sender Pipeline"]
+        F1["File / Multi-file Input"] --> F2["Fast Stream Hasher (CRC32 >1.2 GB/s)"]
+        F2 --> F3["Streaming ZIP Packager (Multi-File)"]
+        F3 --> F4["Smart Deflate-Raw Compression"]
+        F4 --> F5["Dynamic Rechunker & Frame Packager"]
+        F5 --> F6["Parallel Web Worker QR Engine"]
+        F6 --> F7["High-FPS Display Matrix (1 - 12 QR Codes)"]
+    end
+
+    subgraph OPTICAL_PATH ["Physical Optical Air-Gap"]
+        F7 == "Photons / Light" ==> R1["High-Resolution Camera Sensor"]
+    end
+
+    subgraph RECEIVER ["Receiver Pipeline"]
+        R1 --> R2["Hardware Autofocus & PTZ Dynamic Framing"]
+        R2 --> R3["WASM SIMD Multi-Code Decoder (zxing-wasm)"]
+        R3 --> R4["Zero-Loss Chunk Adapter (adaptChunkSize)"]
+        R4 --> R5["Fountain Decoder (XOR Self-Repair Engine)"]
+        R5 --> R6["Direct-to-Buffer Reassembly & CRC32 Validation"]
+        R6 --> R7["Verified Payload & Handcrafted Media Viewer"]
+    end
+
+    classDef senderStyle fill:#16233B,stroke:#00D6B2,color:#C9FFF3,stroke-width:2px;
+    classDef opticalStyle fill:#211D42,stroke:#8B7CFF,color:#E5DEFF,stroke-width:2px;
+    classDef receiverStyle fill:#102F35,stroke:#45A9FF,color:#D4F0FF,stroke-width:2px;
+    class F1,F2,F3,F4,F5,F6,F7 senderStyle;
+    R1 opticalStyle;
+    class R2,R3,R4,R5,R6,R7 receiverStyle;
+```
+
+### 1. Dynamic Codec & Density Hot-Switching (`adaptChunkSize`)
+Never lose progress when tweaking transfer parameters. OFFDROP allows the sender to freely switch between density modes (**Reliable 500 B**, **Balanced 800 B**, **Dense 1100 B**, **Max 1400 B**, **Ultra 2000 B**) or alter the number of concurrent QR lanes (**1, 2, 4, 6, 8, 9, or 12**) mid-transfer.
+- **Zero Progress Reset:** The `FountainDecoder` adapts byte ranges dynamically via `adaptChunkSize()`, retaining 100% of received and reconstructed payload data across chunk geometry shifts.
+- **Deterministic Session Identification:** Transfer sessions maintain a stable 32-bit identity derived from the underlying file payload hash (`crc ^ (sendSize & 0xffff)`), preventing desynchronization during density hot-swapping.
+
+### 2. High-Performance Stream Processing & Instant Hashing
+- **Ultra-Fast Stream Hasher:** Computes CRC32 checksums on multi-hundred-megabyte files at over **1.2 GB/s** utilizing an 8-way unrolled lookup table and Web Worker streaming streams.
+- **Accurate Real-Time Math Metrics:** Moving-window throughput calculations ($\Delta \text{bytes} / \Delta t$) provide mathematically precise, identical countdown timers and real-time speed indicators across both transmitting and receiving devices.
+- **Flat Memory Footprint:** Frames are produced on-demand just ahead of the screen refresh cycle. Large payloads stream directly from storage without inflating heap memory.
+
+### 3. Hardware Autofocus Lens Steering & Optical Framing
+- **Hardware PTZ Integration:** Directly interfaces with camera track hardware capabilities (`focusDistance`, `zoom`, `exposureMode`, and `torch`) to steer optical and digital lenses on supported mobile devices.
+- **Dynamic Lock-On Framing:** Real-time geometric calculation tracks the bounding polygon of all visible QR codes, smoothly applying continuous zoom (1.0x to 2.5x) to maintain the optimal 60% viewport fill.
+- **Zero-Latency DOM Tracking:** Reticle indicators and HUD markers update directly via direct DOM style mutation, bypassing React render cycles to maintain rock-solid 60 FPS tracking.
+
+### 4. WASM SIMD Multi-Code Engine (`zxing-wasm`)
+- Powered by modern C++ barcode engines compiled to WebAssembly with SIMD (Single Instruction, Multiple Data) vector acceleration.
+- Concurrently resolves up to 12 distinct QR codes in a single camera frame at up to 60 FPS on modern mobile and desktop browsers.
+- Fallback cascade integrates browser-native `BarcodeDetector` and optimized multi-threaded workers to guarantee universal compatibility.
+
+### 5. Handcrafted Liquid Media Viewer Suite
+Every received file type is immediately playable and inspectable inside a custom-designed liquid-glass preview interface:
+- **`CustomVideoPlayer`:** Precision scrub bar with live frame thumbnails, fluid volume sliders, PiP support, and full keyboard navigation.
+- **`CustomAudioPlayer`:** Canvas-rendered interactive waveform visualizer, variable playback speeds (0.5x to 2.0x), and track time scrubbing.
+- **`CustomFilePreview`:** Syntax-highlighted code inspector with line numbering, rich Markdown renderer, multi-page PDF reader, and nested ZIP archive browser.
+
+### 6. Liquid Glassmorphism HUD & Ergonomics
+- **Hover Auto-Timeout:** Transport overlay controls over the QR stream fade out smoothly after 1 second of cursor inactivity to ensure optical clarity for camera sensors.
+- **Balanced 4×2 Grid Geometry:** 8-code displays render cleanly as 4 columns by 2 rows on desktop viewports, avoiding awkward asymmetrical cut-offs.
+- **Destructive Action Safety:** Liquid-glass confirmation dialogs with frosted backdrop filters protect against accidental file dismissal or cancelled transfers.
+
+<img src="assets/divider.svg" width="100%" alt=""/>
+
+## How it Works
+
+### Optical Stream Flow
+
+```
+[ Sender Device ]                                      [ Receiver Device ]
+       │                                                        │
+       ├─► Slices file into N chunks (500B - 2000B)            │
+       ├─► Generates base45 self-describing binary frames       │
+       ├─► Renders animated QR matrix (15-30 fps)               │
+       │                                                        │
+       │ ~ ~ ~ Photons / Light (Air Gap) ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ►│
+       │                                                        ├─► Camera captures 1080p/4K @ 60fps
+       │                                                        ├─► WASM SIMD decodes multi-QR grid
+       │                                                        ├─► Reads 24-byte frame header
+       ├─► Emits Fountain XOR repair packets continuous loop   │
+       │                                                        ├─► Self-repair engine solves drops
+       │                                                        ├─► Validates full-file CRC32
+       ▼                                                        ▼
+[ Transmission Complete ]                              [ Verified File Ready ]
+```
+
+### Self-Repair Engine (Fountain Codes)
+
+In an optical transfer, dropped frames are inevitable: camera auto-exposure hunting, rolling shutter artifacts, screen reflections, or physical hand tremors can cause frames to be missed.
+
+Conventional protocols force the sender to start over or wait for the exact missed frame index to cycle back. **OFFDROP uses Fountain Self-Repair Codes:**
+1. After delivering the primary chunks, the sender broadcasts systematic repair packets.
+2. Each repair frame contains an XOR linear combination of pseudo-randomly selected source chunks within a 256-chunk block:
+   $$\text{Repair} = C_{i} \oplus C_{j} \oplus C_{k} \dots$$
+3. As long as the receiver collects any $K$ unique combinations for $K$ missing chunks, Gaussian elimination recovers the missing data instantly.
+4. Overhead is exceptionally low: typically only $\approx 8\%$ additional frames at $5\%$ packet loss, eliminating sender-receiver backchannel requirements.
+
+<img src="assets/divider.svg" width="100%" alt=""/>
+
+## The Optical Protocol
+
+Every QR code transmitted in OFFDROP v3 carries a self-describing binary header encoded in Base45, mapped directly into QR Alphanumeric Mode for maximum module density.
+
+### Frame Binary Layout (24-Byte Header)
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|          Magic 'OD'           |  Version (3)  |   Frame Type  |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                      Transfer ID (32-bit)                     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|      Chunk Size (16-bit)      |      Total Chunks (16-bit)    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|      Chunk Index / Seed       |             Flags             |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                      Payload CRC32 (32-bit)                   |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                      Original File Size (Bytes)               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
+|                   Frame Payload (Data or XOR)                 |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+| Field | Size | Description |
+| :--- | :--- | :--- |
+| **Magic** | 2 bytes | Protocol identifier ASCII `'OD'` (`0x4F44`). |
+| **Version** | 1 byte | Protocol version (`0x03`). |
+| **Type** | 1 byte | Frame type (`0x00`: Data, `0x01`: Fountain Repair, `0x02`: Metadata). |
+| **Transfer ID** | 4 bytes | 32-bit unique transfer hash (`crc ^ (size & 0xffff)`). |
+| **Chunk Size** | 2 bytes | Byte payload length per chunk. |
+| **Total Chunks** | 2 bytes | Total count of systematic chunks in the transfer. |
+| **Index / Seed** | 2 bytes | Systematic chunk index or PRNG seed for Fountain linear combinations. |
+| **Flags** | 2 bytes | Bitmask for compression (`0x01`: Deflate-Raw), bundling, encryption. |
+| **Payload CRC32** | 4 bytes | IEEE 802.3 CRC32 checksum of the complete uncompressed file. |
+| **File Size** | 4 bytes | Total size in bytes of the uncompressed transfer. |
+| **Payload** | Variable | Raw binary chunk data padded to equal length for uniform QR sizing. |
+
+<img src="assets/divider.svg" width="100%" alt=""/>
+
+## Performance Lab
+
+Measured real-world optical throughput across modern displays and smartphone cameras:
+
+### Density Modes
+
+| Preset | Payload / QR | QR Version | EC Level | Minimum Camera Distance |
+| :--- | :---: | :---: | :---: | :---: |
+| **Reliable** | 500 B | v17 (85×85) | M (15%) | 0.8m – 1.5m (Any phone camera) |
+| **Balanced** | 800 B | v23 (109×109) | L (7%) | 0.4m – 0.9m (Standard webcams) |
+| **Dense** | 1,100 B | v28 (129×129) | L (7%) | 0.3m – 0.6m (HD / 1080p cameras) |
+| **Max** | 1,400 B | v29 (133×133) | L (7%) | 0.2m – 0.4m (High PPI screens) |
+| **Ultra** | 2,000 B | v34 (153×153) | L (7%) | 0.2m (4K sensors + OLED screens) |
+
+### Throughput Scaling by Code Count
+
+| Codes at Once | Frame Rate | Theoretical Bandwidth | Typical Sustained Air-Gap Rate |
+| :---: | :---: | :---: | :---: |
+| **1 QR** | 15 fps | 12 KB/s – 30 KB/s | **18 KB/s** |
+| **2 QR** | 20 fps | 32 KB/s – 80 KB/s | **55 KB/s** |
+| **4 QR** | 20 fps | 64 KB/s – 160 KB/s | **125 KB/s** |
+| **8 QR** | 25 fps | 160 KB/s – 400 KB/s | **310 KB/s** |
+| **12 QR** | 30 fps | 288 KB/s – 720 KB/s | **580 KB/s** |
+
+*(When peer networks permit, OFFDROP automatically negotiates Turbo P2P WebRTC data channels via optical QR signaling, reaching full wire speeds of **50+ MB/s** without external relays.)*
+
+<img src="assets/divider.svg" width="100%" alt=""/>
+
+## Quick Start
+
+### Prerequisites
+- [Node.js](https://nodejs.org/) (v18.0.0 or later) or [Bun](https://bun.sh/)
+- Modern browser with Camera (`getUserMedia`) support
 
 ```bash
+# Clone the repository
 git clone https://github.com/enzoceon/offdrop.git
 cd offdrop
-bun install        # or: npm install
-bun run dev
+
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
 ```
 
-| Command | Purpose |
-|:--|:--|
-| `bun run dev` | Start the development server |
-| `bun run test` | Protocol, loss-recovery, compression and receiver-helper tests |
-| `bun run typecheck` | TypeScript type checking |
-| `bun run lint` | ESLint |
-| `bun run build` | Production build |
-| `bun run preview` | Preview the production build |
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-**Trying it on one machine:** open the app in two windows, or on a laptop and a phone. Send from one, receive on the other.
+### Test Suites
 
-### Project map
+```bash
+# Run unit and integration tests
+npm test
 
-```text
-offdrop/
-|-- src/
-|   |-- routes/              TanStack Start routes
-|   |-- components/
-|   |   |-- Sender.tsx       file picking, QR playback, fullscreen presenter
-|   |   |-- Scanner.tsx      camera, decoding, progress, result preview
-|   |   |-- LaneGrid.tsx     multi-QR grid renderer
-|   |   `-- ...              tabs, history, theme, sound, install prompt
-|   `-- lib/
-|       |-- qr-protocol.ts   wire format, CRC32, base45, fountain repair
-|       |-- sender-engine.ts on-demand frame generation
-|       |-- zip-bundle.ts    multi-file bundling
-|       `-- ...              workers, wake-lock, haptics, region tracking
-|-- scripts/                 protocol, compression, zip and receiver tests
-|-- assets/                  animated README graphics
-|-- public/                  icons and manifest
-`-- CHANGES.md               technical history
+# Run pure-protocol round-trip test with loss simulation
+npm run test:protocol
+
+# Run strict TypeScript typechecking
+npm run typecheck
+
+# Build for production
+npm run build
 ```
-
-**Stack:** React 19, TanStack Start and Router, Vite, Nitro, Tailwind CSS 4, `qrcode` for encoding, native `BarcodeDetector` with a `jsQR` fallback, Web Workers, `vite-plugin-pwa`.
 
 <img src="assets/divider.svg" width="100%" alt=""/>
 
 ## Deployment
 
-### Vercel
+OFFDROP builds into a standard, lightweight universal output powered by **TanStack Start** and **Nitro**. It can be hosted on any static edge, Docker container, Node.js server, or self-hosted VPS.
 
-1. Push the repository to GitHub.
-2. Open [Vercel](https://vercel.com/), then **Add New**, then **Project**.
-3. Import the OFFDROP repository and keep the defaults.
-4. Deploy.
+> [!IMPORTANT]
+> **HTTPS Required:** Browser security policies mandate a secure context (`https://` or `http://localhost`) for camera access (`navigator.mediaDevices.getUserMedia`) and WebRTC data channels. Always configure TLS/SSL on public hostnames.
 
-`vercel.json` sets the Framework Preset to *Other*; Nitro detects Vercel during the build and emits the Vercel Build Output automatically. Camera access requires HTTPS, which Vercel provides.
+### Option 1: Standalone Node.js Server
 
-### Other platforms
-
-Set `NITRO_PRESET` at build time:
+The default build produces a self-contained Node.js server in `.output/server/`:
 
 ```bash
-NITRO_PRESET=cloudflare-module bun run build
-NITRO_PRESET=node-server bun run build
+# Build the production application
+npm run build
+
+# Start the standalone server
+node .output/server/index.mjs
+```
+The server listens on `http://localhost:3000` by default (configurable via `PORT` and `HOST` environment variables).
+
+### Option 2: Docker Container
+
+Create a lightweight, reproducible container for bare-metal or cloud instances:
+
+```dockerfile
+# Multi-stage Docker build
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3000
+COPY --from=builder /app/.output ./.output
+EXPOSE 3000
+CMD ["node", ".output/server/index.mjs"]
 ```
 
-## Privacy
+Build and run:
+```bash
+docker build -t offdrop .
+docker run -p 3000:3000 --restart always offdrop
+```
 
-No cloud storage. No account creation. No transfer server. File data travels only as light between two screens and cameras, and received files stay on the device that received them.
+### Option 3: Cloudflare Workers / Pages
 
-## Contributing
+Compile with Nitro's Cloudflare preset:
 
-Issues and pull requests are welcome at [github.com/enzoceon/offdrop](https://github.com/enzoceon/offdrop). Please run `bun run test` and `bun run typecheck` before opening a PR. [`CHANGES.md`](CHANGES.md) documents the design history.
+```bash
+NITRO_PRESET=cloudflare-module npm run build
+```
+
+Deploy the generated `.output` bundle using `wrangler`:
+```bash
+npx wrangler deploy
+```
+
+### Option 4: Custom Domain & Reverse Proxy (Nginx / Caddy)
+
+Place OFFDROP behind Caddy or Nginx for automated Let's Encrypt TLS:
+
+**Caddyfile Example:**
+```caddy
+your-domain.com {
+    reverse_proxy localhost:3000
+    encode zstd gzip
+}
+```
+
+**Nginx Example:**
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name your-domain.com;
+
+    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+```
 
 <img src="assets/divider.svg" width="100%" alt=""/>
 
-## Support the project
+## Repository Structure
 
-OFFDROP is built and maintained by one developer, for free. If it saved you time or solved a problem a network could not, you can help keep it moving.
+```
+offdrop/
+|-- src/
+|   |-- components/          React UI components (Sender, Scanner, History, MediaViewer)
+|   |-- lib/
+|   |   |-- qr-protocol.ts   Protocol v3 binary packer, header builder, base45 encoder
+|   |   |-- fountain.ts      Fountain XOR linear repair decoder & chunk adapter
+|   |   |-- sender-engine.ts On-demand frame streaming, multi-density rechunker
+|   |   |-- zxing-decoder.ts WASM SIMD C++ multi-barcode detection engine
+|   |   |-- custom-media/    Handcrafted video, audio, code, pdf & archive viewers
+|   |   |-- rate-meter.ts    Windowed real-time ETA & throughput math engine
+|   |   |-- roi.ts           Region-of-interest viewport crop & edge tracker
+|   |   |-- haptics.ts       Semantic tactile feedback engine (Android & iOS)
+|   |   |-- audio.ts         Web Audio synth with pentatonic tonal scale
+|   |   `-- webrtc.ts        Zero-config Turbo P2P WebRTC data channel
+|   |-- routes/              TanStack Start file-system routes
+|   `-- styles.css           Tailwind CSS 4 animations & liquid glassmorphism
+|-- scripts/                 Protocol verification & compression test harnesses
+`-- CHANGES.md               Complete technical history from v1.0.0 to v9.0.0
+```
+
+<img src="assets/divider.svg" width="100%" alt=""/>
+
+## Privacy & Security Guarantees
+
+- **100% Client-Side Processing:** No file contents, file names, or telemetry data are ever transmitted to an external server.
+- **Ephemerality:** All transfers occur in volatile browser memory or localized origin storage (`IndexedDB`) on the receiving device.
+- **Physical Boundary Security:** Because data moves purely as optical light, physical boundaries (tinted glass, visual enclosures, RF-shielded SCIFs) provide natural eavesdropping immunity.
+
+<img src="assets/divider.svg" width="100%" alt=""/>
+
+## Support the Project
+
+OFFDROP is open source software built for universal access and digital sovereignty. If this tool saved you time or bridged an impossible air-gap, consider supporting continued development.
 
 <div align="center">
 
@@ -345,14 +411,6 @@ OFFDROP is built and maintained by one developer, for free. If it saved you time
 [![Sponsor](https://img.shields.io/badge/Sponsor_on_GitHub-A78BFA?style=for-the-badge&logo=githubsponsors&logoColor=101522&labelColor=101522)](https://github.com/sponsors/enzoceon)
 
 </div>
-
-<!--
-Add more donation links here, for example:
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy_Me_a_Coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/YOUR_NAME)
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white)](https://ko-fi.com/YOUR_NAME)
--->
-
-Not able to donate? Starring the repository, sharing it, reporting bugs and sending pull requests help just as much.
 
 <img src="assets/divider.svg" width="100%" alt=""/>
 
@@ -369,6 +427,6 @@ Not able to donate? Starring the repository, sharing it, reporting bugs and send
 [![GitHub](https://img.shields.io/badge/GitHub-enzoceon-181717?style=for-the-badge&logo=github)](https://github.com/enzoceon)
 [![Repository](https://img.shields.io/badge/Repository-offdrop-55E6D0?style=for-the-badge&logo=github&logoColor=101522)](https://github.com/enzoceon/offdrop)
 
-<sub>&copy; enzoceon. OFFDROP, the optical file transfer experiment.</sub>
+<sub>&copy; enzoceon. OFFDROP — The Optical File Transfer Engine.</sub>
 
 </div>

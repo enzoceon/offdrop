@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
-import { Download, FileText, Music2, Share2, X, ZoomIn } from "lucide-react";
+import { Download, Share2, X, ZoomIn } from "lucide-react";
 import { Portal } from "@/components/Portal";
 import { formatBytes } from "@/lib/qr-protocol";
 import { sfx } from "@/lib/feedback";
+import { CustomVideoPlayer } from "@/components/media/CustomVideoPlayer";
+import { CustomAudioPlayer } from "@/components/media/CustomAudioPlayer";
+import { CustomFilePreview } from "@/components/media/CustomFilePreview";
 
 export interface ViewerItem {
   url: string;
@@ -275,32 +278,26 @@ export function MediaViewer({ item, onClose }: { item: ViewerItem | null; onClos
               />
             </div>
           ) : isVideo ? (
-            <video
-              src={shown.url}
-              controls
-              autoPlay
-              playsInline
-              className="max-h-full max-w-full rounded-lg bg-black object-contain shadow-2xl"
-            />
+            <CustomVideoPlayer src={shown.url} name={shown.name} autoPlay />
           ) : isAudio ? (
-            <div className="flex w-full max-w-md flex-col items-center gap-6 px-6">
-              <div className="viewer-orb grid h-40 w-40 place-items-center rounded-full bg-gradient-to-br from-primary to-accent shadow-2xl shadow-primary/40">
-                <Music2 className="h-16 w-16 text-white" strokeWidth={1.6} />
-              </div>
-              <audio src={shown.url} controls autoPlay className="w-full" />
+            <div className="flex h-full w-full items-center justify-center p-4">
+              <CustomAudioPlayer
+                src={shown.url}
+                name={shown.name}
+                size={shown.size}
+                mime={shown.mime}
+                autoPlay
+              />
             </div>
           ) : (
-            <div className="flex max-w-sm flex-col items-center gap-4 px-6 text-center text-white">
-              <div className="grid h-24 w-24 place-items-center rounded-3xl bg-white/10">
-                <FileText className="h-12 w-12" strokeWidth={1.5} />
-              </div>
-              <p className="text-sm text-white/70">No inline preview for this file type. Open or save it below.</p>
-              <button
-                onClick={() => window.open(shown.url, "_blank", "noopener")}
-                className="rounded-2xl bg-white/15 px-5 py-2.5 text-sm font-semibold backdrop-blur active:scale-95"
-              >
-                Open in browser
-              </button>
+            <div className="flex h-full w-full items-center justify-center p-4">
+              <CustomFilePreview
+                url={shown.url}
+                name={shown.name}
+                mime={shown.mime}
+                size={shown.size}
+                blob={shown.blob}
+              />
             </div>
           )}
           {isImage && !zoomed && (

@@ -10,10 +10,10 @@ import { BlobSource } from "./blob-source";
 import { buildColorFrame, buildFrame, QUIET, type BuiltFrame } from "./frame-core";
 import { registerTurboSender, type TurboSenderHandle } from "./turbo-transport";
 
-/** Files up to this size are held in memory for instant random access. */
-const IN_MEMORY_LIMIT = 96 * 1024 * 1024;
-/** Bytes hashed between UI yields. */
-const CRC_BLOCK = 4 * 1024 * 1024;
+/** Files up to this size are held in memory for instant random access (covers 100 MB+ files easily). */
+const IN_MEMORY_LIMIT = 256 * 1024 * 1024;
+/** Bytes hashed between UI yields (16 MB for fast throughput while keeping 60 FPS UI). */
+const CRC_BLOCK = 16 * 1024 * 1024;
 
 export interface PreparedFile {
   plan: StreamPlan;
@@ -142,17 +142,43 @@ export async function prepareFile(
     }
     payloadBlob = file;
   } else {
-    for (let off = 0; off < file.size; off += CRC_BLOCK) {
-      const block = new Uint8Array(await file.slice(off, Math.min(file.size, off + CRC_BLOCK)).arrayBuffer());
-      crcState = crc32Update(crcState, block);
-      opts.onProgress?.(Math.min(1, (off + CRC_BLOCK) / file.size), "hash");
-      await nextTick();
-      check();
+    // Large files (> 256 MB): stream directly via native reader without allocating repetitive slices
+    const reader = file.stream().getReader();
+    let hashed = 0;
+    const block = new Uint8Array(CRC_BLOCK);
+    let blockOffset = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        if (blockOffset > 0) {
+          crcState = crc32Update(crcState, block.subarray(0, blockOffset));
+        }
+        break;
+      }
+      let valOffset = 0;
+      while (valOffset < value.length) {
+        const take = Math.min(value.length - valOffset, CRC_BLOCK - blockOffset);
+        block.set(value.subarray(valOffset, valOffset + take), blockOffset);
+        blockOffset += take;
+        valOffset += take;
+        if (blockOffset === CRC_BLOCK) {
+          crcState = crc32Update(crcState, block);
+          hashed += CRC_BLOCK;
+          blockOffset = 0;
+          opts.onProgress?.(Math.min(1, hashed / file.size), "hash");
+          await nextTick();
+          check();
+        }
+      }
     }
+    opts.onProgress?.(1, "hash");
     payloadBlob = file;
   }
 
   const crc = crc32Final(crcState);
+  // Transfer ID must remain stable across density/codec rechunks so the receiver
+  // knows it's the exact same file being transferred and doesn't reset progress.
+  const transferId = (crc ^ (sendSize & 0xffff)) >>> 0 || 1;
   const build = (chunk: number) => ({
     plan: createPlan({
       name: file.name,
@@ -160,6 +186,7 @@ export async function prepareFile(
       size: sendSize,
       crc,
       chunk,
+      id: transferId,
       origSize: payload ? file.size : undefined,
     }),
     blob: payloadBlob,
@@ -193,6 +220,8 @@ export class FramePipeline {
   /** Set when a frame could not be built; the UI shows it and stops playback. */
   error: Error | null = null;
   onChange: (() => void) | null = null;
+  onTurboProgress?: (sentChunks: number, totalChunks: number, bytesSent: number, rate: number) => void;
+  onTurboComplete?: () => void;
   private turboHandle: TurboSenderHandle | null = null;
 
   constructor(
@@ -206,14 +235,17 @@ export class FramePipeline {
     this.stride = color ? 3 : 1;
     this.startWorkers();
     if (typeof window !== "undefined") {
-      this.turboHandle = registerTurboSender(this.plan, this.blob);
+      this.turboHandle = registerTurboSender(this.plan, this.blob, {
+        onProgress: (sent, total, bytes, rate) => this.onTurboProgress?.(sent, total, bytes, rate),
+        onAck: () => this.onTurboComplete?.(),
+      });
     }
   }
 
   private startWorkers() {
     try {
       const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
-      const count = Math.max(1, Math.min(3, cores - 1));
+      const count = Math.max(2, Math.min(6, cores - 1));
       for (let i = 0; i < count; i++) {
         const worker = new Worker(new URL("./frame-builder.worker.ts", import.meta.url), { type: "module" });
         worker.onmessage = (event: MessageEvent) => this.onWorkerMessage(i, event.data);

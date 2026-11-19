@@ -6,7 +6,13 @@ import { cn } from "@/lib/utils";
  * Candidates are scored by tile size, nudged toward near-square grids (3x3, 4x3, 2x3 ...) and
  * away from layouts with empty cells, so 9 becomes 3x3 and 12 becomes 4x3 / 3x4 whenever sensible.
  */
-function bestLayout(count: number, w: number, h: number, gap: number) {
+function bestLayout(count: number, w: number, h: number, gap: number, forceCols?: number) {
+  if (forceCols && forceCols > 0) {
+    const cols = forceCols;
+    const rows = Math.ceil(count / cols);
+    const size = Math.min((w - gap * (cols - 1)) / cols, (h - gap * (rows - 1)) / rows);
+    return { cols, size: Math.max(0, Math.floor(size)) };
+  }
   let best = { cols: 1, size: 0, score: -1 };
   for (let cols = 1; cols <= count; cols++) {
     const rows = Math.ceil(count / cols);
@@ -37,6 +43,7 @@ export function LaneGrid({
   switching = false,
   className,
   tileClassName,
+  forceCols,
 }: {
   count: number;
   refs: MutableRefObject<Array<HTMLCanvasElement | null>>;
@@ -45,6 +52,7 @@ export function LaneGrid({
   switching?: boolean;
   className?: string;
   tileClassName?: string;
+  forceCols?: number;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState({ cols: 1, size: 0 });
@@ -56,13 +64,13 @@ export function LaneGrid({
     const measure = () => {
       const w = el.clientWidth;
       const h = el.clientHeight;
-      if (w > 0 && h > 0) setLayout(bestLayout(count, w, h, g));
+      if (w > 0 && h > 0) setLayout(bestLayout(count, w, h, g, forceCols));
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [count, g]);
+  }, [count, g, forceCols]);
 
   const multi = count > 1;
   const pad = multi ? 0 : Math.round(Math.min(8, layout.size * 0.02));

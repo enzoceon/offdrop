@@ -136,3 +136,46 @@ console.log("ALL PASS 2");
   if (crc32(dec.result()) !== plan.crc) throw new Error("direct chunks did not reconstruct payload");
   console.log("OK direct chunks: index and payload validation");
 }
+
+// Seamless density/chunk size change test
+{
+  const size = 20_000;
+  const bytes = new Uint8Array(size).map((_, i) => (i * 17 + 5) & 255);
+  const fileCrc = crc32(bytes);
+  const planA = createPlan({ name: "switch.bin", type: "application/octet-stream", size, crc: fileCrc, chunk: 800, id: 12345 });
+  const planB = createPlan({ name: "switch.bin", type: "application/octet-stream", size, crc: fileCrc, chunk: 1400, id: 12345 });
+  const srcA = makeSource(bytes, planA.chunk);
+  const srcB = makeSource(bytes, planB.chunk);
+
+  const metaA = (parseFrame(planA.headerFrame) as ParsedHeader).meta;
+  const metaB = (parseFrame(planB.headerFrame) as ParsedHeader).meta;
+
+  let dec = new FountainDecoder(metaA);
+  // Decode 12 chunks of planA (12 * 800 = 9600 bytes)
+  for (let s = 0; s < 12; s++) {
+    const { text } = await frameAt(planA, srcA, s);
+    const p = parseFrame(text)!;
+    if (p.kind !== "header") dec.add(p);
+  }
+  const oldProgress = dec.progress;
+  if (oldProgress <= 0) throw new Error("expected progress before switch");
+
+  // Adapt to planB (1400 bytes per chunk)
+  dec = dec.adaptChunkSize(metaB);
+  if (dec.chunk !== 1400) throw new Error("adapted decoder has wrong chunk size");
+  if (dec.progress <= 0) throw new Error("progress was wiped out during chunk adaptation");
+
+  // Continue decoding using planB until completion
+  for (let s = 0; s < planB.total + 50; s++) {
+    const { text } = await frameAt(planB, srcB, s);
+    const p = parseFrame(text)!;
+    if (p.kind !== "header") {
+      dec.add(p);
+      if (dec.complete) break;
+    }
+  }
+  if (!dec.complete) throw new Error("adapted decoder failed to complete");
+  const res = dec.result();
+  if (crc32(res) !== fileCrc) throw new Error("corrupted file after adaptChunkSize");
+  console.log("OK adaptChunkSize: preserved progress and completed file successfully across chunk size changes");
+}

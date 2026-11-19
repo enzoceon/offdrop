@@ -2,7 +2,25 @@
 // High-performance QR decoding using zxing-wasm (SIMD C++ WebAssembly)
 // with seamless fallback to jsQR for legacy environments.
 import jsQR from "jsqr";
-import { readBarcodesFromImageData } from "zxing-wasm/reader";
+import { prepareZXingModule, readBarcodesFromImageData } from "zxing-wasm/reader";
+
+// Pre-initialize and configure WASM with local asset fallback so it works 100% offline
+try {
+  prepareZXingModule({
+    overrides: {
+      locateFile: (path: string, prefix: string) => {
+        if (path.endsWith(".wasm")) {
+          const origin = typeof self !== "undefined" && self.location?.origin ? self.location.origin : "";
+          return `${origin}/zxing_reader.wasm`;
+        }
+        return (prefix || "") + path;
+      },
+    },
+    fireImmediately: true,
+  });
+} catch (e) {
+  console.warn("ZXing WASM pre-warm error:", e);
+}
 
 type Pt = { x: number; y: number };
 type In = { id: number; data: ArrayBuffer; w: number; h: number; deep: boolean; channels?: boolean };

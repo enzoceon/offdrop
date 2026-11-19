@@ -21,11 +21,11 @@ export function TipsSheet() {
       <button
         type="button"
         onClick={handleOpen}
-        className="glass grid h-10 w-10 place-items-center rounded-full transition-transform active:scale-90"
+        className="glass relative grid h-5 w-5 md:h-10 md:w-10 place-items-center rounded-full transition-transform active:scale-90 after:absolute after:-inset-2 md:after:inset-0"
         aria-label="Scanning tips and information"
         title="Scanning Tips"
       >
-        <Info className="h-4.5 w-4.5 text-foreground/80" strokeWidth={2.2} />
+        <Info className="h-3 w-3 md:h-4.5 md:w-4.5 text-foreground/80" strokeWidth={2.2} />
       </button>
 
       {open && (

@@ -3,12 +3,18 @@ import type { FrameMeta, StreamPlan } from "./qr-protocol";
 const BROADCAST_NAME = "offdrop:turbo";
 const BUFFER_HIGH_WATER = 4 * 1024 * 1024; // 4 MB backpressure threshold
 
+export interface TurboSenderCallbacks {
+  onProgress?: (sentChunks: number, totalChunks: number, bytesSent: number, rate: number) => void;
+  onAck?: () => void;
+}
+
 export interface TurboSenderHandle {
   dispose: () => void;
 }
 
 export interface TurboReceiverHandle {
   dispose: () => void;
+  sendAck?: () => void;
 }
 
 const activeSenders = new Map<number, { plan: StreamPlan; blob: Blob }>();
@@ -22,7 +28,11 @@ const ICE_SERVERS = [
  * Registers an active sender. Listens for local BroadcastChannel pulls and
  * establishes zero-config local WebRTC peer data channels via /api/signal.
  */
-export function registerTurboSender(plan: StreamPlan, blob: Blob): TurboSenderHandle {
+export function registerTurboSender(
+  plan: StreamPlan,
+  blob: Blob,
+  callbacks?: TurboSenderCallbacks,
+): TurboSenderHandle {
   activeSenders.set(plan.id, { plan, blob });
   let disposed = false;
   let bc: BroadcastChannel | null = null;
@@ -37,7 +47,9 @@ export function registerTurboSender(plan: StreamPlan, blob: Blob): TurboSenderHa
         if (disposed) return;
         const data = event.data;
         if (data?.type === "pull" && data.id === plan.id) {
-          await streamToBroadcast(bc!, plan, blob, () => disposed);
+          await streamToBroadcast(bc!, plan, blob, () => disposed, callbacks?.onProgress);
+        } else if (data?.type === "ack" && data.id === plan.id) {
+          callbacks?.onAck?.();
         }
       };
       // Announce availability
@@ -65,6 +77,18 @@ export function registerTurboSender(plan: StreamPlan, blob: Blob): TurboSenderHa
         dc.binaryType = "arraybuffer";
         dc.bufferedAmountLowThreshold = 512 * 1024;
 
+        dc.onmessage = (event: MessageEvent) => {
+          if (disposed) return;
+          if (typeof event.data === "string") {
+            try {
+              const data = JSON.parse(event.data);
+              if (data?.type === "ack" && data.id === plan.id) {
+                callbacks?.onAck?.();
+              }
+            } catch {}
+          }
+        };
+
         dc.onopen = async () => {
           if (disposed) return;
           dc.send(
@@ -75,19 +99,19 @@ export function registerTurboSender(plan: StreamPlan, blob: Blob): TurboSenderHa
               mime: plan.mime,
             }),
           );
-          await streamToDataChannel(dc, plan, blob, () => disposed);
+          await streamToDataChannel(dc, plan, blob, () => disposed, callbacks?.onProgress);
         };
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        // Gather all ICE candidates (host + STUN)
+        // Rapid ICE gathering: host candidates are ready almost immediately (< 100ms)
         await new Promise<void>((resolve) => {
           if (!pc || pc.iceGatheringState === "complete") {
             resolve();
             return;
           }
-          const timer = setTimeout(resolve, 1500);
+          const timer = setTimeout(resolve, 350); // fast 350ms cap so local transfer starts immediately
           const check = () => {
             if (pc?.iceGatheringState === "complete") {
               pc.removeEventListener("icegatheringstatechange", check);
@@ -107,7 +131,7 @@ export function registerTurboSender(plan: StreamPlan, blob: Blob): TurboSenderHa
           body: JSON.stringify({ id: plan.id, type: "offer", sdp: pc.localDescription }),
         }).catch(() => {});
 
-        // Continually poll for answer while sender is active (up to 15 minutes)
+        // Continually poll for answer while sender is active (rapid 150ms initial polling)
         let attempts = 0;
         const pollAnswer = async () => {
           if (disposed || !pc || pc.connectionState === "connected" || attempts++ > 900) return;
@@ -124,10 +148,11 @@ export function registerTurboSender(plan: StreamPlan, blob: Blob): TurboSenderHa
             // Offline / signaling unavailable
           }
           if (!disposed) {
-            pollTimer = window.setTimeout(pollAnswer, 1000);
+            const delay = attempts < 15 ? 150 : 800;
+            pollTimer = window.setTimeout(pollAnswer, delay);
           }
         };
-        pollTimer = window.setTimeout(pollAnswer, 500);
+        pollTimer = window.setTimeout(pollAnswer, 150);
       } catch {
         // WebRTC unavailable
       }
@@ -162,6 +187,8 @@ export function registerTurboReceiver(
   let bc: BroadcastChannel | null = null;
   let pc: RTCPeerConnection | null = null;
 
+  let activeDc: RTCDataChannel | null = null;
+
   // 1. BroadcastChannel
   if (typeof BroadcastChannel !== "undefined") {
     try {
@@ -186,7 +213,7 @@ export function registerTurboReceiver(
   if (typeof RTCPeerConnection !== "undefined") {
     void (async () => {
       try {
-        // Poll for offer from signaling endpoint (up to 30 seconds)
+        // Poll for offer from signaling endpoint (rapid initial polling)
         let offerSdp: RTCSessionDescriptionInit | null = null;
         for (let i = 0; i < 40 && !disposed; i++) {
           try {
@@ -199,7 +226,8 @@ export function registerTurboReceiver(
               }
             }
           } catch {}
-          await new Promise((r) => setTimeout(r, 750));
+          const delay = i < 8 ? 150 : 500;
+          await new Promise((r) => setTimeout(r, delay));
         }
 
         if (disposed || !offerSdp) return;
@@ -208,6 +236,7 @@ export function registerTurboReceiver(
 
         pc.ondatachannel = (e) => {
           const dc = e.channel;
+          activeDc = dc;
           dc.binaryType = "arraybuffer";
           dc.onmessage = (event: MessageEvent) => {
             if (disposed) return;
@@ -234,13 +263,13 @@ export function registerTurboReceiver(
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
-        // Gather all local candidates before sending answer
+        // Gather all local candidates quickly before sending answer (350ms cap)
         await new Promise<void>((resolve) => {
           if (!pc || pc.iceGatheringState === "complete") {
             resolve();
             return;
           }
-          const timer = setTimeout(resolve, 1500);
+          const timer = setTimeout(resolve, 350);
           const check = () => {
             if (pc?.iceGatheringState === "complete") {
               pc.removeEventListener("icegatheringstatechange", check);
@@ -264,6 +293,17 @@ export function registerTurboReceiver(
     })();
   }
 
+  const sendAck = () => {
+    try {
+      bc?.postMessage({ type: "ack", id: meta.id });
+    } catch {}
+    try {
+      if (activeDc?.readyState === "open") {
+        activeDc.send(JSON.stringify({ type: "ack", id: meta.id }));
+      }
+    } catch {}
+  };
+
   return {
     dispose: () => {
       disposed = true;
@@ -274,6 +314,7 @@ export function registerTurboReceiver(
         pc?.close();
       } catch {}
     },
+    sendAck,
   };
 }
 
@@ -282,21 +323,30 @@ async function streamToBroadcast(
   plan: StreamPlan,
   blob: Blob,
   isCancelled: () => boolean,
+  onProgress?: (sentChunks: number, totalChunks: number, bytesSent: number, rate: number) => void,
 ) {
+  let bytesSent = 0;
+  const startTime = performance.now();
+  const rawBytes = blob.size <= 256 * 1024 * 1024 ? new Uint8Array(await blob.arrayBuffer()) : null;
+
   for (let i = 0; i < plan.total; i++) {
     if (isCancelled()) break;
     const start = i * plan.chunk;
     const end = Math.min(plan.size, (i + 1) * plan.chunk);
-    const slice = blob.slice(start, end);
-    const buf = await slice.arrayBuffer();
+    const chunkBytes = rawBytes ? rawBytes.subarray(start, end) : new Uint8Array(await blob.slice(start, end).arrayBuffer());
     bc.postMessage({
       type: "chunk",
       id: plan.id,
       index: i,
-      payload: buf,
+      payload: chunkBytes,
     });
-    // Yield every 32 chunks so main thread stays responsive
-    if (i % 32 === 0) await new Promise((r) => setTimeout(r, 0));
+    bytesSent += chunkBytes.byteLength;
+    if (i % 64 === 0 || i === plan.total - 1) {
+      const elapsed = Math.max(0.05, (performance.now() - startTime) / 1000);
+      onProgress?.(i + 1, plan.total, bytesSent, bytesSent / elapsed);
+    }
+    // Yield smoothly every 128 chunks
+    if (i % 128 === 0) await new Promise((r) => setTimeout(r, 0));
   }
 }
 
@@ -305,11 +355,16 @@ async function streamToDataChannel(
   plan: StreamPlan,
   blob: Blob,
   isCancelled: () => boolean,
+  onProgress?: (sentChunks: number, totalChunks: number, bytesSent: number, rate: number) => void,
 ) {
+  let bytesSent = 0;
+  const startTime = performance.now();
+  const rawBytes = blob.size <= 256 * 1024 * 1024 ? new Uint8Array(await blob.arrayBuffer()) : null;
+
   for (let i = 0; i < plan.total; i++) {
     if (isCancelled() || dc.readyState !== "open") break;
 
-    // Backpressure check
+    // Fast backpressure check
     if (dc.bufferedAmount > BUFFER_HIGH_WATER) {
       await new Promise<void>((resolve) => {
         const onLow = () => {
@@ -322,12 +377,11 @@ async function streamToDataChannel(
 
     const start = i * plan.chunk;
     const end = Math.min(plan.size, (i + 1) * plan.chunk);
-    const slice = blob.slice(start, end);
-    const buf = await slice.arrayBuffer();
+    const chunkBytes = rawBytes ? rawBytes.subarray(start, end) : new Uint8Array(await blob.slice(start, end).arrayBuffer());
 
-    const packet = new Uint8Array(4 + buf.byteLength);
+    const packet = new Uint8Array(4 + chunkBytes.byteLength);
     new DataView(packet.buffer).setUint32(0, i, true);
-    packet.set(new Uint8Array(buf), 4);
+    packet.set(chunkBytes, 4);
 
     try {
       dc.send(packet.buffer);
@@ -335,6 +389,12 @@ async function streamToDataChannel(
       break;
     }
 
-    if (i % 16 === 0) await new Promise((r) => setTimeout(r, 0));
+    bytesSent += chunkBytes.byteLength;
+    if (i % 128 === 0 || i === plan.total - 1) {
+      const elapsed = Math.max(0.05, (performance.now() - startTime) / 1000);
+      onProgress?.(i + 1, plan.total, bytesSent, bytesSent / elapsed);
+      // Yield smoothly every 128 chunks
+      await new Promise((r) => setTimeout(r, 0));
+    }
   }
 }

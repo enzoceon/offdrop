@@ -21,30 +21,22 @@ import {
 } from "lucide-react";
 import { listItems, deleteItem, type HistoryItem } from "@/lib/history";
 import { MediaViewer } from "@/components/MediaViewer";
+import { CustomThumbnail } from "@/components/media/CustomThumbnail";
 import { Portal } from "@/components/Portal";
 import { sfx } from "@/lib/feedback";
 
 type FilterKey = "all" | "sent" | "received";
 
 function MediaPreview({ item, url }: { item: HistoryItem; url?: string }) {
-  const isImg = item.mime.startsWith("image/");
-  const isVid = item.mime.startsWith("video/");
-  const isAudio = item.mime.startsWith("audio/");
-
-  if (isImg && url)
-    return <img src={url} alt={item.filename} className="h-full w-full object-cover" />;
-  if (isVid && url)
-    return <video src={url} className="h-full w-full object-cover" muted playsInline />;
-  if (isAudio && url) {
-    return (
-      <span className="audio-tile grid h-full w-full place-items-center">
-        <span className="grid h-9 w-9 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/25">
-          <Play className="ml-0.5 h-4 w-4" fill="currentColor" />
-        </span>
-      </span>
-    );
-  }
-  return <FileIcon className="h-6 w-6 text-muted-foreground" />;
+  return (
+    <CustomThumbnail
+      url={url}
+      name={item.filename}
+      mime={item.mime}
+      variant="thumb"
+      className="h-full w-full"
+    />
+  );
 }
 
 function formatBytes(bytes: number) {
@@ -290,12 +282,6 @@ export function History({ refreshKey }: { refreshKey: number }) {
                       tabIndex={urls[it.id] ? 0 : undefined}
                     >
                       <MediaPreview item={it} url={urls[it.id]} />
-                      {it.mime.startsWith("video/") && (
-                        <Film className="absolute h-5 w-5 text-primary-foreground drop-shadow" />
-                      )}
-                      {it.mime.startsWith("audio/") && (
-                        <Music2 className="pointer-events-none absolute bottom-1 right-1 h-3.5 w-3.5 text-primary-foreground drop-shadow" />
-                      )}
                     </div>
                     <div className="min-w-0 flex-1">
                       <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-bold leading-tight sm:text-base">

@@ -35,6 +35,8 @@ import {
 } from "@/lib/qr-protocol";
 import { saveItem } from "@/lib/history";
 import { MediaViewer, type ViewerItem } from "@/components/MediaViewer";
+import { CustomThumbnail } from "@/components/media/CustomThumbnail";
+import { Portal } from "@/components/Portal";
 import { sfx } from "@/lib/feedback";
 import { haptics } from "@/lib/haptics";
 import { roiFromQuads, type Rect } from "@/lib/roi";
@@ -61,8 +63,9 @@ type ProgressState = {
   eta: number | null;
   rate: number;
   coverage: number[];
+  stalled?: boolean;
 };
-const EMPTY_PROGRESS: ProgressState = { have: 0, total: 0, frac: 0, eta: null, rate: 0, coverage: [] };
+const EMPTY_PROGRESS: ProgressState = { have: 0, total: 0, frac: 0, eta: null, rate: 0, coverage: [], stalled: false };
 
 type NativeDetection = { rawValue: string; cornerPoints?: Array<{ x: number; y: number }> };
 type NativeDetector = { detect: (source: CanvasImageSource) => Promise<NativeDetection[]> };
@@ -107,9 +110,9 @@ const SEEN_MS = 150; // ignore the same frame seen again within this window
 const SWITCH_AFTER = 4; // frames of a different transfer before we abandon the current one
 const NAME_WAIT_MS = 3500; // finish without a header frame after this long
 
-// Hardware autofocus & lens tracking timing
-const FOCUS_THROTTLE_MS = 250;
-const FOCUS_HUNT_INTERVAL_MS = 2500;
+// Hardware autofocus & continuous lens tracking timing
+const FOCUS_THROTTLE_MS = 100;
+const FOCUS_HUNT_INTERVAL_MS = 1800;
 const MAX_BOXES = 16;
 const LAUNCH_MIN_MS = 750; // the Start button's spinner stays long enough to be seen
 const STOP_MIN_MS = 650; // same for Stop
@@ -125,14 +128,18 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function formatEta(seconds: number | null) {
-  if (seconds === null || !Number.isFinite(seconds) || seconds < 1) return "";
-  const whole = Math.ceil(seconds);
+function formatEta(seconds: number | null, stalled = false) {
+  if (stalled) return "Paused · hold steady";
+  if (seconds === null || !Number.isFinite(seconds)) return "";
+  if (seconds <= 0.8) return "< 1s left";
+  const whole = Math.round(seconds);
+  if (whole <= 1) return "≈ 1s left";
   const hours = Math.floor(whole / 3600);
   const mins = Math.floor((whole % 3600) / 60);
   const secs = whole % 60;
-  if (hours) return `${hours}h ${mins.toString().padStart(2, "0")}m left`;
-  return mins ? `${mins}m ${secs.toString().padStart(2, "0")}s left` : `${secs}s left`;
+  if (hours > 0) return `≈ ${hours}h ${mins.toString().padStart(2, "0")}m left`;
+  if (mins > 0) return `≈ ${mins}m ${secs.toString().padStart(2, "0")}s left`;
+  return `≈ ${secs}s left`;
 }
 
 function mediaLabel(mime?: string | null) {
@@ -237,17 +244,28 @@ async function openCameraStream(facingMode: "environment" | "user", quality: Cam
   throw lastError instanceof Error ? lastError : new Error("Camera permission is unavailable in this browser.");
 }
 
-/** High-performance hardware autofocus with point-of-interest lens steering and focus sweep pulsing. */
-async function applyCameraFocus(stream: MediaStream | null, point?: Point, pulse = false) {
+/** High-performance hardware autofocus with point-of-interest lens steering, optical zoom, and focus sweep pulsing. */
+async function applyCameraFocus(stream: MediaStream | null, point?: Point, pulse = false, zoom?: number) {
   const track = stream?.getVideoTracks()[0] as CameraControlTrack | undefined;
   if (!track || track.readyState !== "live") return false;
   const caps = (track.getCapabilities?.() || {}) as CameraControlCapabilities & {
     pointsOfInterest?: boolean;
     exposureMode?: string[];
     whiteBalanceMode?: string[];
+    zoom?: { min: number; max: number; step?: number };
   };
   const available = caps.focusMode ?? [];
   const pt = point ? { x: clamp(point.x, 0.05, 0.95), y: clamp(point.y, 0.05, 0.95) } : undefined;
+
+  // Physical hardware zoom (optical/sensor zoom on supported mobile devices)
+  if (zoom !== undefined && caps.zoom && typeof caps.zoom.min === "number" && typeof caps.zoom.max === "number") {
+    try {
+      const hwZoom = clamp(zoom, caps.zoom.min, caps.zoom.max);
+      await track.applyConstraints({ advanced: [{ zoom: hwZoom } as MediaTrackConstraintSet] });
+    } catch {
+      /* continue to focus */
+    }
+  }
 
   // Pulse: trigger a fast single-shot focus sweep on point then resume continuous tracking
   if (pulse && available.includes("single-shot")) {
@@ -352,18 +370,32 @@ async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array> {
 
 /**
  * Where video-normalised coordinates land inside a cover-fitted element.
- * Returns screen-normalised (0..1) coordinates.
+ * Returns screen-normalised (0..1) coordinates with exact zoom and pan alignment.
  */
-function makeScreenMapper(videoW: number, videoH: number, boxW: number, boxH: number, _v?: View) {
+function makeScreenMapper(videoW: number, videoH: number, boxW: number, boxH: number, v?: View) {
   const ea = boxH ? boxW / boxH : videoW / videoH;
   const va = videoW / videoH;
   const toElement = (vx: number, vy: number): Point =>
     va > ea ? { x: (vx - 0.5) / (ea / va) + 0.5, y: vy } : { x: vx, y: (vy - 0.5) / (va / ea) + 0.5 };
+  if (!v || v.z <= 1.001) {
+    return {
+      exc: 0.5,
+      eyc: 0.5,
+      map(vx: number, vy: number): Point {
+        return toElement(vx, vy);
+      },
+    };
+  }
+  const half = 0.5 / v.z;
+  const c = toElement(v.cx, v.cy);
+  const exc = clamp(c.x, half, 1 - half);
+  const eyc = clamp(c.y, half, 1 - half);
   return {
-    exc: 0.5,
-    eyc: 0.5,
+    exc,
+    eyc,
     map(vx: number, vy: number): Point {
-      return toElement(vx, vy);
+      const e = toElement(vx, vy);
+      return { x: 0.5 + (e.x - exc) * v.z, y: 0.5 + (e.y - eyc) * v.z };
     },
   };
 }
@@ -433,6 +465,7 @@ export function Scanner({
   const colorModeRef = useRef(false);
   const roiRef = useRef<(Rect & { t: number; misses: number }) | null>(null);
   const meterRef = useRef(new RateMeter());
+  const lastChunkAtRef = useRef(0);
   const camQualityRef = useRef<CamQuality>("hd");
   const lastColorAtRef = useRef(0);
   const lastCountRef = useRef(0);
@@ -460,6 +493,7 @@ export function Scanner({
   const [celebrate, setCelebrate] = useState(0);
   const [viewer, setViewer] = useState<ViewerItem | null>(null);
   const [paused, setPaused] = useState<PausedTransfer | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [autoAssist, setAutoAssist] = useState(true);
   const [stats, setStats] = useState({ cam: 0, rx: 0 });
 
@@ -889,34 +923,84 @@ export function Scanner({
   }
 
   /**
-   * Hardware lens tracking: steers the physical camera lens at the centroid of detected QR codes.
-   * Viewfinder stays rock-solid at native 1x resolution with zero digital zooming jitter.
+   * Continuous smooth auto-framing and autofocus:
+   * Dynamically tracks all visible QR codes, smoothly zooms in/out with exponential dampening,
+   * enforces a dead-band to prevent breathing/jitter, and steers physical camera focus to the centroid.
    */
   function stepAutoFrame(quads: Quad[], W: number, H: number, now: number) {
     if (!autoAssistRef.current || flippingRef.current) return;
     if (now - lastFrameStepRef.current < FOCUS_THROTTLE_MS) return;
     lastFrameStepRef.current = now;
 
-    let sumX = 0;
-    let sumY = 0;
-    let count = 0;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
     for (const q of quads) {
       for (const pt of q) {
-        sumX += pt.x / W;
-        sumY += pt.y / H;
-        count++;
+        minX = Math.min(minX, pt.x / W);
+        maxX = Math.max(maxX, pt.x / W);
+        minY = Math.min(minY, pt.y / H);
+        maxY = Math.max(maxY, pt.y / H);
       }
     }
-    if (count === 0) return;
-    const cx = sumX / count;
-    const cy = sumY / count;
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return;
 
+    const raw = { minX, maxX, minY, maxY };
     const prev = smoothRef.current;
-    const moved = prev ? Math.hypot(cx - prev.minX, cy - prev.minY) > 0.08 : true;
-    if (moved || now - lastFocusRef.current > 1200) {
+    // Exponential smoothing / dampening: filter out hand tremor and minor shaking
+    const a = 0.22;
+    const sm = prev
+      ? {
+          minX: prev.minX + (raw.minX - prev.minX) * a,
+          maxX: prev.maxX + (raw.maxX - prev.maxX) * a,
+          minY: prev.minY + (raw.minY - prev.minY) * a,
+          maxY: prev.maxY + (raw.maxY - prev.maxY) * a,
+        }
+      : raw;
+    smoothRef.current = sm;
+
+    const v = viewRef.current;
+    const bw = Math.max(0.01, sm.maxX - sm.minX);
+    const bh = Math.max(0.01, sm.maxY - sm.minY);
+    const cx = (sm.minX + sm.maxX) / 2;
+    const cy = (sm.minY + sm.maxY) / 2;
+
+    // Ideal framing: codes comfortably fill ~68% of the viewport for optimal module density and decoding speed
+    let targetZ = clamp(0.68 / Math.max(bw, bh), 1.0, 2.75);
+
+    // Edge guard: if any code gets too close to the sensor edge (< 3.5% margin), back off zoom immediately
+    const edgeMargin = 0.035;
+    if (sm.minX < edgeMargin || sm.maxX > 1 - edgeMargin || sm.minY < edgeMargin || sm.maxY > 1 - edgeMargin) {
+      targetZ = Math.min(targetZ, Math.max(1.0, v.z - 0.25));
+    }
+
+    // Dead-band: ignore micro-fluctuations (< 0.06 delta) to eliminate breathing oscillations
+    let nextZ = v.z;
+    if (Math.abs(targetZ - v.z) >= 0.06) {
+      nextZ = v.z + (targetZ - v.z) * 0.25;
+    }
+
+    // Centering: smoothly interpolate viewport center towards code centroid
+    let ncx = 0.5;
+    let ncy = 0.5;
+    if (nextZ > 1.02) {
+      const pull = 0.22;
+      ncx = v.cx + (cx - v.cx) * pull;
+      ncy = v.cy + (cy - v.cy) * pull;
+      const half = 0.5 / nextZ;
+      ncx = clamp(ncx, half, 1 - half);
+      ncy = clamp(ncy, half, 1 - half);
+    }
+
+    if (Math.abs(nextZ - v.z) > 0.005 || Math.abs(ncx - v.cx) > 0.005 || Math.abs(ncy - v.cy) > 0.005) {
+      commitView({ z: nextZ, cx: ncx, cy: ncy });
+    }
+
+    // Physical lens steering: lock hardware autofocus at the centroid
+    if (now - lastFocusRef.current > 1200) {
       lastFocusRef.current = now;
-      smoothRef.current = { minX: cx, maxX: cx, minY: cy, maxY: cy };
-      void applyCameraFocus(streamRef.current, { x: cx, y: cy });
+      void applyCameraFocus(streamRef.current, { x: cx, y: cy }, false, nextZ);
       pingFocus(cx, cy, W, H, now, false);
     }
   }
@@ -926,11 +1010,21 @@ export function Scanner({
     if (now - lastFocusRef.current < FOCUS_HUNT_INTERVAL_MS) return;
     lastFocusRef.current = now;
     smoothRef.current = null;
-    void applyCameraFocus(streamRef.current, { x: 0.5, y: 0.5 }, true);
+    const v = viewRef.current;
+    if (v.z > 1.02) {
+      const nextZ = Math.max(1.0, v.z - 0.35);
+      const half = 0.5 / nextZ;
+      commitView({
+        z: nextZ,
+        cx: clamp(v.cx + (0.5 - v.cx) * 0.4, half, 1 - half),
+        cy: clamp(v.cy + (0.5 - v.cy) * 0.4, half, 1 - half),
+      });
+    }
+    void applyCameraFocus(streamRef.current, { x: 0.5, y: 0.5 }, true, 1.0);
     pingFocus(0.5, 0.5, videoSizeRef.current.w, videoSizeRef.current.h, now, false);
   }
 
-  /** Tap on viewfinder to focus: steers hardware lens directly to the tapped coordinate. */
+  /** Tap on viewfinder to focus: steers hardware lens directly to the tapped coordinate, respecting current zoom. */
   function handleStageClick(e: React.MouseEvent<HTMLDivElement>) {
     if (!activeRef.current || !streamRef.current) return;
     const stage = stageRef.current;
@@ -944,19 +1038,33 @@ export function Scanner({
     const H = videoSizeRef.current.h;
     const ea = rect.width / rect.height;
     const va = W / H;
+    const v = viewRef.current;
     let vx = clickX;
     let vy = clickY;
-    if (va > ea) {
-      vx = (clickX - 0.5) * (ea / va) + 0.5;
+    if (v.z > 1.001) {
+      const g = makeScreenMapper(W, H, rect.width, rect.height, v);
+      const ex = g.exc + (clickX - 0.5) / v.z;
+      const ey = g.eyc + (clickY - 0.5) / v.z;
+      if (va > ea) {
+        vx = (ex - 0.5) * (ea / va) + 0.5;
+        vy = ey;
+      } else {
+        vx = ex;
+        vy = (ey - 0.5) * (va / ea) + 0.5;
+      }
     } else {
-      vy = (clickY - 0.5) * (va / ea) + 0.5;
+      if (va > ea) {
+        vx = (clickX - 0.5) * (ea / va) + 0.5;
+      } else {
+        vy = (clickY - 0.5) * (va / ea) + 0.5;
+      }
     }
     vx = clamp(vx, 0.05, 0.95);
     vy = clamp(vy, 0.05, 0.95);
 
     const now = performance.now();
     lastFocusRef.current = now;
-    void applyCameraFocus(streamRef.current, { x: vx, y: vy }, true);
+    void applyCameraFocus(streamRef.current, { x: vx, y: vy }, true, v.z);
     pingFocus(vx, vy, W, H, now, true);
     haptics.lock();
     sfx.tick();
@@ -964,53 +1072,88 @@ export function Scanner({
     window.setTimeout(() => setAssistToast(null), 1200);
   }
 
-  /** View transform: keeps the preview 100% stable at native 1x (no digital zoom jitter). */
-  function viewTransform(_v?: View): CSSProperties {
+  /** CSS transform that makes the (cover-fitted) video smoothly zoom and frame detected codes. */
+  function viewTransform(v?: View): CSSProperties {
+    if (!v || v.z <= 1.005) {
+      return {
+        transform: "translate3d(0, 0, 0) scale(1)",
+        transition: flipping ? "opacity 0.16s ease" : "transform 0.32s cubic-bezier(0.25, 1, 0.5, 1)",
+      };
+    }
+    const g = makeScreenMapper(videoSizeRef.current.w, videoSizeRef.current.h, stageSize.current.w, stageSize.current.h, v);
     return {
-      transform: "none",
-      transition: flipping ? "opacity 0.16s ease" : undefined,
+      transform: `translate3d(${(-(g.exc - 0.5) * v.z * 100).toFixed(3)}%, ${(-(g.eyc - 0.5) * v.z * 100).toFixed(3)}%, 0) scale(${v.z.toFixed(4)})`,
+      transition: flipping ? "opacity 0.16s ease" : "transform 0.32s cubic-bezier(0.25, 1, 0.5, 1)",
     };
   }
 
   /* ---------------------------------------------------------------- progress + frames */
 
-  function updateProgress(t: Transfer, force = false) {
+  function updateProgress(t: Transfer, isTurbo = false) {
     const now = performance.now();
-    if (!force && now - progressCommitRef.current < PROGRESS_COMMIT_MS) return;
+    if (!isTurbo && now - progressCommitRef.current < PROGRESS_COMMIT_MS) return;
     progressCommitRef.current = now;
     const frac = t.decoder.progress;
     pctRef.current = frac * 100;
-    meterRef.current.add(now, frac * t.meta.size);
+    const completedBytes = frac * t.meta.size;
+    meterRef.current.add(now, completedBytes);
+    lastChunkAtRef.current = now;
+
     const step = frac >= 0.75 ? 3 : frac >= 0.5 ? 2 : frac >= 0.25 ? 1 : 0;
     if (step > milestoneRef.current && frac < 1) {
       milestoneRef.current = step;
       haptics.milestone(step as 1 | 2 | 3);
     }
-    const elapsed = (Date.now() - t.startedAt) / 1000;
 
-    // Rate is measured over the LAST ~10 seconds of real progress, smoothed: it follows reality
-    // (camera quality, distance) instead of extrapolating the slow first moments.
-    const samples = samplesRef.current;
-    samples.push({ t: now, f: frac });
-    while (samples.length > 2 && now - samples[0].t > 10000) samples.shift();
-    const first = samples[0];
-    const span = (now - first.t) / 1000;
-    const df = frac - first.f;
-    if (span >= 2 && df > 0) {
-      const inst = df / span;
-      etaRateRef.current = etaRateRef.current ? etaRateRef.current * 0.6 + inst * 0.4 : inst;
-    } else if (span >= 5 && df <= 0) {
-      etaRateRef.current = 0; // stalled: do not promise a time
+    if (frac >= 1) {
+      setProgress({
+        have: t.decoder.count,
+        total: t.meta.total,
+        frac: 1,
+        eta: 0,
+        rate: etaRateRef.current,
+        coverage: t.decoder.coverage(48),
+        stalled: false,
+      });
+      return;
     }
-    const rate = etaRateRef.current;
-    const eta = elapsed >= 2.5 && frac >= 0.015 && rate > 0 && frac < 1 ? (1 - frac) / rate : null;
+
+    const rollingRate = meterRef.current.currentRate(now, 1200);
+    if (rollingRate > 0) {
+      if (etaRateRef.current <= 0 || isTurbo) {
+        etaRateRef.current = rollingRate;
+      } else {
+        // Smooth changes so rate and ETA do not wildly jitter
+        etaRateRef.current = etaRateRef.current * 0.7 + rollingRate * 0.3;
+      }
+    }
+
+    const remainingBytes = Math.max(0, t.meta.size - completedBytes);
+    let eta: number | null = null;
+
+    if (t.decoder.count >= 1 && remainingBytes > 0) {
+      const activeElapsed = Math.max(0.1, (Date.now() - t.startedAt) / 1000);
+      const overallRate = completedBytes / activeElapsed;
+      // Real-time effective rate: prioritize rolling rate, backed by overall sustained rate
+      const effectiveRate = Math.max(etaRateRef.current, overallRate * 0.75);
+
+      if (effectiveRate > 0) {
+        eta = Math.max(0.5, remainingBytes / effectiveRate);
+      } else {
+        // Realistic initial baseline matching sender's optical stream (25-35 KB/s)
+        const baselineRate = Math.max(t.meta.chunk * 22, 25000);
+        eta = Math.max(0.5, remainingBytes / baselineRate);
+      }
+    }
+
     setProgress({
       have: t.decoder.count,
       total: t.meta.total,
       frac,
       eta,
-      rate: rate * t.meta.size,
+      rate: etaRateRef.current,
       coverage: t.decoder.coverage(48),
+      stalled: false,
     });
   }
 
@@ -1029,6 +1172,34 @@ export function Scanner({
       return null;
     }
     const t: Transfer = { meta, decoder, startedAt: Date.now(), name: null, mime: null };
+    decoder.onTurboHeader = (name, mime) => {
+      if (t.name === null) {
+        t.name = name;
+        t.mime = mime;
+        setScanInfo({ name, mime, size: t.meta.origSize, named: true });
+        sfx.tick();
+      }
+    };
+    decoder.onChunk = (_count, _total, isTurbo) => {
+      if (isTurbo) {
+        learnedRef.current += 1;
+      }
+      updateProgress(t, isTurbo);
+    };
+    decoder.onComplete = () => {
+      if (t.name !== null) {
+        void finish();
+      } else if (!nameTimerRef.current) {
+        nameTimerRef.current = window.setTimeout(() => {
+          nameTimerRef.current = 0;
+          if (transferRef.current === t && t.name === null) {
+            t.name = "received-file";
+            t.mime = "application/octet-stream";
+          }
+          void finish();
+        }, 1200);
+      }
+    };
     transferRef.current = t;
     candidateRef.current = null;
     samplesRef.current = [];
@@ -1036,6 +1207,7 @@ export function Scanner({
     pctRef.current = 0;
     milestoneRef.current = 0;
     meterRef.current.reset();
+    lastChunkAtRef.current = performance.now();
     window.clearTimeout(nameTimerRef.current);
     setError(null);
     setPaused(null);
@@ -1059,19 +1231,32 @@ export function Scanner({
 
     let t = transferRef.current;
     if (t && t.meta.id !== parsed.id) {
-      // Another transfer is in view. Only abandon the current one if the new one persists
-      // (avoids flicker when a second sender's screen briefly crosses the frame).
-      const cand = candidateRef.current;
-      if (!cand || cand.id !== parsed.id) candidateRef.current = { id: parsed.id, count: 1 };
-      else cand.count += 1;
-      if ((candidateRef.current?.count ?? 0) < SWITCH_AFTER) return true;
-      t = null;
+      // Check if it's actually the same file payload being transferred (matching crc and size)
+      if (t.meta.crc === parsed.meta.crc && t.meta.size === parsed.meta.size) {
+        // It's the exact same file! Update the ID so we don't abandon it
+        t.meta.id = parsed.id;
+        candidateRef.current = null;
+      } else {
+        // Another transfer is in view. Only abandon the current one if the new one persists
+        // (avoids flicker when a second sender's screen briefly crosses the frame).
+        const cand = candidateRef.current;
+        if (!cand || cand.id !== parsed.id) candidateRef.current = { id: parsed.id, count: 1 };
+        else cand.count += 1;
+        if ((candidateRef.current?.count ?? 0) < SWITCH_AFTER) return true;
+        t = null;
+      }
     }
     // INSTANT START: any frame (data, repair or header) carries everything needed.
     if (!t) {
       t = startTransfer(parsed.meta);
       if (!t) return true;
       updateProgress(t, true);
+    } else if (t.decoder.chunk !== parsed.meta.chunk) {
+      // Sender changed density / chunk size mid-transfer (e.g. Balanced -> Dense -> Ultra)!
+      // Seamlessly adapt the decoder while preserving all already-received chunks and bytes.
+      t.decoder = t.decoder.adaptChunkSize(parsed.meta);
+      t.meta = parsed.meta;
+      updateProgress(t);
     }
 
     if (parsed.kind === "header") {
@@ -1466,6 +1651,21 @@ export function Scanner({
     sfx.close();
   }
 
+  function requestDiscardPaused() {
+    haptics.tap();
+    setConfirmDiscard(true);
+  }
+
+  function confirmDiscardPaused() {
+    setConfirmDiscard(false);
+    discardPaused();
+  }
+
+  function cancelDiscardPaused() {
+    haptics.tap();
+    setConfirmDiscard(false);
+  }
+
   /* ---------------------------------------------------------------- result actions */
 
   function clearDonePreview() {
@@ -1541,9 +1741,26 @@ export function Scanner({
     let lastCam = camFramesRef.current;
     let lastRx = learnedRef.current;
     const id = window.setInterval(() => {
-      setStats({ cam: camFramesRef.current - lastCam, rx: learnedRef.current - lastRx });
+      const now = performance.now();
+      const newRx = learnedRef.current - lastRx;
+      setStats({ cam: camFramesRef.current - lastCam, rx: newRx });
       lastCam = camFramesRef.current;
       lastRx = learnedRef.current;
+
+      const t = transferRef.current;
+      if (t && !t.decoder.complete) {
+        const silentFor = now - lastChunkAtRef.current;
+        if (silentFor > 1800 && lastChunkAtRef.current > 0) {
+          // Stalled / paused scanning
+          etaRateRef.current *= 0.6;
+          if (etaRateRef.current < 100) etaRateRef.current = 0;
+          setProgress((prev) => ({
+            ...prev,
+            stalled: true,
+            rate: etaRateRef.current,
+          }));
+        }
+      }
     }, 1000);
     return () => window.clearInterval(id);
   }, [active]);
@@ -1603,7 +1820,7 @@ export function Scanner({
   const hasProgress = progress.total > 0;
   const named = scanInfo?.named ?? false;
   const speedLabel = progress.rate > 0 ? `${formatBytes(Math.round(progress.rate))}/s` : null;
-  const etaLabel = formatEta(progress.eta);
+  const etaLabel = formatEta(progress.eta, progress.stalled);
   const phase: "searching" | "locked" | "receiving" = hasProgress ? "receiving" : codeCount > 0 ? "locked" : "searching";
 
   const errorBanner = error ? (
@@ -1667,15 +1884,12 @@ export function Scanner({
                     <p className="text-[11px] text-muted-foreground">{formatBytes(paused.size)}</p>
                   </div>
                   <button
-                    onClick={discardPaused}
+                    onClick={requestDiscardPaused}
                     aria-label="Discard paused transfer"
                     className="glass grid h-9 w-9 shrink-0 place-items-center rounded-full text-muted-foreground active:scale-90"
                   >
                     <X className="h-4 w-4" />
                   </button>
-                </div>
-                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-secondary">
-                  <div className="h-full rounded-full bg-gradient-to-r from-primary to-accent" style={{ width: `${paused.frac * 100}%` }} />
                 </div>
               </div>
             )}
@@ -1826,7 +2040,7 @@ export function Scanner({
                 {autoAssist && (
                   <span className="hud-card pointer-events-none absolute inset-x-0 bottom-3 mx-auto flex w-fit items-center gap-1.5 rounded-full px-3 py-1.5 text-[10px] font-extrabold text-white">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-                    AUTOFOCUS
+                    AUTOFOCUS{view.z > 1.08 ? ` · ${view.z.toFixed(1)}×` : ""}
                   </span>
                 )}
 
@@ -1965,26 +2179,13 @@ export function Scanner({
             aria-label={`Open ${done.name}`}
             className="group glass-strong relative min-h-[14rem] w-full flex-1 overflow-hidden rounded-[2rem] bg-black/80 text-left transition-transform duration-300 active:scale-[0.985]"
           >
-            {done.mime.startsWith("image/") && done.url ? (
-              <img src={done.url} alt={done.name} className="absolute inset-0 h-full w-full object-contain" />
-            ) : done.mime.startsWith("video/") && done.url ? (
-              <>
-                <video src={done.url} muted playsInline preload="metadata" className="absolute inset-0 h-full w-full object-contain" />
-                <span className="absolute inset-0 grid place-items-center">
-                  <span className="grid h-16 w-16 place-items-center rounded-full bg-white/25 backdrop-blur transition-transform duration-300 group-hover:scale-110">
-                    <Play className="ml-1 h-7 w-7 text-white" fill="currentColor" />
-                  </span>
-                </span>
-              </>
-            ) : done.mime.startsWith("audio/") ? (
-              <span className="audio-tile absolute inset-0 grid place-items-center">
-                <Music2 className="h-16 w-16 text-primary" strokeWidth={1.6} />
-              </span>
-            ) : (
-              <span className="absolute inset-0 grid place-items-center text-muted-foreground">
-                <FileText className="h-16 w-16" strokeWidth={1.4} />
-              </span>
-            )}
+            <CustomThumbnail
+              url={done.url}
+              name={done.name}
+              mime={done.mime}
+              variant="card"
+              className="absolute inset-0 h-full w-full"
+            />
             <span className="success-badge absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/55 px-3 py-1.5 text-[11px] font-bold text-white backdrop-blur">
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" /> Verified
             </span>
@@ -2056,6 +2257,51 @@ export function Scanner({
             </button>
           </div>
         </div>
+      )}
+
+      {confirmDiscard && (
+        <Portal>
+          <div
+            className="fixed inset-0 z-[70] flex items-end justify-center bg-background/35 px-4 pb-4 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            onClick={cancelDiscardPaused}
+          >
+            <div
+              className="glass-strong safe-bottom w-full max-w-md rounded-[2rem] p-4 text-center animate-fade-up"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mx-auto flex items-center justify-center gap-2">
+                <X className="h-5 w-5 text-destructive" strokeWidth={2.4} />
+                <h2 className="text-display text-lg leading-tight text-foreground">
+                  Discard paused transfer?
+                </h2>
+              </div>
+              <p className="mx-auto mt-3 max-w-[19rem] text-center text-sm text-muted-foreground">
+                Your progress for this file will be lost.
+              </p>
+              <p className="mx-auto mt-1 max-w-[19rem] text-center text-sm text-muted-foreground">
+                You will need to scan again from the start.
+              </p>
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={confirmDiscardPaused}
+                  className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97]"
+                >
+                  Yes
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelDiscardPaused}
+                  className="liquid-control flex items-center justify-center rounded-2xl py-3 text-sm font-bold active:scale-[0.97]"
+                >
+                  No
+                </button>
+              </div>
+            </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

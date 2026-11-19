@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
   Upload,
   Play,
@@ -25,6 +25,8 @@ import {
   Expand,
   Sparkles,
   Palette,
+  ShieldCheck,
+  Cpu,
   Zap as ZapIcon,
 } from "lucide-react";
 import {
@@ -41,6 +43,7 @@ import { FramePipeline, PrepareCancelled, paintFrame, prepareFile, type Prepared
 import { BundleCancelled, buildZip } from "@/lib/zip-bundle";
 import { saveItem } from "@/lib/history";
 import { sfx } from "@/lib/feedback";
+import { CustomThumbnail } from "@/components/media/CustomThumbnail";
 import { haptics } from "@/lib/haptics";
 import { useWakeLock } from "@/lib/wake-lock";
 import { cn } from "@/lib/utils";
@@ -97,7 +100,8 @@ function tierForFps(fps: number): SpeedTier {
 
 function formatDuration(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
-  const whole = Math.ceil(seconds);
+  if (seconds < 0.8) return "< 1s";
+  const whole = Math.round(seconds);
   const hours = Math.floor(whole / 3600);
   const mins = Math.floor((whole % 3600) / 60);
   const secs = whole % 60;
@@ -179,6 +183,7 @@ export function Sender({ active = true }: { active?: boolean }) {
   const [preview, setPreview] = useState<string | null>(null);
   const [viewer, setViewer] = useState<ViewerItem | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
   const [qrReady, setQrReady] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -193,6 +198,28 @@ export function Sender({ active = true }: { active?: boolean }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [picking, setPicking] = useState(false);
   const [tapFlash, setTapFlash] = useState<"play" | "pause" | null>(null);
+  const [overlayActive, setOverlayActive] = useState(false);
+  const overlayTimerRef = useRef<number | null>(null);
+
+  const triggerOverlay = useCallback(() => {
+    setOverlayActive(true);
+    if (overlayTimerRef.current !== null) {
+      clearTimeout(overlayTimerRef.current);
+    }
+    overlayTimerRef.current = window.setTimeout(() => {
+      setOverlayActive(false);
+      overlayTimerRef.current = null;
+    }, 1000);
+  }, []);
+
+  const [turboStats, setTurboStats] = useState<{
+    active: boolean;
+    sentChunks: number;
+    totalChunks: number;
+    bytesSent: number;
+    rate: number;
+    complete: boolean;
+  } | null>(null);
   const mainRefs = useRef<Array<HTMLCanvasElement | null>>([]);
   const fullRefs = useRef<Array<HTMLCanvasElement | null>>([]);
   const pipelineRef = useRef<FramePipeline | null>(null);
@@ -212,6 +239,28 @@ export function Sender({ active = true }: { active?: boolean }) {
     setFps(readFps());
   }, []);
 
+  const handleStageMouseMove = useCallback(() => {
+    if (plan && qrReady) {
+      triggerOverlay();
+    }
+  }, [plan, qrReady, triggerOverlay]);
+
+  const handleStageMouseLeave = useCallback(() => {
+    if (overlayTimerRef.current !== null) {
+      clearTimeout(overlayTimerRef.current);
+      overlayTimerRef.current = null;
+    }
+    setOverlayActive(false);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (overlayTimerRef.current !== null) {
+        clearTimeout(overlayTimerRef.current);
+      }
+    };
+  }, []);
+
   function disposePipeline() {
     pipelineRef.current?.dispose();
     pipelineRef.current = null;
@@ -223,8 +272,19 @@ export function Sender({ active = true }: { active?: boolean }) {
     setPreview(url);
   }
 
-  function installPipeline(prepared: { plan: StreamPlan; blob: Blob }, ec: "L" | "M", colorMode = color) {
+  function installPipeline(
+    prepared: { plan: StreamPlan; blob: Blob },
+    ec: "L" | "M",
+    colorMode = color,
+    initialSeq = 0,
+  ) {
     disposePipeline();
+    setTurboStats(null);
+    setOverlayActive(false);
+    if (overlayTimerRef.current !== null) {
+      clearTimeout(overlayTimerRef.current);
+      overlayTimerRef.current = null;
+    }
     const pipeline = new FramePipeline(prepared.plan, prepared.blob, ec, colorMode);
     pipeline.onChange = () => {
       if (pipeline.error) {
@@ -232,16 +292,35 @@ export function Sender({ active = true }: { active?: boolean }) {
         setPlaying(false);
       }
     };
+    pipeline.onTurboProgress = (sentChunks, totalChunks, bytesSent, rate) => {
+      setTurboStats({
+        active: true,
+        sentChunks,
+        totalChunks,
+        bytesSent,
+        rate,
+        complete: sentChunks >= totalChunks,
+      });
+    };
+    pipeline.onTurboComplete = () => {
+      setTurboStats((prev) => (prev ? { ...prev, complete: true, sentChunks: prev.totalChunks } : null));
+    };
     pipelineRef.current = pipeline;
-    pipeline.reset(0);
-    seqRef.current = 0;
+    pipeline.reset(initialSeq);
+    seqRef.current = initialSeq;
     paintedRef.current = -1;
-    setSeq(0);
+    setSeq(initialSeq);
     setPlan(prepared.plan);
   }
 
   function resetForNewPick() {
     disposePipeline();
+    setTurboStats(null);
+    setOverlayActive(false);
+    if (overlayTimerRef.current !== null) {
+      clearTimeout(overlayTimerRef.current);
+      overlayTimerRef.current = null;
+    }
     preparedRef.current = null;
     setPlan(null);
     setSeq(0);
@@ -352,7 +431,12 @@ export function Sender({ active = true }: { active?: boolean }) {
     if (!prepared) return;
     const p = presetFor(next);
     announceSwitch(`${p.label} · ${formatBytes(p.chunk)} per code`);
-    installPipeline(prepared.rechunk(p.chunk), p.ec, color);
+    const rechunked = prepared.rechunk(p.chunk);
+    // Keep relative playback position so the broadcast does NOT restart from frame 0
+    const curTotal = plan?.total || 1;
+    const curFrac = (seqRef.current % curTotal) / curTotal;
+    const nextSeq = Math.floor(curFrac * rechunked.plan.total);
+    installPipeline(rechunked, p.ec, color, nextSeq);
   }
 
   function toggleColor() {
@@ -362,7 +446,7 @@ export function Sender({ active = true }: { active?: boolean }) {
     announceSwitch(next ? "Colour ×3 (beta) on" : "Colour mode off");
     haptics.toggle(next);
     sfx.toggleOn();
-    if (prepared && plan) installPipeline({ plan, blob: prepared.blob }, preset.ec, next);
+    if (prepared && plan) installPipeline({ plan, blob: prepared.blob }, preset.ec, next, seqRef.current);
   }
 
   /** Brief, visible acknowledgement while the new frames render (replaces the old loading state). */
@@ -448,7 +532,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       // A presenter canvas that mounted after the frame was painted needs catching up.
       for (let i = 0; i < activeLanes; i++) {
         const c = fullRefs.current[i] ?? mainRefs.current[i];
-        if (c && c.width <= 300) paintedRef.current = -1;
+        if (c && (c.width === 0 || c.height === 0)) paintedRef.current = -1;
       }
 
       if (paintedRef.current !== seqRef.current) {
@@ -519,11 +603,33 @@ export function Sender({ active = true }: { active?: boolean }) {
     if (inputRef.current) inputRef.current.value = "";
   }
 
+  function requestRemoveFile() {
+    haptics.tap();
+    setConfirmRemove(true);
+  }
+
+  function confirmRemoveFile() {
+    setConfirmRemove(false);
+    sfx.close();
+    removeFile();
+  }
+
+  function cancelRemoveFile() {
+    haptics.tap();
+    setConfirmRemove(false);
+  }
+
   function resetPlayback() {
     seqRef.current = 0;
     paintedRef.current = -1;
     pipelineRef.current?.reset(0);
     setSeq(0);
+    setTurboStats(null);
+    setOverlayActive(false);
+    if (overlayTimerRef.current !== null) {
+      clearTimeout(overlayTimerRef.current);
+      overlayTimerRef.current = null;
+    }
     setPlaying(false);
     sfx.reset();
   }
@@ -591,16 +697,38 @@ export function Sender({ active = true }: { active?: boolean }) {
   const isLarge = Boolean(file && file.size > LONG_TRANSFER_BYTES);
   const throughput = (plan?.chunk ?? preset.chunk) * tickRate;
   const payloadBytes = plan?.size ?? file?.size ?? 0;
+
+  // Real-time metrics accounting for active Turbo transport vs optical
+  const isTurboActive = Boolean(turboStats && turboStats.active);
+  const effectiveThroughput = isTurboActive && turboStats!.rate > 0 ? turboStats!.rate : throughput;
+  const effectiveProgress = isTurboActive
+    ? Math.min(100, (turboStats!.sentChunks / turboStats!.totalChunks) * 100)
+    : progress;
+  const remainingBytes = Math.max(
+    0,
+    payloadBytes - (isTurboActive ? turboStats!.bytesSent : ((seq + step) / passLength) * payloadBytes),
+  );
+  const effectiveRemainingSeconds = isTurboActive
+    ? turboStats!.complete
+      ? 0
+      : turboStats!.rate > 0
+        ? remainingBytes / turboStats!.rate
+        : 0
+    : remainingSeconds;
+  const effectiveShownFrames = isTurboActive ? turboStats!.sentChunks : shownFrames;
+
   const busyLabel = busy ? `${PHASE_LABEL[busy.phase]} ${Math.round(busy.f * 100)}%` : null;
   const statusLine =
     busyLabel ??
     (!plan
       ? "—"
-      : playing
-        ? inFirstPass
-          ? `${formatDuration(remainingSeconds)} left`
-          : "Sending repair frames"
-        : `${formatDuration(passSeconds)} to send`);
+      : turboStats?.complete
+        ? "Transfer complete"
+        : playing || isTurboActive
+          ? inFirstPass || isTurboActive
+            ? `${formatDuration(effectiveRemainingSeconds)} left`
+            : "Sending repair frames"
+          : `${formatDuration(passSeconds)} to send`);
 
   /* ---------------------------------------------------------------- empty / busy state */
   if (!file) {
@@ -634,18 +762,39 @@ export function Sender({ active = true }: { active?: boolean }) {
           </div>
 
           {busy ? (
-            <>
-              <h2 className="text-display text-2xl md:text-3xl">{PHASE_LABEL[busy.phase]}…</h2>
-              <p className="mt-1.5 text-sm text-muted-foreground">
-                {bundleCount} files into one transfer · {Math.round(busy.f * 100)}%
+            <div className="relative flex w-full max-w-md flex-col items-center animate-in fade-in-50 zoom-in-95 duration-300">
+              <div className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3.5 py-1 text-xs font-bold uppercase tracking-wider text-primary">
+                <span className="h-2 w-2 rounded-full bg-primary animate-ping" />
+                {busy.phase === "bundle" ? "Archiving Bundle" : busy.phase === "compress" ? "Optimizing Payload" : "Preparing Stream"}
+              </div>
+
+              <div className="mt-4 flex items-baseline justify-center gap-1.5">
+                <span className="text-5xl font-black tracking-tight tabular-nums text-foreground md:text-6xl">
+                  {Math.round(busy.f * 100)}
+                </span>
+                <span className="text-3xl font-bold text-primary">%</span>
+              </div>
+
+              <p className="mt-1.5 text-sm font-semibold text-muted-foreground">
+                {bundleCount ? `${bundleCount} files packaged into zero-loss archive` : "Processing payload data"}
               </p>
-              <div className="mt-5 h-2 w-full max-w-xs overflow-hidden rounded-full bg-secondary">
+
+              <div className="relative mt-5 h-2.5 w-full max-w-xs overflow-hidden rounded-full bg-secondary/80 p-[1px] ring-1 ring-border/50">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-200"
-                  style={{ width: `${busy.f * 100}%` }}
+                  className="h-full rounded-full bg-gradient-to-r from-primary via-accent to-primary transition-all duration-300 ease-out shadow-[0_0_14px_rgba(var(--primary-rgb),0.55)]"
+                  style={{ width: `${Math.max(4, busy.f * 100)}%` }}
                 />
               </div>
-            </>
+
+              <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold text-muted-foreground">
+                <span className="glass flex items-center gap-1.5 rounded-full px-3 py-1">
+                  <Zap className="h-3 w-3 text-primary" /> Lossless ZIP engine
+                </span>
+                <span className="glass flex items-center gap-1.5 rounded-full px-3 py-1">
+                  <ShieldCheck className="h-3 w-3 text-primary" /> In-memory stream
+                </span>
+              </div>
+            </div>
           ) : (
             <>
               <h2 className="text-display text-3xl md:text-4xl">{dragging ? "Release to add" : "Send files"}</h2>
@@ -715,20 +864,15 @@ export function Sender({ active = true }: { active?: boolean }) {
     if (preview) setViewer({ url: preview, name: file.name, mime: file.type, size: file.size, blob: file });
   };
 
-  const thumb = (cls: string) =>
-    preview && isImage ? (
-      <img src={preview} alt={file.name} className={cn("object-cover", cls)} />
-    ) : preview && isVideo ? (
-      <video src={preview} muted playsInline preload="metadata" className={cn("object-cover", cls)} />
-    ) : isAudio ? (
-      <span className={cn("audio-tile grid place-items-center", cls)}>
-        <Music2 className="h-5 w-5 text-primary" />
-      </span>
-    ) : (
-      <span className={cn("grid place-items-center bg-secondary", cls)}>
-        {bundleCount ? <Files className="h-5 w-5 text-primary" /> : <FileText className="h-5 w-5 text-muted-foreground" />}
-      </span>
-    );
+  const thumb = (cls: string) => (
+    <CustomThumbnail
+      url={preview}
+      name={file.name}
+      mime={file.type}
+      variant="thumb"
+      className={cls}
+    />
+  );
 
   /** Compact file row (phones / tablets). A fixed square thumbnail keeps ANY image ratio tidy. */
   const fileRow = (
@@ -740,11 +884,6 @@ export function Sender({ active = true }: { active?: boolean }) {
         className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl bg-secondary transition-transform active:scale-95"
       >
         {thumb("h-full w-full")}
-        {isVideo && (
-          <span className="absolute inset-0 grid place-items-center bg-black/25">
-            <Film className="h-4 w-4 text-white" />
-          </span>
-        )}
       </button>
       <div className="min-w-0 flex-1">
         <h3 className="truncate text-[13px] font-bold leading-tight">{file.name}</h3>
@@ -757,7 +896,7 @@ export function Sender({ active = true }: { active?: boolean }) {
         </p>
       </div>
       <button
-        onClick={removeFile}
+        onClick={requestRemoveFile}
         className="glass grid h-9 w-9 shrink-0 place-items-center rounded-full text-muted-foreground active:scale-90"
         aria-label="Remove file"
       >
@@ -770,21 +909,15 @@ export function Sender({ active = true }: { active?: boolean }) {
   const filePanel = (
     <div className="glass relative hidden min-h-[10rem] flex-1 overflow-hidden rounded-[2rem] lg:block">
       <button type="button" onClick={openViewer} aria-label="Open preview" className="group absolute inset-0 bg-black/10">
-        {preview && isImage ? (
-          <img src={preview} alt={file.name} className="absolute inset-0 h-full w-full object-contain p-3" />
-        ) : preview && isVideo ? (
-          <video src={preview} muted playsInline preload="metadata" className="absolute inset-0 h-full w-full object-contain p-3" />
-        ) : isAudio ? (
-          <span className="audio-tile absolute inset-0 grid place-items-center">
-            <Music2 className="h-16 w-16 text-primary" strokeWidth={1.5} />
-          </span>
-        ) : (
-          <span className="absolute inset-0 grid place-items-center text-muted-foreground">
-            {bundleCount ? <Files className="h-16 w-16 text-primary" strokeWidth={1.4} /> : <FileText className="h-16 w-16" strokeWidth={1.3} />}
-          </span>
-        )}
+        <CustomThumbnail
+          url={preview}
+          name={file.name}
+          mime={file.type}
+          variant="card"
+          className="absolute inset-0 h-full w-full"
+        />
         <span className="absolute inset-0 grid place-items-center bg-black/30 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
-          <span className="flex items-center gap-2 rounded-full bg-white/90 px-4 py-2 text-xs font-bold text-neutral-900">
+          <span className="flex items-center gap-2 rounded-full bg-white/90 px-4 py-2 text-xs font-bold text-neutral-900 shadow-xl">
             <Maximize2 className="h-3.5 w-3.5" /> Open preview
           </span>
         </span>
@@ -799,7 +932,7 @@ export function Sender({ active = true }: { active?: boolean }) {
         </div>
       </div>
       <button
-        onClick={removeFile}
+        onClick={requestRemoveFile}
         className="hud-card absolute right-3 top-3 grid h-10 w-10 place-items-center rounded-full text-white active:scale-90"
         aria-label="Remove file"
       >
@@ -826,7 +959,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       {statTile(
         savedBytes > 0 ? <PackageOpen className="h-3 w-3 text-primary" /> : <Activity className="h-3 w-3 text-primary" />,
         savedBytes > 0 ? "Compressed" : "Rate",
-        savedBytes > 0 ? `−${Math.round((savedBytes / file.size) * 100)}%` : `${formatBytes(throughput)}/s`,
+        savedBytes > 0 ? `−${Math.round((savedBytes / file.size) * 100)}%` : `${formatBytes(Math.round(effectiveThroughput))}/s`,
         savedBytes > 0 ? "text-emerald-600 dark:text-emerald-400" : "",
       )}
     </div>
@@ -834,39 +967,124 @@ export function Sender({ active = true }: { active?: boolean }) {
 
   const stage = (
     <div className="relative flex h-full w-full min-h-0 flex-col">
-      <div className="relative min-h-0 flex-1">
-        <LaneGrid count={activeLanes} refs={mainRefs} live={playing} gap={8} switching={Boolean(switching)} />
+      <div
+        className="relative min-h-0 flex-1 overflow-hidden rounded-[1.75rem]"
+        onMouseMove={handleStageMouseMove}
+        onMouseEnter={handleStageMouseMove}
+        onMouseLeave={handleStageMouseLeave}
+      >
+        <LaneGrid
+          count={activeLanes}
+          refs={mainRefs}
+          live={playing}
+          gap={8}
+          switching={Boolean(switching)}
+          forceCols={activeLanes === 8 ? 4 : undefined}
+        />
         {(!qrReady || !ready) && !qrError && (
-          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm font-semibold text-muted-foreground">
-            <Loader2 className="h-6 w-6 animate-spin text-primary" />
-            {busyLabel ?? "Building frames…"}
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center p-6 text-center animate-in fade-in-50 zoom-in-95 duration-300">
+            {/* Ambient liquid backdrop glow */}
+            <div className="pointer-events-none absolute inset-0 -z-10 flex items-center justify-center overflow-hidden rounded-[2rem]">
+              <span className="h-72 w-72 rounded-full bg-primary/25 blur-3xl animate-pulse-ring" />
+              <span className="absolute h-52 w-52 rounded-full bg-accent/20 blur-2xl animate-pulse" />
+            </div>
+
+            <div className="glass-strong relative flex w-full max-w-sm flex-col items-center rounded-[2rem] border border-white/25 p-6 sm:p-7 shadow-2xl backdrop-blur-2xl dark:border-white/10 dark:bg-black/50">
+              {/* Central animated liquid medallion */}
+              <div className="relative mb-5 grid place-items-center">
+                {/* Rotating accent aura */}
+                <div className="absolute -inset-2.5 rounded-full bg-gradient-to-tr from-primary via-accent to-primary opacity-60 blur-md animate-spin [animation-duration:5s]" />
+                <div className="relative grid h-20 w-20 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent shadow-xl shadow-primary/35 text-primary-foreground">
+                  {busy?.phase === "compress" ? (
+                    <PackageOpen className="h-9 w-9 animate-bounce [animation-duration:2s]" />
+                  ) : busy?.phase === "bundle" ? (
+                    <Files className="h-9 w-9 animate-pulse" />
+                  ) : (
+                    <Cpu className="h-9 w-9 animate-pulse" />
+                  )}
+                  <span className="hero-shine absolute inset-0 rounded-2xl" />
+                </div>
+              </div>
+
+              {/* Status pill badge */}
+              <div className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3.5 py-1 text-[11px] font-extrabold uppercase tracking-wider text-primary">
+                <span className="h-1.5 w-1.5 rounded-full bg-primary animate-ping" />
+                {busy?.phase === "compress"
+                  ? "Optimizing Payload"
+                  : busy?.phase === "bundle"
+                    ? "Archiving Bundle"
+                    : busy?.phase === "hash"
+                      ? "Generating Stream"
+                      : "Synthesizing Frames"}
+              </div>
+
+              {/* Big bold liquid percentage */}
+              <div className="mt-3.5 flex items-baseline justify-center gap-1">
+                <span className="text-5xl font-black tracking-tight tabular-nums sm:text-6xl text-foreground">
+                  {busy ? Math.round(busy.f * 100) : 98}
+                </span>
+                <span className="text-3xl font-bold text-primary">%</span>
+              </div>
+
+              {/* File details */}
+              <div className="mt-1.5 min-w-0 max-w-full px-2 text-center">
+                <p className="truncate text-xs font-bold text-foreground/95">{file.name}</p>
+                <p className="text-[11px] font-medium text-muted-foreground">{formatBytes(file.size)}</p>
+              </div>
+
+              {/* Liquid glowing progress bar */}
+              <div className="relative mt-4 h-2.5 w-full overflow-hidden rounded-full bg-secondary/80 p-[1px] ring-1 ring-border/50">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-primary via-accent to-primary transition-all duration-300 ease-out shadow-[0_0_14px_rgba(var(--primary-rgb),0.55)]"
+                  style={{ width: `${Math.max(4, (busy?.f ?? 0.98) * 100)}%` }}
+                />
+              </div>
+
+              {/* Micro telemetry footer */}
+              <div className="mt-4.5 flex items-center justify-center gap-2 text-[10px] font-semibold text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  <Zap className="h-3 w-3 text-primary" /> Multi-core pipeline
+                </span>
+                <span>·</span>
+                <span className="flex items-center gap-1">
+                  <ShieldCheck className="h-3 w-3 text-primary" /> Verified CRC32
+                </span>
+              </div>
+            </div>
           </div>
         )}
         {ready && qrReady && (
-          <button
-            onClick={() => {
-              setTapFlash(playing ? "pause" : "play");
-              window.setTimeout(() => setTapFlash(null), 700);
-              togglePlaying();
-            }}
+          <div
             className={cn(
-              "group absolute inset-0 grid place-items-center rounded-[1.5rem] transition-opacity duration-300 focus-visible:opacity-100",
-              !playing || tapFlash ? "opacity-100" : "opacity-0 hover:opacity-100",
-              !playing ? "" : "bg-transparent",
+              "absolute inset-0 z-20 grid place-items-center transition-all duration-300 ease-out select-none",
+              overlayActive ? "opacity-100 scale-100 pointer-events-auto" : "opacity-0 scale-95 pointer-events-none",
             )}
-            aria-label={playing ? "Pause" : "Play"}
           >
-            <span
+            <button
+              onClick={() => {
+                triggerOverlay();
+                setTapFlash(playing ? "pause" : "play");
+                window.setTimeout(() => setTapFlash(null), 1000);
+                togglePlaying();
+              }}
               className={cn(
-                "grid h-16 w-16 place-items-center rounded-full bg-black/55 text-white shadow-xl backdrop-blur transition-all duration-300",
-                !playing ? "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" : "",
-                !playing && tapFlash ? "opacity-100" : "",
-                playing && !tapFlash ? "scale-90 opacity-0 group-hover:scale-100 group-hover:opacity-100" : "",
+                "relative grid h-20 w-20 place-items-center rounded-full transition-all duration-300",
+                // Ultra liquid glassmorphic disk: see-through so QR codes are readable underneath
+                "bg-white/[0.08] dark:bg-white/[0.05]",
+                "backdrop-blur-md backdrop-saturate-200",
+                "border border-white/40 dark:border-white/20",
+                "shadow-[0_8px_32px_0_rgba(0,0,0,0.15),inset_0_1px_1px_0_rgba(255,255,255,0.4)]",
+                "ring-1 ring-black/10 dark:ring-white/10",
+                "text-foreground hover:scale-105 active:scale-95",
+                "overflow-hidden group/btn cursor-pointer",
               )}
+              aria-label={playing ? "Pause" : "Play"}
             >
-              <PlayPauseIcon playing={playing} className="h-7 w-7" />
-            </span>
-          </button>
+              {/* Liquid watery reflection */}
+              <span className="absolute inset-0 rounded-full bg-gradient-to-b from-white/30 via-transparent to-transparent pointer-events-none" />
+              <PlayPauseIcon playing={playing} className="relative h-8 w-8 text-foreground drop-shadow-[0_2px_6px_rgba(0,0,0,0.35)] transition-transform duration-300" />
+            </button>
+          </div>
         )}
         {switching && (
           <div className="switch-toast pointer-events-none absolute bottom-3 left-1/2 z-10 flex items-center gap-2 whitespace-nowrap rounded-full bg-black/65 px-3.5 py-1.5 text-[11px] font-bold text-white shadow-lg backdrop-blur">
@@ -886,7 +1104,7 @@ export function Sender({ active = true }: { active?: boolean }) {
       <div className="mx-auto mt-2 h-1.5 w-full max-w-md shrink-0 overflow-hidden rounded-full bg-secondary">
         <div
           className="progress-fill h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-200 ease-out"
-          style={{ width: `${progress}%` }}
+          style={{ width: `${effectiveProgress}%` }}
         />
       </div>
     </div>
@@ -1050,15 +1268,6 @@ export function Sender({ active = true }: { active?: boolean }) {
           <div className="min-w-0 flex-1">{lanePicker}</div>
         </div>
       </div>
-      {isLarge && ready && !qrError && (
-        <div className="glass flex items-start gap-2 rounded-2xl p-3 text-left text-xs text-muted-foreground">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
-          <span>
-            Large file: about {formatDuration(passSeconds)} at this speed. Screens stay awake automatically. Try
-            fullscreen with Dual QR for 2× throughput.
-          </span>
-        </div>
-      )}
     </div>
   );
 
@@ -1143,9 +1352,9 @@ export function Sender({ active = true }: { active?: boolean }) {
               </div>
               <div className="hidden grid-cols-2 gap-2 lg:landscape:grid">
                 <PStat icon={<HardDrive className="h-3.5 w-3.5" />} label="Size" value={formatBytes(payloadBytes)} />
-                <PStat icon={<Layers3 className="h-3.5 w-3.5" />} label="Frames" value={`${shownFrames}/${plan.total}`} />
-                <PStat icon={<Timer className="h-3.5 w-3.5" />} label="Time left" value={inFirstPass ? formatDuration(remainingSeconds) : "Repair"} />
-                <PStat icon={<Activity className="h-3.5 w-3.5" />} label="Rate" value={`${formatBytes(throughput)}/s`} />
+                <PStat icon={<Layers3 className="h-3.5 w-3.5" />} label="Frames" value={`${effectiveShownFrames}/${plan.total}`} />
+                <PStat icon={<Timer className="h-3.5 w-3.5" />} label="Time left" value={turboStats?.complete ? "Complete" : inFirstPass || isTurboActive ? formatDuration(effectiveRemainingSeconds) : "Repair"} />
+                <PStat icon={<Activity className="h-3.5 w-3.5" />} label="Rate" value={`${formatBytes(Math.round(effectiveThroughput))}/s`} />
               </div>
 
               <div className="hud-card min-w-0 rounded-3xl p-3.5">
@@ -1159,13 +1368,13 @@ export function Sender({ active = true }: { active?: boolean }) {
                   </button>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline justify-between gap-2">
-                      <span className="text-lg font-extrabold tabular-nums">{Math.floor(progress)}%</span>
+                      <span className="text-lg font-extrabold tabular-nums">{Math.floor(effectiveProgress)}%</span>
                       <span className="truncate text-[11px] font-semibold text-white/70">
-                        {inFirstPass ? `${formatDuration(remainingSeconds)} left` : "Repair frames"}
+                        {turboStats?.complete ? "Transfer complete" : inFirstPass || isTurboActive ? `${formatDuration(effectiveRemainingSeconds)} left` : "Repair frames"}
                       </span>
                     </div>
                     <div className="mt-1 h-2 overflow-hidden rounded-full bg-white/15">
-                      <div className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-200" style={{ width: `${progress}%` }} />
+                      <div className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-200" style={{ width: `${effectiveProgress}%` }} />
                     </div>
                   </div>
                 </div>
@@ -1190,7 +1399,7 @@ export function Sender({ active = true }: { active?: boolean }) {
                     <span className="flex items-center gap-1.5">
                       <Layers3 className="h-3.5 w-3.5" /> QR codes at once
                     </span>
-                    <span className="font-medium text-white/55">≈ {formatBytes(throughput)}/s</span>
+                    <span className="font-medium text-white/55">≈ {formatBytes(Math.round(effectiveThroughput))}/s</span>
                   </div>
                   <GlideSegment
                     ariaLabel="QR codes per frame"
@@ -1231,6 +1440,48 @@ export function Sender({ active = true }: { active?: boolean }) {
                 </div>
               </div>
             </footer>
+          </div>
+        </Portal>
+      )}
+
+      {confirmRemove && (
+        <Portal>
+          <div
+            className="fixed inset-0 z-[70] flex items-end justify-center bg-background/35 px-4 pb-4 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            onClick={cancelRemoveFile}
+          >
+            <div
+              className="glass-strong safe-bottom w-full max-w-md rounded-[2rem] p-4 text-center animate-fade-up"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mx-auto flex items-center justify-center gap-2">
+                <X className="h-5 w-5 text-destructive" strokeWidth={2.4} />
+                <h2 className="text-display text-lg leading-tight text-foreground">
+                  Remove this file?
+                </h2>
+              </div>
+              <p className="mx-auto mt-3 max-w-[19rem] text-center text-sm text-muted-foreground">
+                The current transfer and QR broadcast will stop.
+              </p>
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={confirmRemoveFile}
+                  className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary to-accent py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/25 active:scale-[0.97]"
+                >
+                  Yes
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelRemoveFile}
+                  className="liquid-control flex items-center justify-center rounded-2xl py-3 text-sm font-bold active:scale-[0.97]"
+                >
+                  No
+                </button>
+              </div>
+            </div>
           </div>
         </Portal>
       )}

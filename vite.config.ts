@@ -1,9 +1,8 @@
 // Standard TanStack Start + Nitro setup (documented at tanstack.com/start → Hosting).
 //
-// Nitro picks its deployment target automatically: on Vercel it emits the Vercel
-// Build Output (.vercel/output) with no extra config; locally `vite build` produces a
-// Node server in .output/. Override with NITRO_PRESET=<preset> if you deploy elsewhere
-// (e.g. NITRO_PRESET=cloudflare-module).
+// Nitro supports multiple deployment presets: locally and on standard hosts `vite build`
+// produces a standalone server in .output/. Override with NITRO_PRESET=<preset> as needed
+// (e.g. NITRO_PRESET=node-server, NITRO_PRESET=cloudflare-module, etc.).
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
@@ -56,11 +55,11 @@ export default defineConfig({
             },
             {
               urlPattern: ({ url }) =>
-                url.origin === self.location.origin && /\/(icon-\d+\.png|favicon\.svg|manifest\.webmanifest)$/.test(url.pathname),
+                url.origin === self.location.origin && /\/(icon-\d+\.png|favicon\.svg|manifest\.webmanifest|zxing_reader\.wasm)$/.test(url.pathname),
               handler: "CacheFirst",
               options: {
-                cacheName: "offdrop-shell-files",
-                expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 30 },
+                cacheName: "offdrop-static",
+                expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 30 },
               },
             },
           ],
