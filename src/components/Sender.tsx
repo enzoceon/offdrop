@@ -1463,7 +1463,7 @@ export function Sender({ active = true }: { active?: boolean }) {
                 </h2>
               </div>
               <p className="mx-auto mt-3 max-w-[19rem] text-center text-sm text-muted-foreground">
-                The current transfer and QR broadcast will stop.
+                The current file transfer and QR code broadcast will stop after that.
               </p>
               <div className="mt-4 grid grid-cols-2 gap-3">
                 <button
